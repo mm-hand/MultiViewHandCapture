@@ -2,6 +2,7 @@ import cv2
 import mediapipe as mp
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec  # 引入 GridSpec 用于布局调整
 from mpl_toolkits.mplot3d import Axes3D
 import threading
 import os
@@ -34,6 +35,7 @@ P1 = K1 @ np.hstack((np.eye(3), np.zeros((3, 1))))
 P2 = K2 @ np.hstack((R, T))
 
 print("标定参数加载完成。")
+
 # ================= 1. 一欧元滤波器 (One Euro Filter) =================
 class OneEuroFilter:
     def __init__(self, freq, min_cutoff=1.0, beta=0.0, d_cutoff=1.0):
@@ -102,7 +104,7 @@ class CameraStream:
         if not self.stream.isOpened():
             print("❌ 严重错误：无法打开摄像头。")
             sys.exit()
-            
+
         print(f"✅ 相机已启动: {self.stream.get(3)}x{self.stream.get(4)}")
         self.grabbed, self.frame = self.stream.read()
         self.started = False
@@ -138,62 +140,123 @@ class CameraStream:
         if self.thread.is_alive(): self.thread.join()
         self.stream.release()
 
-# ================= 3. 3D 可视化类 (修正比例和深度) =================
-class HandVisualizer3D:
-    def __init__(self):
+# ================= 3. 全能可视化类 (布局优化版) =================
+class HandVisualizerAllInOne:
+    def __init__(self, w=1280, h=720):
         plt.ion()
-        self.fig = plt.figure(figsize=(14, 7))
-        
-        # 视图 1: 正面 (XY 平面)
-        self.ax1 = self.fig.add_subplot(121, projection='3d')
-        self.ax1.set_title("Front View (XY)")
-        self.ax1.view_init(elev=-90, azim=-90) 
-        
-        # 视图 2: 侧面 (YZ 平面)
-        self.ax2 = self.fig.add_subplot(122, projection='3d')
-        self.ax2.set_title("Side View (Depth YZ)")
-        self.ax2.view_init(elev=0, azim=0)
-
-        self.axes = [self.ax1, self.ax2]
+        # 调整画布大小，适应垂直布局
+        self.fig = plt.figure(figsize=(16, 12))
+        self.w = w
+        self.h = h
         self.conn = list(mp.solutions.hands.HAND_CONNECTIONS)
+
+        # === 使用 GridSpec 定义不均匀的布局 ===
+        # 2行2列
+        # height_ratios=[1, 3] 表示第二行的高度是第一行的 3 倍
+        # hspace=0.1, wspace=0.1 减少子图间距
+        gs = gridspec.GridSpec(2, 2, height_ratios=[1, 3], hspace=0.1, wspace=0.1)
+
+        # --- 1. 左上: 左眼 2D (较小) ---
+        self.ax_l = self.fig.add_subplot(gs[0, 0])
+        self.ax_l.set_title("Left Camera (2D)", fontsize=10)
+        self.ax_l.axis('off') # 关闭坐标轴，看起来更像监控画面
+        self.im_l_disp = self.ax_l.imshow(np.zeros((h, w, 3), dtype=np.uint8))
+        self.lines_2d_l = [self.ax_l.plot([], [], 'g-', linewidth=1)[0] for _ in self.conn]
+        self.points_2d_l = self.ax_l.plot([], [], 'r.', markersize=3)[0]
+
+        # --- 2. 右上: 右眼 2D (较小) ---
+        self.ax_r = self.fig.add_subplot(gs[0, 1])
+        self.ax_r.set_title("Right Camera (2D)", fontsize=10)
+        self.ax_r.axis('off')
+        self.im_r_disp = self.ax_r.imshow(np.zeros((h, w, 3), dtype=np.uint8))
+        self.lines_2d_r = [self.ax_r.plot([], [], 'g-', linewidth=1)[0] for _ in self.conn]
+        self.points_2d_r = self.ax_r.plot([], [], 'r.', markersize=3)[0]
+
+        # --- 3. 左下: 3D 正视图 (较大) ---
+        self.ax3d_front = self.fig.add_subplot(gs[1, 0], projection='3d')
+        self.ax3d_front.set_title("3D Reconstruction - Front (XY)", fontsize=12)
+        self.ax3d_front.view_init(elev=-90, azim=-90)
+        self._init_3d_axis(self.ax3d_front)
+
+        # --- 4. 右下: 3D 侧视图 (较大) ---
+        self.ax3d_side = self.fig.add_subplot(gs[1, 1], projection='3d')
+        self.ax3d_side.set_title("3D Reconstruction - Side (Depth YZ)", fontsize=12)
+        self.ax3d_side.view_init(elev=0, azim=0)
+        self._init_3d_axis(self.ax3d_side)
+
+        # 存储3D对象引用
+        self.scats_3d = []
+        self.lines_3d_collections = []
+        for ax in [self.ax3d_front, self.ax3d_side]:
+            # 加大3D点的尺寸 s=40
+            scat = ax.scatter([], [], [], c='r', s=40, depthshade=True)
+            self.scats_3d.append(scat)
+            # 加粗3D连线 linewidth=3
+            lines = [ax.plot([], [], [], 'b-', linewidth=3)[0] for _ in range(len(self.conn))]
+            self.lines_3d_collections.append(lines)
         
-        self.scats = []
-        self.lines_collections = []
+        # 紧凑布局
+        self.fig.tight_layout()
 
-        for ax in self.axes:
-            # === 设置坐标轴范围 ===
-            # X: -150 ~ 150 (跨度300)
-            # Y: -150 ~ 150 (跨度300)
-            # Z:  100 ~ 400 (跨度300)
-            ax.set_xlim(-150, 150)
-            ax.set_ylim(-150, 150)
-            ax.set_zlim(100, 400)
-            
-            # === 强制等比例 ===
-            # 因为三个轴的跨度都是300，设置aspect为(1,1,1)可保证视觉上不变形
-            ax.set_box_aspect((1, 1, 1))
-            
-            ax.set_xlabel('X (Right)')
-            ax.set_ylabel('Y (Down)')
-            ax.set_zlabel('Z (Forward)')
+    def _init_3d_axis(self, ax):
+        # 坐标轴范围设置
+        ax.set_xlim(-150, 150)
+        ax.set_ylim(-150, 150)
+        ax.set_zlim(100, 400)
+        ax.set_box_aspect((1, 1, 1))
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
 
-            scat = ax.scatter([], [], [], c='r', s=25, depthshade=True)
-            self.scats.append(scat)
-
-            lines = [ax.plot([], [], [], 'b-', linewidth=2)[0] for _ in range(len(self.conn))]
-            self.lines_collections.append(lines)
-
-    def update(self, p3d):
+    def update(self, img_l, img_r, pts_2d_l, pts_2d_r, pts_3d):
         try:
-            for i in range(2): 
-                self.scats[i]._offsets3d = (p3d[:, 0], p3d[:, 1], p3d[:, 2])
-                lines = self.lines_collections[i]
-                for line, (start, end) in zip(lines, self.conn):
-                    line.set_data([p3d[start, 0], p3d[end, 0]], [p3d[start, 1], p3d[end, 1]])
-                    line.set_3d_properties([p3d[start, 2], p3d[end, 2]])
-            plt.pause(0.001) 
-        except Exception:
+            # 1. 更新图像背景 (缩小显示分辨率以提速)
+            disp_h, disp_w = 360, 640
+            img_l_small = cv2.resize(img_l, (disp_w, disp_h))
+            img_r_small = cv2.resize(img_r, (disp_w, disp_h))
+            
+            self.im_l_disp.set_data(img_l_small)
+            self.im_r_disp.set_data(img_r_small)
+            
+            # 确保imshow的extent正确，否则点会画偏
+            self.im_l_disp.set_extent([0, self.w, self.h, 0])
+            self.im_r_disp.set_extent([0, self.w, self.h, 0])
+
+            # 2. 更新 2D 骨架
+            self._update_2d_skeleton(self.lines_2d_l, self.points_2d_l, pts_2d_l)
+            self._update_2d_skeleton(self.lines_2d_r, self.points_2d_r, pts_2d_r)
+
+            # 3. 更新 3D 骨架
+            if pts_3d is not None:
+                for i in range(2):
+                    self.scats_3d[i]._offsets3d = (pts_3d[:, 0], pts_3d[:, 1], pts_3d[:, 2])
+                    lines = self.lines_3d_collections[i]
+                    for line, (start, end) in zip(lines, self.conn):
+                        line.set_data([pts_3d[start, 0], pts_3d[end, 0]], 
+                                      [pts_3d[start, 1], pts_3d[end, 1]])
+                        line.set_3d_properties([pts_3d[start, 2], pts_3d[end, 2]])
+            else:
+                for i in range(2):
+                    self.scats_3d[i]._offsets3d = ([], [], [])
+                    for line in self.lines_3d_collections[i]:
+                        line.set_data([], [])
+                        line.set_3d_properties([])
+
+            plt.pause(0.001)
+        except Exception as e:
+            # 当窗口关闭时可能会报错，忽略
             pass
+
+    def _update_2d_skeleton(self, lines_objs, points_obj, pts):
+        if pts is not None:
+            points_obj.set_data(pts[:, 0], pts[:, 1])
+            for line, (start, end) in zip(lines_objs, self.conn):
+                line.set_data([pts[start, 0], pts[end, 0]], 
+                              [pts[start, 1], pts[end, 1]])
+        else:
+            points_obj.set_data([], [])
+            for line in lines_objs:
+                line.set_data([], [])
 
 # ================= 4. 手势处理器 (含 OneEuroFilter) =================
 class HandProcessor:
@@ -203,7 +266,6 @@ class HandProcessor:
             min_detection_confidence=0.4, 
             min_tracking_confidence=0.4
         )
-        # freq=30, min_cutoff=0.1 (静止时稳), beta=5.0 (移动时快)
         self.filter = OneEuroFilter(freq=30, min_cutoff=0.1, beta=5.0, d_cutoff=1.0)
 
     def process(self, img):
@@ -222,12 +284,11 @@ def main():
     time.sleep(1.0)
 
     proc_l, proc_r = HandProcessor(), HandProcessor()
-    visualizer = HandVisualizer3D()
     
+    # 实例化新的可视化类
+    visualizer = HandVisualizerAllInOne(w=1280, h=720)
+
     W_RAW, H_RAW = 1280, 720
-    
-    print("=== 双目手势跟踪 ===")
-    print("按 'q' 退出")
 
     while True:
         ret, frame = cam.read()
@@ -236,64 +297,39 @@ def main():
             continue
         if frame.shape[1] != 2560: continue
 
-        # 1. 图像分割
         img_l = frame[:, :1280]
         img_r = frame[:, 1280:]
 
-        # 2. 转 RGB
         img_l_rgb = cv2.cvtColor(img_l, cv2.COLOR_BGR2RGB)
         img_r_rgb = cv2.cvtColor(img_r, cv2.COLOR_BGR2RGB)
 
-        # 3. 处理
-        pts_l = proc_l.process(img_l_rgb)
-        pts_r = proc_r.process(img_r_rgb)
+        pts_norm_l = proc_l.process(img_l_rgb)
+        pts_norm_r = proc_r.process(img_r_rgb)
 
-        if pts_l is not None and pts_r is not None:
-            # === 坐标映射 ===
-            u_l, v_l = pts_l[:, 0] * W_RAW, pts_l[:, 1] * H_RAW
+        px_l, px_r = None, None
+        pts_3d = None
+
+        if pts_norm_l is not None:
+            u_l, v_l = pts_norm_l[:, 0] * W_RAW, pts_norm_l[:, 1] * H_RAW
             px_l = np.column_stack((u_l, v_l))
 
-            u_r, v_r = pts_r[:, 0] * W_RAW, pts_r[:, 1] * H_RAW
+        if pts_norm_r is not None:
+            u_r, v_r = pts_norm_r[:, 0] * W_RAW, pts_norm_r[:, 1] * H_RAW
             px_r = np.column_stack((u_r, v_r))
 
-            # === 3D 重建 ===
+        if px_l is not None and px_r is not None:
             ud_l = cv2.undistortPoints(px_l.reshape(-1, 1, 2), K1, D1, P=K1)
             ud_r = cv2.undistortPoints(px_r.reshape(-1, 1, 2), K2, D2, P=K2)
             pts_4d = cv2.triangulatePoints(P1, P2, ud_l.reshape(-1, 2).T, ud_r.reshape(-1, 2).T)
             pts_3d = (pts_4d[:3] / pts_4d[3]).T 
 
-            visualizer.update(pts_3d)
+        # 更新画面
+        visualizer.update(img_l_rgb, img_r_rgb, px_l, px_r, pts_3d)
 
-            # === 2D 绘制 (左右眼都画) ===
-            # 画左图
-            for p in px_l:
-                cv2.circle(img_l, (int(p[0]), int(p[1])), 4, (0, 255, 0), -1)
-            for conn in mp.solutions.hands.HAND_CONNECTIONS:
-                p1, p2 = px_l[conn[0]], px_l[conn[1]]
-                cv2.line(img_l, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), (0, 255, 0), 2)
-            
-            # 画右图
-            for p in px_r:
-                cv2.circle(img_r, (int(p[0]), int(p[1])), 4, (0, 255, 0), -1)
-            for conn in mp.solutions.hands.HAND_CONNECTIONS:
-                p1, p2 = px_r[conn[0]], px_r[conn[1]]
-                cv2.line(img_r, (int(p1[0]), int(p1[1])), (int(p2[0]), int(p2[1])), (0, 255, 0), 2)
-
-        # === 显示逻辑优化 ===
-        # 1. 横向拼接
-        combined = np.hstack((img_l, img_r))
-        
-        # 2. 缩放到 1/5 尺寸
-        # 原尺寸 2560 x 720 -> 目标尺寸 512 x 144
-        vis_frame = cv2.resize(combined, (0, 0), fx=0.2, fy=0.2)
-
-        cv2.imshow('Stereo Tracker', vis_frame)
-
-        if cv2.waitKey(1) & 0xFF == ord('q'): 
+        if not plt.fignum_exists(visualizer.fig.number):
             break
 
     cam.stop()
-    cv2.destroyAllWindows()
     plt.close()
 
 if __name__ == "__main__":
