@@ -1,4 +1,5 @@
 import cv2
+import json
 import numpy as np
 import sys
 import threading
@@ -209,9 +210,20 @@ print(f"双目重投影误差 RMS: {ret_s:.4f}")
 print(f"计算出的基线长度: {np.linalg.norm(T):.2f} mm")
 print("="*50)
 
-print(f"K1 = np.array({np.array2string(K1, separator=', ')}, dtype=np.float64)")
-print(f"D1 = np.array({np.array2string(D1, separator=', ')}, dtype=np.float64)")
-print(f"K2 = np.array({np.array2string(K2, separator=', ')}, dtype=np.float64)")
-print(f"D2 = np.array({np.array2string(D2, separator=', ')}, dtype=np.float64)")
-print(f"R  = np.array({np.array2string(R, separator=', ')}, dtype=np.float64)")
-print(f"T  = np.array({np.array2string(T, separator=', ')}, dtype=np.float64)")
+# ================= 保存为 JSON =================
+stereo_params = {
+    "K1": K1.tolist(),
+    "D1": D1.tolist(),
+    "K2": K2.tolist(),
+    "D2": D2.tolist(),
+    "R":  R.tolist(),
+    "T":  T.tolist(),
+    "rms": ret_s
+}
+
+json_path = "stereo_params.json"
+with open(json_path, "w") as f:
+    json.dump(stereo_params, f, indent=4)
+
+print(f"\n✅ 标定参数已保存至: {json_path}")
+print("Camera.py 将自动加载此文件。")

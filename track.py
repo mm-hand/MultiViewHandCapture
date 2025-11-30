@@ -4,32 +4,36 @@ import numpy as np
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 import threading
+import os
 import sys
 import time
+import json
 
 # ================= 0. 标定参数 (保持不变) =================
-# 左相机内参
-K1 = np.array([[714.1656,   0.    , 595.7304],
-               [  0.    , 715.3248, 427.8916],
-               [  0.    ,   0.    ,   1.    ]], dtype=np.float64)
-D1 = np.array([[ 0.0442,  0.157 ,  0.0113, -0.0031, -0.4461]], dtype=np.float64)
-# 右相机内参
-K2 = np.array([[718.2567,   0.    , 629.9524],
-               [  0.    , 719.0196, 342.6635],
-               [  0.    ,   0.    ,   1.    ]], dtype=np.float64)
-D2 = np.array([[ 0.0586, -0.0063,  0.0077, -0.0042, -0.1363]], dtype=np.float64)
-# 旋转矩阵
-R  = np.array([[ 0.9985,  0.0008, -0.0547],
-               [ 0.0013,  0.9993,  0.0385],
-               [ 0.0547, -0.0385,  0.9978]], dtype=np.float64)
-# 平移向量
-T  = np.array([[51.3741],
-               [ 1.2832],
-               [-6.6857]], dtype=np.float64)
+JSON_PATH = "stereo_params.json"
 
+if not os.path.exists(JSON_PATH):
+    print(f"❌ 错误: 找不到标定文件 {JSON_PATH}")
+    print("请先运行 calibrate.py 进行标定！")
+    sys.exit()
+
+print(f"✅ 正在加载标定文件: {JSON_PATH}")
+with open(JSON_PATH, 'r') as f:
+    params = json.load(f)
+
+# 将 list 转换为 numpy array
+K1 = np.array(params["K1"], dtype=np.float64)
+D1 = np.array(params["D1"], dtype=np.float64)
+K2 = np.array(params["K2"], dtype=np.float64)
+D2 = np.array(params["D2"], dtype=np.float64)
+R  = np.array(params["R"],  dtype=np.float64)
+T  = np.array(params["T"],  dtype=np.float64)
+
+# 计算投影矩阵
 P1 = K1 @ np.hstack((np.eye(3), np.zeros((3, 1))))
 P2 = K2 @ np.hstack((R, T))
 
+print("标定参数加载完成。")
 # ================= 1. 一欧元滤波器 (One Euro Filter) =================
 class OneEuroFilter:
     def __init__(self, freq, min_cutoff=1.0, beta=0.0, d_cutoff=1.0):
