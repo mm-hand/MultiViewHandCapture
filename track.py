@@ -271,7 +271,8 @@ class HandProcessor:
     def process(self, img):
         res = self.mp_hands.process(img)
         if res.multi_hand_landmarks:
-            raw = np.array([[lm.x, lm.y] for lm in res.multi_hand_landmarks[0].landmark])
+            # <--- 修改: 这里增加提取 lm.z，结果为 (21, 3) --->
+            raw = np.array([[lm.x, lm.y, lm.z] for lm in res.multi_hand_landmarks[0].landmark])
             filtered = self.filter(raw)
             return filtered
         else:
@@ -284,8 +285,6 @@ def main():
     time.sleep(1.0)
 
     proc_l, proc_r = HandProcessor(), HandProcessor()
-    
-    # 实例化新的可视化类
     visualizer = HandVisualizerAllInOne(w=1280, h=720)
 
     W_RAW, H_RAW = 1280, 720
@@ -303,12 +302,14 @@ def main():
         img_l_rgb = cv2.cvtColor(img_l, cv2.COLOR_BGR2RGB)
         img_r_rgb = cv2.cvtColor(img_r, cv2.COLOR_BGR2RGB)
 
+        # pts_norm 现在包含 (x, y, z)，其中 z 是 MediaPipe 相对深度
         pts_norm_l = proc_l.process(img_l_rgb)
         pts_norm_r = proc_r.process(img_r_rgb)
 
         px_l, px_r = None, None
         pts_3d = None
 
+        # 提取像素坐标 (只用 x, y 计算)
         if pts_norm_l is not None:
             u_l, v_l = pts_norm_l[:, 0] * W_RAW, pts_norm_l[:, 1] * H_RAW
             px_l = np.column_stack((u_l, v_l))
@@ -318,12 +319,33 @@ def main():
             px_r = np.column_stack((u_r, v_r))
 
         if px_l is not None and px_r is not None:
+            # 1. 原始双目三角测量
             ud_l = cv2.undistortPoints(px_l.reshape(-1, 1, 2), K1, D1, P=K1)
             ud_r = cv2.undistortPoints(px_r.reshape(-1, 1, 2), K2, D2, P=K2)
             pts_4d = cv2.triangulatePoints(P1, P2, ud_l.reshape(-1, 2).T, ud_r.reshape(-1, 2).T)
-            pts_3d = (pts_4d[:3] / pts_4d[3]).T 
+            pts_3d_stereo = (pts_4d[:3] / pts_4d[3]).T # 原始绝对坐标
+            
+            # 提取 MediaPipe 左手相对深度 Z_mp
+            z_mp = pts_norm_l[:, 2]
+            # 提取双目计算的绝对深度 Z_stereo
+            z_stereo = pts_3d_stereo[:, 2]
 
-        # 更新画面
+            # 计算映射关系 y = kx + b
+            # 使用 np.polyfit 进行线性回归 (1次多项式)
+            # 目的是找到 Z_stereo = k * Z_mp + b
+            try:
+                k, b = np.polyfit(z_mp, z_stereo, 1)
+                
+                # 使用映射关系重新计算绝对深度
+                z_new = k * z_mp + b
+                
+                # 更新 pts_3d (保留双目的X,Y，替换Z)
+                pts_3d = pts_3d_stereo.copy()
+                pts_3d[:, 2] = z_new
+            except Exception as e:
+                # 如果回归失败，回退到原始双目结果
+                pts_3d = pts_3d_stereo
+
         visualizer.update(img_l_rgb, img_r_rgb, px_l, px_r, pts_3d)
 
         if not plt.fignum_exists(visualizer.fig.number):
