@@ -9,7 +9,7 @@ import sys
 import time
 import json
 
-# ================= 0. 标定参数 (保持不变) =================
+# ================= 0. 标定参数  =================
 JSON_PATH = "stereo_params.json"
 
 if not os.path.exists(JSON_PATH):
@@ -226,8 +226,7 @@ def main():
     
     W_RAW, H_RAW = 1280, 720
     
-    print("=== 双目手势跟踪 (修正版) ===")
-    print("窗口: 左右拼接，1/5 尺寸缩放")
+    print("=== 双目手势跟踪 ===")
     print("按 'q' 退出")
 
     while True:
@@ -262,9 +261,6 @@ def main():
             ud_r = cv2.undistortPoints(px_r.reshape(-1, 1, 2), K2, D2, P=K2)
             pts_4d = cv2.triangulatePoints(P1, P2, ud_l.reshape(-1, 2).T, ud_r.reshape(-1, 2).T)
             pts_3d = (pts_4d[:3] / pts_4d[3]).T 
-
-            # 坐标调整：Y轴取反，符合直观
-            pts_3d[:, 1] = -pts_3d[:, 1]  
 
             visualizer.update(pts_3d)
 
