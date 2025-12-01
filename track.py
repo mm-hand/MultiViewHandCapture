@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import json
+from joint_constraints import apply_joint_constraints
 from config import CAMERA_INDEX, FULL_WIDTH, HEIGHT, CALIBRATION_FRAMES
 
 # =================== 0. Load Stereo Calibration Parameters ===================
@@ -334,7 +335,10 @@ def main():
                     print("✅ Calibration finished.")
             else:
                 visualizer.set_status("GESTURE TRACKING")
+                # Step 1: Correct bone lengths
                 pts3d = apply_chain_correction(pts3d, bone_lengths_final)
+                # Step 2: Apply joint angle constraints
+                pts3d = apply_joint_constraints(pts3d)
 
         visualizer.update(img_l_rgb, img_r_rgb, px_l, px_r, pts3d)
 

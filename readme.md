@@ -9,7 +9,7 @@ It includes:
 - Camera calibration tools for high-precision stereo setup
 - Robust stereo camera testing
 - Real-time 3D reconstruction of hand pose using MediaPipe Hands and OpenCV
-- Finger bone length calibration to produce more stable and realistic hand models
+- Finger bone length / angle limit calibration to produce more stable and realistic hand models
 
 This project is designed for low-latency tracking, with threaded camera capture and optimized visualizations using Matplotlib.
 
@@ -45,9 +45,9 @@ Hand Detection:
 - Undistorts 2D landmark positions in both images
 Triangulates points in 3D using OpenCV’s cv2.triangulatePoints
 
-Finger Length Calibration:
+Finger Length / Joint Angle Calibration:
 - First 100 frames: measure average length of each finger bone
-- Afterwards: correct detected geometry to match calibrated lengths without changing direction
+- Afterwards: correct detected geometry to match calibrated lengths & joint angle constraints
 
 Visualization:
 - Displays left/right camera views with hand overlays
