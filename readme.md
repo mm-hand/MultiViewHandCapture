@@ -1,6 +1,9 @@
 # MultiView Hand Capture
 Stereo Camera Hand Tracking & Calibration with MediaPipe + OpenCV
 
+https://github.com/user-attachments/assets/9b7e31db-df5e-4ed3-96cb-e328d1466306
+(The hand tracking has intial delay because I open OBS to record this video. The delay becomes trivial later.)
+
 ## 📖 Introduction
 
 MultiViewHandCapture is a Python project for real-time stereoscopic hand tracking using two synchronized camera streams (left and right eye images from a stereo camera).
