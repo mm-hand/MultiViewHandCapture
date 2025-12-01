@@ -6,68 +6,68 @@ def show_stereo_camera_robust():
     TARGET_WIDTH = 2560
     TARGET_HEIGHT = 720
     
-    # 1. 指定后端为 V4L2 (Linux 必备)
+    # 1. Specify backend as V4L2 (required for Linux)
     cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
     
     if not cap.isOpened():
-        print(f"❌ 无法打开摄像头 {CAMERA_INDEX}")
+        print(f"❌ Unable to open camera {CAMERA_INDEX}")
         return
 
-    # 2. 设置 MJPG (必须在前)
+    # 2. Set MJPG (must be set before resolution)
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
     
-    # 3. 设置分辨率
+    # 3. Set resolution
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, TARGET_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TARGET_HEIGHT)
     
-    # 4. 【新加】设置缓冲区大小为1，减少积压和花屏/延迟
+    # 4. Set buffer size to 1 to reduce frame backlog and screen tearing/delay
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
-    # 打印参数确认
+    # Print parameter confirmation
     actual_w = cap.get(cv2.CAP_PROP_FRAME_WIDTH)
     actual_h = cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-    print(f"✅ 相机已启动: {int(actual_w)}x{int(actual_h)} (MJPG)")
+    print(f"✅ Camera started: {int(actual_w)}x{int(actual_h)} (MJPG)")
 
     prev_time = 0
     error_count = 0
 
     while True:
         try:
-            # 5. 【关键】使用 try-except 包裹 read()，防止 imdecode 崩溃
+            # 5. Wrap read() in try-except to prevent imdecode crashes
             ret, frame = cap.read()
             
-            # 如果没有读到帧，或者帧是空的
+            # If no frame is read or frame is None
             if not ret or frame is None:
-                print("⚠️ 丢帧 (Empty Frame)")
+                print("⚠️ Dropped Frame (Empty Frame)")
                 error_count += 1
-                if error_count > 50: # 连续50次失败则退出
-                    print("❌ 连续失败次数过多，退出...")
+                if error_count > 50:  # Exit if more than 50 consecutive failures
+                    print("❌ Too many consecutive failures, exiting...")
                     break
                 continue
             
-            # 成功读取，重置错误计数
+            # Reset error counter upon successful read
             error_count = 0
 
-            # 计算FPS
+            # Calculate FPS
             curr_time = time.time()
             fps = 1 / (curr_time - prev_time) if prev_time != 0 else 0
             prev_time = curr_time
 
-            # 显示
+            # Display FPS on frame
             cv2.putText(frame, f"FPS: {int(fps)}", (20, 50), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
             
-            # 缩放显示 (0.5倍)
-            display_frame = cv2.resize(frame, (int(actual_w*0.5), int(actual_h*0.5)))
+            # Scale down display to 0.5 size
+            display_frame = cv2.resize(frame, (int(actual_w * 0.5), int(actual_h * 0.5)))
             cv2.imshow('Stereo Camera', display_frame)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
                 
         except cv2.error as e:
-            # 6. 捕获 OpenCV 的内部 C++ 错误
-            print(f"⚠️ OpenCV 解码错误 (忽略): {e}")
-            time.sleep(0.01) # 稍微暂停一下，让缓冲区恢复
+            # 6. Catch OpenCV internal C++ errors
+            print(f"⚠️ OpenCV decoding error (ignored): {e}")
+            time.sleep(0.01)  # Pause briefly to allow buffer to recover
             continue
 
     cap.release()
