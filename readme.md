@@ -13,6 +13,19 @@ It includes:
 
 This project is designed for low-latency tracking, with threaded camera capture and optimized visualizations using Matplotlib.
 
+## Hardware
+
+You only need a stereo camera like [this](https://item.taobao.com/item.htm?abbucket=10&id=743230798887&mi_id=0000bwamz5ZMYErS1WTgKf9IdOl1ESCRqd82DVDK83dPOOA&ns=1&priceTId=2150408117645701455644197e1de5&skuId=5298428819307&spm=a21n57.1.hoverItem.13&utparam=%7B%22aplus_abtest%22%3A%2244a2c4e89250625a3c3a3487ebe963e3%22%7D&xxc=taobaoSearch) and a 3D-printed support.
+
+<div align="center">
+  <img src="./images/hardware.jpg" alt="Cheap Stereo camera under $70" width="50%" />
+</div>
+
+
+<div align="center">
+  <img src="./images/hardware1.jpg" alt="The whole hareware" width="20%" />
+</div>
+
 ## ⚙️ How It Works
 
 ### 1. Stereo Camera Calibration (calibrate.py)
@@ -77,10 +90,12 @@ SQUARE_SIZE   = 23.5          # Checkerboard square size in mm
 CALIBRATION_FRAMES = 100      # Number of frames for bone length calibration
 ```
 3. Calibrate your stereo camera
+First print this [checkerboard](./images/pattern.png) for calibration.
 ```
-# Press C when both camera views show the complete checkerboard to capture. Minimum 10 images required.
 python calibrate.py
 ```
+Note: Press C when both camera views show the complete checkerboard to capture. Minimum 10 images required.
+
 4. Run Hand Tracking
 ```
 python track.py
@@ -92,4 +107,4 @@ python track.py
 ## Limitations
 
 - Your palm must be within the field of view of both cameras, and the palm should face the two cameras as squarely as possible to get better performance of mediapipe.
-- The hand model is not optimized for low-latency tracking because we use 1-Euro filter to process Mediapipe output. It does not work well for very fast gestures. 
+- The hand model is not optimized for low-latency tracking because of limited camera FPS and filtering needed for Meriapipe. It does not work well for very fast gestures. 
