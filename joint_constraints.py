@@ -1,149 +1,190 @@
 import numpy as np
 from config import JOINT_ANGLE_LIMITS
 
-# MediaPipe Hands 21-point landmark index mapping
-# Format: landmark_name: index
-MP_JOINTS = {
-    "wrist": 0,
+# ==========================================================
+# Data Structures
+# ==========================================================
+WRIST = 0
+THUMB_CMC, THUMB_MCP, THUMB_IP, THUMB_TIP = 1, 2, 3, 4
+INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP = 5, 6, 7, 8
+MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP = 9, 10, 11, 12
+RING_MCP, RING_PIP, RING_DIP, RING_TIP = 13, 14, 15, 16
+PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP = 17, 18, 19, 20
 
-    # Thumb
-    "thumb_cmc": 1,
-    "thumb_mcp": 2,
-    "thumb_ip": 3,
-    "thumb_tip": 4,
-
-    # Index
-    "index_mcp": 5,
-    "index_pip": 6,
-    "index_dip": 7,
-    "index_tip": 8,
-
-    # Middle
-    "middle_mcp": 9,
-    "middle_pip": 10,
-    "middle_dip": 11,
-    "middle_tip": 12,
-
-    # Ring
-    "ring_mcp": 13,
-    "ring_pip": 14,
-    "ring_dip": 15,
-    "ring_tip": 16,
-
-    # Little
-    "little_mcp": 17,
-    "little_pip": 18,
-    "little_dip": 19,
-    "little_tip": 20,
+FINGER_CHAINS = {
+    "thumb":  [WRIST, THUMB_CMC, THUMB_MCP, THUMB_IP, THUMB_TIP],
+    "index":  [WRIST, INDEX_MCP, INDEX_PIP, INDEX_DIP, INDEX_TIP],
+    "middle": [WRIST, MIDDLE_MCP, MIDDLE_PIP, MIDDLE_DIP, MIDDLE_TIP],
+    "ring":   [WRIST, RING_MCP, RING_PIP, RING_DIP, RING_TIP],
+    "little": [WRIST, PINKY_MCP, PINKY_PIP, PINKY_DIP, PINKY_TIP]
 }
 
-# Define joint connections for angle computation
-# Each tuple: (parent_joint_name, joint_name, child_joint_name)
-# The angle is computed at joint_name from parent → joint → child
-JOINT_CONNECTIONS = [
-    ("thumb_cmc",   "thumb_mcp",   "thumb_ip"),
-    ("thumb_mcp",   "thumb_ip",    "thumb_tip"),
+JOINT_CONFIG_MAP = {
+    2: ("thumb", "mcp"), 3: ("thumb", "ip"),
+    5: ("index", "mcp"), 6: ("index", "pip"), 7: ("index", "dip"),
+    9: ("middle", "mcp"), 10: ("middle", "pip"), 11: ("middle", "dip"),
+    13: ("ring", "mcp"), 14: ("ring", "pip"), 15: ("ring", "dip"),
+    17: ("little", "mcp"), 18: ("little", "pip"), 19: ("little", "dip"),
+}
 
-    ("index_mcp",   "index_pip",   "index_dip"),
-    ("index_pip",   "index_dip",   "index_tip"),
+# ==========================================================
+# Math Helpers
+# ==========================================================
 
-    ("middle_mcp",  "middle_pip",  "middle_dip"),
-    ("middle_pip",  "middle_dip",  "middle_tip"),
+def normalize(v):
+    norm = np.linalg.norm(v)
+    if norm < 1e-6:
+        return np.array([0.0, 0.0, 0.0])
+    return v / norm
 
-    ("ring_mcp",    "ring_pip",    "ring_dip"),
-    ("ring_pip",    "ring_dip",    "ring_tip"),
-
-    ("little_mcp",  "little_pip",  "little_dip"),
-    ("little_pip",  "little_dip",  "little_tip"),
-]
-
-def vector_angle(v1, v2):
+def rotate_points_around_axis(points, pivot, axis, angle_deg):
     """
-    Compute angle between vectors v1 and v2 in degrees.
+    Standard Rodrigues rotation.
     """
-    v1 = np.array(v1)
-    v2 = np.array(v2)
-    norm1 = np.linalg.norm(v1)
-    norm2 = np.linalg.norm(v2)
-    if norm1 == 0 or norm2 == 0:
-        return 0.0
-    cos_angle = np.dot(v1, v2) / (norm1 * norm2)
-    cos_angle = np.clip(cos_angle, -1.0, 1.0)
-    return np.degrees(np.arccos(cos_angle))
+    axis = normalize(axis)
+    if np.linalg.norm(axis) < 1e-6:
+        return points
 
-def clamp_angle(joint_name, angle):
-    """
-    Clamp a joint angle within its flexion/extension limits from config.py
-    """
-    limits = JOINT_ANGLE_LIMITS.get(joint_name)
-    if not limits:
-        return angle
+    theta = np.radians(angle_deg)
+    cos_t = np.cos(theta)
+    sin_t = np.sin(theta)
 
-    flexion_limit = limits["flexion"]
-    extension_limit = limits["extension"]
+    v = points - pivot 
+    cross_prod = np.cross(axis, v)
+    dot_prod = np.sum(axis * v, axis=1)[:, np.newaxis]
+    
+    v_rot = (v * cos_t + 
+             cross_prod * sin_t + 
+             axis * dot_prod * (1.0 - cos_t))
+    
+    return v_rot + pivot
 
-    if angle > 0:  # flexion
-        return min(angle, flexion_limit)
-    else:  # extension
-        return max(angle, -extension_limit)
+# ==========================================================
+# Core Logic
+# ==========================================================
 
 def apply_joint_constraints(landmarks_3d):
     """
-    Apply joint angle constraints to 3D hand landmarks.
-
-    Parameters:
-    landmarks_3d : np.ndarray of shape (21, 3)
-        3D coordinates of MediaPipe hand landmarks.
-
-    Returns:
-    np.ndarray of shape (21, 3)
-        Adjusted coordinates satisfying joint angle limits.
+    Applies joint constraints using a STABLE reference frame derived from the palm.
+    It avoids 'u x v' for axis calculation to prevent jitter/flipping at 0 degrees.
     """
-    adjusted_landmarks = landmarks_3d.copy()
+    corrected = landmarks_3d.copy()
 
-    for parent_name, joint_name, child_name in JOINT_CONNECTIONS:
-        parent_idx = MP_JOINTS[parent_name]
-        joint_idx = MP_JOINTS[joint_name]
-        child_idx = MP_JOINTS[child_name]
+    # 1. Compute Palm Basis (Stable Global Frame for the Hand)
+    p_wrist = corrected[WRIST]
+    p_index_mcp = corrected[INDEX_MCP]
+    p_pinky_mcp = corrected[PINKY_MCP]
 
-        v1 = adjusted_landmarks[parent_idx] - adjusted_landmarks[joint_idx]
-        v2 = adjusted_landmarks[child_idx] - adjusted_landmarks[joint_idx]
+    # Vector pointing from Wrist to Fingers
+    vec_hand_dir = normalize(p_index_mcp - p_wrist)
+    # Vector pointing from Index to Pinky (Transverse)
+    vec_transverse = normalize(p_pinky_mcp - p_index_mcp)
+    # Palm Normal (approximate, pointing out of back of hand)
+    palm_normal = normalize(np.cross(vec_hand_dir, vec_transverse))
 
-        angle = vector_angle(v1, v2)
+    for finger_name, indices in FINGER_CHAINS.items():
+        # Iterate joints. Start from 1.
+        for i in range(1, len(indices) - 1):
+            idx_parent = indices[i-1]
+            idx_pivot  = indices[i]
+            idx_child  = indices[i+1]
 
-        # For simplicity, we treat angles > 90° as flexion
-        if angle > 90:
-            signed_angle = angle - 90
-        else:
-            signed_angle = -(90 - angle)  # extension
+            # Current Positions
+            p_parent = corrected[idx_parent]
+            p_pivot  = corrected[idx_pivot]
+            p_child  = corrected[idx_child]
 
-        clamped_angle = clamp_angle(joint_name, signed_angle)
+            # Bone Vectors
+            u = p_pivot - p_parent  # Parent Bone
+            v = p_child - p_pivot   # Child Bone
+            
+            u_norm = normalize(u)
+            v_norm = normalize(v)
 
-        # Compute angle difference
-        delta_angle = clamped_angle - signed_angle
-        if abs(delta_angle) > 1e-3:
-            # Rotate child segment to enforce limit
-            adjusted_landmarks[child_idx] = rotate_point_around_joint(
-                adjusted_landmarks[child_idx],
-                adjusted_landmarks[joint_idx],
-                v1,
-                delta_angle
-            )
+            # --- STABILITY FIX: Define the Hinge Axis ---
+            # Instead of using (u x v) which is unstable when straight,
+            # we calculate the Ideal Hinge Axis based on the Parent Bone + Palm Normal.
+            # This ensures we rotate the finger along its natural track, not a random noise axis.
+            
+            if finger_name == "thumb":
+                # Thumb mechanism is complex (saddle joint). 
+                # Simplification: Axis is roughly aligned with Palm Normal for Flexion.
+                hinge_axis = palm_normal
+            else:
+                # For fingers, the hinge axis is perpendicular to the bone and the palm normal.
+                # Think of the pin in a door hinge. It points "sideways" relative to the finger.
+                # hinge_axis = u_norm x palm_normal
+                hinge_axis = normalize(np.cross(u_norm, palm_normal))
 
-    return adjusted_landmarks
+            # --- Calculate Signed Angle ---
+            # We project v onto the plane perpendicular to hinge_axis to find the pure flexion angle.
+            
+            # Vector v projected onto the flexion plane
+            # v_proj = v - (v . axis) * axis
+            proj_v = v_norm - hinge_axis * np.dot(v_norm, hinge_axis)
+            proj_v = normalize(proj_v)
+            
+            # The "Zero" vector (Straight finger) is just u_norm (projected? u is already perpendicular to axis ideally)
+            # Let's verify u is perpendicular to hinge_axis.
+            # hinge_axis = u x normal. Yes, u is perp to hinge_axis.
+            ref_zero = u_norm
+            
+            # Calculate angle between ref_zero (Parent) and proj_v (Child projected)
+            # Dot product
+            dot_val = np.dot(ref_zero, proj_v)
+            dot_val = np.clip(dot_val, -1.0, 1.0)
+            angle_mag = np.degrees(np.arccos(dot_val))
+            
+            # Determine Sign using Cross Product relative to Hinge Axis
+            # (ref_zero x proj_v) should be parallel to hinge_axis for Flexion?
+            # Let's check: 
+            # Fingers: u (fwd) x v (down/flex) -> Points Right (Same as hinge_axis derived from u x normal)
+            cross_check = np.cross(ref_zero, proj_v)
+            sign_check = np.dot(cross_check, hinge_axis)
+            
+            # Assign Sign
+            signed_angle = angle_mag if sign_check > 0 else -angle_mag
+            
+            # --- Dead Zone for Stability ---
+            # If angle is extremely small, ignore it to prevent jitter loops
+            if abs(signed_angle) < 5.0:
+                continue
 
-def rotate_point_around_joint(point, joint_pos, axis_vec, delta_deg):
-    """
-    Rotate a 3D point around a joint axis by delta_deg degrees.
-    Axis defined by axis_vec (from joint to parent).
-    """
-    # Normalize axis
-    axis = axis_vec / np.linalg.norm(axis_vec)
-    theta = np.radians(delta_deg)
+            # --- Check Limits ---
+            if idx_pivot not in JOINT_CONFIG_MAP:
+                continue
+                
+            fname_cfg, joint_type = JOINT_CONFIG_MAP[idx_pivot]
+            limits = JOINT_ANGLE_LIMITS[fname_cfg][joint_type]
+            
+            max_flex = limits["flexion"]
+            max_ext  = limits["extension"] # Stored as positive magnitude
 
-    # Rodrigues' rotation formula
-    p = point - joint_pos
-    p_rot = (p * np.cos(theta) +
-             np.cross(axis, p) * np.sin(theta) +
-             axis * np.dot(axis, p) * (1 - np.cos(theta)))
-    return p_rot + joint_pos
+            angle_correction = 0.0
+
+            if signed_angle > max_flex:
+                # Flexed too much
+                angle_correction = -(signed_angle - max_flex)
+            elif signed_angle < -max_ext:
+                # Extended too much (negative angle less than negative limit)
+                # e.g., Angle -30, Limit 10 (Target -10). Diff = -10 - (-30) = +20
+                angle_correction = (-max_ext) - signed_angle
+            
+            # --- Apply Correction ---
+            if abs(angle_correction) > 0.5:
+                # Use the STABLE hinge_axis for rotation, not the unstable u x v axis.
+                # This prevents the finger from twisting sideways.
+                
+                indices_to_rotate = indices[i+1:]
+                points_subset = corrected[indices_to_rotate]
+                
+                rotated_subset = rotate_points_around_axis(
+                    points_subset,
+                    p_pivot,
+                    hinge_axis, # <--- The Key Fix
+                    angle_correction
+                )
+                
+                corrected[indices_to_rotate] = rotated_subset
+                
+    return corrected
