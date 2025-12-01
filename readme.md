@@ -2,6 +2,7 @@
 Stereo Camera Hand Tracking & Calibration with MediaPipe + OpenCV
 
 https://github.com/user-attachments/assets/9b7e31db-df5e-4ed3-96cb-e328d1466306
+
 (The hand tracking has intial delay because I open OBS to record this video. The delay becomes trivial later.)
 
 ## 📖 Introduction
