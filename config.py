@@ -33,21 +33,21 @@ JOINT_ANGLE_LIMITS = {
         # PIP (Middle Joint) acts like a hinge, almost no extension
         "pip": {"flexion": 110.0, "extension": 0.0},  
         # DIP (Tip Joint)
-        "dip": {"flexion": 90.0,  "extension": 5.0},  
+        "dip": {"flexion": 90.0,  "extension": 0.0},  
     },
     "middle": {
         "mcp": {"flexion": 90.0,  "extension": 30.0},
         "pip": {"flexion": 110.0, "extension": 0.0},
-        "dip": {"flexion": 90.0,  "extension": 5.0},
+        "dip": {"flexion": 90.0,  "extension": 0.0},
     },
     "ring": {
         "mcp": {"flexion": 90.0,  "extension": 30.0},
         "pip": {"flexion": 110.0, "extension": 0.0},
-        "dip": {"flexion": 90.0,  "extension": 5.0},
+        "dip": {"flexion": 90.0,  "extension": 0.0},
     },
     "little": {
         "mcp": {"flexion": 95.0,  "extension": 40.0},
         "pip": {"flexion": 110.0, "extension": 0.0},
-        "dip": {"flexion": 90.0,  "extension": 5.0},
+        "dip": {"flexion": 90.0,  "extension": 0.0},
     }
 }
