@@ -4,14 +4,11 @@ import numpy as np
 import sys
 import threading
 import time
-
-# ================= Configuration =================
-BOARD_SIZE = (9, 6) 
-SQUARE_SIZE = 23.5 
+from config import CAMERA_INDEX, FULL_WIDTH, HEIGHT, BOARD_SIZE, SQUARE_SIZE
 
 # ================= High-performance camera capture class =================
 class CameraStream:
-    def __init__(self, src=0, width=2560, height=720):
+    def __init__(self, src=CAMERA_INDEX, width=FULL_WIDTH, height=HEIGHT):
         # 1. Specify V4L2 backend
         self.stream = cv2.VideoCapture(src, cv2.CAP_V4L2)
         

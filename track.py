@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import json
+from config import CAMERA_INDEX, FULL_WIDTH, HEIGHT, CALIBRATION_FRAMES
 
 # =================== 0. Load Stereo Calibration Parameters ===================
 JSON_PATH = "stereo_params.json"
@@ -86,7 +87,7 @@ class OneEuroFilter:
 # =================== 2. Threaded Camera Reader ===================
 class CameraStream:
     """Threaded stereo camera capture to reduce latency."""
-    def __init__(self, src=0, width=2560, height=720):
+    def __init__(self, src=CAMERA_INDEX, width=FULL_WIDTH, height=HEIGHT):
         self.stream = cv2.VideoCapture(src, cv2.CAP_V4L2)
         self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
         self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, width)
@@ -149,7 +150,7 @@ class HandVisualizerAllInOne:
     Displays stereo camera frames and 3D hand reconstruction.
     Shows calibration/tracking status in window title.
     """
-    def __init__(self, w=1280, h=720):
+    def __init__(self, w, h):
         plt.ion()
         self.fig = plt.figure(figsize=(16, 12))
         self.w = w
@@ -281,13 +282,12 @@ def apply_chain_correction(pts3d, lengths):
 
 # =================== 6. Main Loop ===================
 def main():
-    cam = CameraStream(src=0, width=2560, height=720).start()
+    cam = CameraStream(src=0, width=FULL_WIDTH, height=HEIGHT).start()
     time.sleep(1.0)
     proc_l, proc_r = HandProcessor(), HandProcessor()
-    visualizer = HandVisualizerAllInOne(w=1280, h=720)
 
-    W_RAW, H_RAW = 1280, 720
-    CALIBRATION_FRAMES = 100
+    W_RAW, H_RAW = FULL_WIDTH // 2, HEIGHT
+    visualizer = HandVisualizerAllInOne(w=W_RAW, h=H_RAW)
     calib_counts = 0
     bone_accum = {b: [] for f in fingers.values() for b in zip(f[:-1], f[1:])}
     bone_lengths_final = {}
@@ -298,10 +298,10 @@ def main():
         if not ret or frame is None:
             time.sleep(0.01)
             continue
-        if frame.shape[1] != 2560:
+        if frame.shape[1] != FULL_WIDTH:
             continue
 
-        img_l, img_r = frame[:, :1280], frame[:, 1280:]
+        img_l, img_r = frame[:, :W_RAW], frame[:, W_RAW:]
         img_l_rgb = cv2.cvtColor(img_l, cv2.COLOR_BGR2RGB)
         img_r_rgb = cv2.cvtColor(img_r, cv2.COLOR_BGR2RGB)
 

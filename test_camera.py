@@ -1,11 +1,8 @@
 import cv2
 import time
+from config import CAMERA_INDEX, FULL_WIDTH, HEIGHT 
 
 def show_stereo_camera_robust():
-    CAMERA_INDEX = 0
-    TARGET_WIDTH = 2560
-    TARGET_HEIGHT = 720
-    
     # 1. Specify backend as V4L2 (required for Linux)
     cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_V4L2)
     
@@ -17,8 +14,8 @@ def show_stereo_camera_robust():
     cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
     
     # 3. Set resolution
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, TARGET_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, TARGET_HEIGHT)
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FULL_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
     
     # 4. Set buffer size to 1 to reduce frame backlog and screen tearing/delay
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
