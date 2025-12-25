@@ -14,7 +14,6 @@ import json
 from MultiViewHandCapture.joint_constraints import apply_joint_constraints
 from MultiViewHandCapture.config import CAMERA_INDEX, FULL_WIDTH, HEIGHT, CALIBRATION_FRAMES
 
-
 # =================== 1. One Euro Filter Class (Unchanged) ===================
 class OneEuroFilter:
     """Smooths noisy data while keeping responsiveness."""
