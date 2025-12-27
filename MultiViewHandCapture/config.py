@@ -13,6 +13,11 @@ SQUARE_SIZE   = 23.5          # Checkerboard square size in mm
 # Calibration parameters
 CALIBRATION_FRAMES = 100      # Number of frames for bone length calibration
 
+# Image rotation parameters
+# Positive values: clockwise rotation, Negative values: counterclockwise rotation
+ROTATE_LEFT = -90              # Rotation angle for left camera image (degrees)
+ROTATE_RIGHT = 90             # Rotation angle for right camera image (degrees)
+
 # ==========================================================
 # Joint Angle Limits (Physiological Constraints)
 # Unit: Degrees

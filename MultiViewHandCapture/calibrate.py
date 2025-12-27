@@ -2,83 +2,10 @@ import cv2
 import json
 import numpy as np
 import sys
-import threading
 import time
-from MultiViewHandCapture.config import CAMERA_INDEX, FULL_WIDTH, HEIGHT, BOARD_SIZE, SQUARE_SIZE
 
-# ================= High-performance camera capture class =================
-class CameraStream:
-    def __init__(self, src, width, height):
-        # 1. Specify V4L2 backend
-        self.stream = cv2.VideoCapture(src, cv2.CAP_V4L2)
-        
-        # 2. Set MJPG first
-        self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-        self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self.stream.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        
-        # 3. Key: set buffer size to 1
-        self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        
-        # Check if opened
-        if not self.stream.isOpened():
-            print("❌ Unable to open camera, trying ID 1...")
-            self.stream.release()
-            self.stream = cv2.VideoCapture(1, cv2.CAP_V4L2)
-            self.stream.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-            self.stream.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-            self.stream.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-            self.stream.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-
-        if not self.stream.isOpened():
-            print("❌ FATAL: Unable to open any camera.")
-            sys.exit()
-
-        print(f"✅ Camera started: {self.stream.get(3)}x{self.stream.get(4)}")
-
-        self.grabbed, self.frame = self.stream.read()
-        self.started = False
-        self.read_lock = threading.Lock()
-
-    def start(self):
-        if self.started:
-            return None
-        self.started = True
-        self.thread = threading.Thread(target=self.update, args=())
-        self.thread.daemon = True  # Daemon thread will end when main program exits
-        self.thread.start()
-        return self
-
-    def update(self):
-        while self.started:
-            try:
-                # Even if a bad frame is read, it will not crash the main program
-                grabbed, frame = self.stream.read()
-                
-                # Only update if the frame is valid
-                if grabbed and frame is not None:
-                    with self.read_lock:
-                        self.grabbed = grabbed
-                        self.frame = frame
-                else:
-                    # If unable to read, wait a bit to avoid busy loop high CPU usage
-                    time.sleep(0.01)
-            except Exception:
-                # Ignore decoding errors and keep thread running
-                pass
-
-    def read(self):
-        with self.read_lock:
-            # Return a copy of the latest frame to prevent modification during processing
-            return self.grabbed, self.frame.copy() if self.frame is not None else None
-
-    def stop(self):
-        self.started = False
-        if self.thread.is_alive():
-            self.thread.join()
-        self.stream.release()
-
-# ================= Main program =================
+from MultiViewHandCapture.camera import CameraStream, rotate_image
+from MultiViewHandCapture.config import CAMERA_INDEX, FULL_WIDTH, HEIGHT, BOARD_SIZE, SQUARE_SIZE, ROTATE_LEFT, ROTATE_RIGHT
 
 # Prepare object points for calibration pattern
 objp = np.zeros((BOARD_SIZE[0] * BOARD_SIZE[1], 3), np.float32)
@@ -88,7 +15,7 @@ objpoints = []
 imgpoints_l = [] 
 imgpoints_r = [] 
 
-print("=== Stereo High-Precision Calibration Program (Low-Latency Version) ===")
+print("=== Stereo High-Precision Calibration Program ===")
 print(f"Checkerboard size: {BOARD_SIZE}, Square size: {SQUARE_SIZE} mm")
 
 # Start multi-threaded camera capture
@@ -99,59 +26,94 @@ time.sleep(1.0)
 
 count = 0
 
+# Pre-calculate display dimensions based on rotation
+single_width = FULL_WIDTH // 2
+test_img = np.zeros((HEIGHT, single_width, 3), dtype=np.uint8)
+
+# Calculate dimensions after rotation
+_, lw, lh = rotate_image(test_img, ROTATE_LEFT)
+_, rw, rh = rotate_image(test_img, ROTATE_RIGHT)
+
+# Calculate total dimensions after merging
+total_width = lw + rw
+total_height = max(lh, rh)
+
+# Calculate scale factor for display
+max_display_width = 800
+scale = min(1.0, max_display_width / total_width)
+display_width = int(total_width * scale)
+display_height = int(total_height * scale)
+
+# Create resizable window
+cv2.namedWindow('Stereo Calibration', cv2.WINDOW_NORMAL)
+cv2.resizeWindow('Stereo Calibration', display_width, display_height)
+
 while True:
-    # 1. Get the latest frame from camera thread (non-blocking, no delay)
+    # Get the latest frame from camera thread
     ret, frame = cam.read()
 
     if not ret or frame is None:
         continue
 
     # Check resolution
-    if frame.shape[1] != 2560:
+    if frame.shape[1] != FULL_WIDTH:
         continue
 
-    img_l = frame[:, :1280]
-    img_r = frame[:, 1280:]
+    # Split and rotate images
+    img_l = frame[:, :single_width]
+    img_r = frame[:, single_width:]
     
-    vis = frame.copy()  # Copy for display
-
-    # 2. Optimization: do not detect corners in every frame
-    # Corner detection is CPU heavy, running it every frame will reduce FPS to ~5 FPS.
-    # We limit detection frequency to only indicate "alignment status".
-    # This way, corner overlays update at ~10-15 FPS, but video runs smoothly at 30 FPS.
+    img_l_rotated, _, _ = rotate_image(img_l, ROTATE_LEFT)
+    img_r_rotated, _, _ = rotate_image(img_r, ROTATE_RIGHT)
     
-    # Convert to grayscale
-    gray_l = cv2.cvtColor(img_l, cv2.COLOR_BGR2GRAY)
-    gray_r = cv2.cvtColor(img_r, cv2.COLOR_BGR2GRAY)
+    # Ensure consistent height for display
+    h1, w1 = img_l_rotated.shape[:2]
+    h2, w2 = img_r_rotated.shape[:2]
+    max_height = max(h1, h2)
+    
+    if h1 != max_height:
+        img_l_rotated = cv2.resize(img_l_rotated, (int(w1 * max_height / h1), max_height))
+    if h2 != max_height:
+        img_r_rotated = cv2.resize(img_r_rotated, (int(w2 * max_height / h2), max_height))
+    
+    # Create display image
+    vis = np.hstack((img_l_rotated, img_r_rotated))
 
-    # Detect corners
+    # Convert to grayscale for corner detection
+    gray_l = cv2.cvtColor(img_l_rotated, cv2.COLOR_BGR2GRAY)
+    gray_r = cv2.cvtColor(img_r_rotated, cv2.COLOR_BGR2GRAY)
+
+    # Detect corners on rotated images
     ret_l, corners_l = cv2.findChessboardCorners(gray_l, BOARD_SIZE, None)
     ret_r, corners_r = cv2.findChessboardCorners(gray_r, BOARD_SIZE, None)
 
-    # Draw count
-    cv2.putText(vis, f"Count: {count}", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 255), 3)
+    # Draw count and status
+    cv2.putText(vis, f"Count: {count}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 255), 2)
 
     if ret_l and ret_r:
-        # For smoother preview, only draw raw corners - no sub-pixel refinement yet
-        cv2.drawChessboardCorners(vis[:, :1280], BOARD_SIZE, corners_l, ret_l)
-        cv2.drawChessboardCorners(vis[:, 1280:], BOARD_SIZE, corners_r, ret_r)
+        # Draw corners on rotated images
+        vis_left = vis[:, :img_l_rotated.shape[1]]
+        vis_right = vis[:, img_l_rotated.shape[1]:]
         
-        cv2.putText(vis, "READY - Press C", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 255, 0), 3)
+        cv2.drawChessboardCorners(vis_left, BOARD_SIZE, corners_l, ret_l)
+        cv2.drawChessboardCorners(vis_right, BOARD_SIZE, corners_r, ret_r)
+        
+        cv2.putText(vis, "READY - Press C", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
     else:
-        cv2.putText(vis, "Searching...", (50, 200), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
+        cv2.putText(vis, "Searching...", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
 
     # Resize for display
-    vis_small = cv2.resize(vis, (0, 0), fx=0.4, fy=0.4)
-    cv2.imshow('Calibration', vis_small)
+    display_frame = cv2.resize(vis, (display_width, display_height))
+    cv2.imshow('Stereo Calibration', display_frame)
 
     key = cv2.waitKey(1)
     if key & 0xFF == ord('c'):
-        # Only run time-consuming sub-pixel optimization when capture key is pressed
+        # Capture calibration image when both checkerboards are detected
         if ret_l and ret_r:
             print("Optimizing corners and saving...")
             criteria_subpix = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001)
             
-            # Run sub-pixel optimization
+            # Run sub-pixel optimization on rotated images
             corners_l_opt = cv2.cornerSubPix(gray_l, corners_l, (11, 11), (-1, -1), criteria_subpix)
             corners_r_opt = cv2.cornerSubPix(gray_r, corners_r, (11, 11), (-1, -1), criteria_subpix)
             
@@ -159,13 +121,13 @@ while True:
             imgpoints_l.append(corners_l_opt)
             imgpoints_r.append(corners_r_opt)
             count += 1
-            print(f"✅ Captured image {count}")
+            print(f"Captured image {count}")
             
-            # Flash the screen briefly to indicate success
-            cv2.imshow('Calibration', np.zeros_like(vis_small))
+            # Flash screen briefly to indicate success
+            cv2.imshow('Stereo Calibration', np.zeros_like(display_frame))
             cv2.waitKey(50)
         else:
-            print("⚠️ No complete chessboard detected, capture failed.")
+            print("No complete chessboard detected, capture failed.")
             
     elif key & 0xFF == ord('q'):
         break
@@ -180,12 +142,17 @@ if count < 10:
 
 # ================= Calibration computation =================
 print("\n=== Computing Parameters ===")
+
+# Use rotated image dimensions for calibration
+rotated_width = lw
+rotated_height = lh
+
 print("1. Calibrating left camera...")
-ret_l, K_l, D_l, _, _ = cv2.calibrateCamera(objpoints, imgpoints_l, (1280, 720), None, None)
+ret_l, K_l, D_l, _, _ = cv2.calibrateCamera(objpoints, imgpoints_l, (rotated_width, rotated_height), None, None)
 print(f"   RMS error: {ret_l:.4f}")
 
 print("2. Calibrating right camera...")
-ret_r, K_r, D_r, _, _ = cv2.calibrateCamera(objpoints, imgpoints_r, (1280, 720), None, None)
+ret_r, K_r, D_r, _, _ = cv2.calibrateCamera(objpoints, imgpoints_r, (rotated_width, rotated_height), None, None)
 print(f"   RMS error: {ret_r:.4f}")
 
 print("3. Stereo calibration...")
@@ -195,7 +162,7 @@ criteria_stereo = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 100, 1e-5
 ret_s, K1, D1, K2, D2, R, T, E, F = cv2.stereoCalibrate(
     objpoints, imgpoints_l, imgpoints_r,
     K_l, D_l, K_r, D_r,
-    (1280, 720),
+    (rotated_width, rotated_height),
     criteria=criteria_stereo,
     flags=flags
 )
@@ -214,12 +181,14 @@ stereo_params = {
     "D2": D2.tolist(),
     "R":  R.tolist(),
     "T":  T.tolist(),
-    "rms": ret_s
+    "rms": ret_s,
+    "rotated_width": rotated_width,
+    "rotated_height": rotated_height
 }
 
 json_path = "stereo_params.json"
 with open(json_path, "w") as f:
     json.dump(stereo_params, f, indent=4)
 
-print(f"\n✅ Calibration parameters saved to: {json_path}")
-print("Camera.py will automatically load this file.")
+print(f"\nCalibration parameters saved to: {json_path}")
+print("Camera will automatically load this file.")
