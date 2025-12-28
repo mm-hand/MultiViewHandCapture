@@ -13,7 +13,7 @@ It includes:
 - Camera calibration tools for high-precision stereo setup
 - Robust stereo camera testing
 - Real-time 3D reconstruction of hand pose using MediaPipe Hands and OpenCV
-- Finger bone length / angle limit calibration to produce more stable and realistic hand models
+- Finger bone length calibration to produce more stable and realistic hand models
 
 This project is designed for low-latency tracking, with threaded camera capture and optimized visualizations using Matplotlib.
 
@@ -42,7 +42,7 @@ Performs:
 - Stereo calibration to find rotation R, translation T between cameras
 - Saves parameters (K1, K2, D1, D2, R, T) to stereo_params.json.
 
-### 2. Camera Testing (test_camera.py)
+### 2. Camera Class and Testing (camera.py)
 - Opens the stereo camera feed in MJPG format for smoother performance.
 - Displays left/right combined feed at reduced resolution for responsiveness.
 - Prints FPS and handles dropped frames gracefully.
@@ -62,13 +62,16 @@ Hand Detection:
 - Undistorts 2D landmark positions in both images
 Triangulates points in 3D using OpenCV’s cv2.triangulatePoints
 
-Finger Length / Joint Angle Calibration:
+Finger Length Calibration:
 - First 100 frames: measure average length of each finger bone
-- Afterwards: correct detected geometry to match calibrated lengths & joint angle constraints
+- Afterwards: correct detected geometry to match calibrated lengths constraints
+
+Normalization:
+- Computes hand pose relative to palm
 
 Visualization:
 - Displays left/right camera views with hand overlays
-Shows reconstructed 3D hand (front & side views) with Matplotlib
+Shows reconstructed 3D hand (front & side views, absolute & relative) with Matplotlib
 - Status text indicates “Calibration (x/y images needed)” or “Gesture Tracking”
 
 ## 🚀 Usage
@@ -77,7 +80,7 @@ Shows reconstructed 3D hand (front & side views) with Matplotlib
 ```
 git clone https://github.com/StarCycle/MultiViewHandCapture
 cd MultiViewHandCapture
-pip install opencv-python numpy matplotlib mediapipe
+pip install -e .
 ```
 2. Edit `config.py` to set the following parameters:
 ```

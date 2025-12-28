@@ -59,6 +59,68 @@ class OneEuroFilter:
         self.dx_prev = None
         self.is_init = False
 
+def compute_relative_coordinates(pts3d_absolute):
+    """Compute relative hand coordinates normalized to palm coordinate system"""
+    if pts3d_absolute is None or len(pts3d_absolute) != 21:
+        return None
+    
+    # 1. Translate to wrist-centered coordinates
+    wrist_pos = pts3d_absolute[0].copy()
+    pts_centered = pts3d_absolute - wrist_pos
+    
+    # 2. Calculate palm size for normalization
+    # Use average distance from wrist to all four finger bases
+    finger_base_indices = [5, 9, 13, 17]  # Index, middle, ring, pinky finger bases
+    palm_size = 0.0
+    for idx in finger_base_indices:
+        palm_size += np.linalg.norm(pts_centered[idx])
+    palm_size /= len(finger_base_indices)
+    
+    if palm_size < 1e-6:
+        return None
+    
+    # 3. Length normalization
+    pts_normalized = pts_centered / palm_size
+    
+    # 4. Improved rotation normalization - align with palm coordinate system
+    
+    # 4.1 Z-axis: from wrist to average of four finger bases
+    finger_bases = pts_normalized[finger_base_indices]
+    finger_center = np.mean(finger_bases, axis=0)
+    z_axis = finger_center - pts_normalized[0]  # Wrist to finger center
+    z_axis = z_axis / np.linalg.norm(z_axis)
+    
+    # 4.2 Y-axis: average of two orthogonal vectors in the hand plane
+    # Vector 1: from index finger base to ring finger base
+    vec_y1 = pts_normalized[13] - pts_normalized[5]  # Ring to index
+    vec_y1 = vec_y1 / np.linalg.norm(vec_y1)
+    
+    # Vector 2: from middle finger base to pinky finger base
+    vec_y2 = pts_normalized[17] - pts_normalized[9]  # Pinky to middle
+    vec_y2 = vec_y2 / np.linalg.norm(vec_y2)
+    
+    # Average of the two vectors
+    y_axis_avg = (vec_y1 + vec_y2) / 2.0
+    y_axis_avg = y_axis_avg / np.linalg.norm(y_axis_avg)
+    
+    # 4.3 X-axis: cross product of average Y-axis and Z-axis
+    x_axis = np.cross(y_axis_avg, z_axis)
+    x_axis = x_axis / np.linalg.norm(x_axis)
+    
+    # 4.4 Recompute Y-axis to ensure orthogonality
+    y_axis = np.cross(z_axis, x_axis)
+    y_axis = y_axis / np.linalg.norm(y_axis)
+    
+    # 5. Construct rotation matrix
+    # Rotation matrix from palm coordinate system to world coordinate system
+    rotation_matrix = np.column_stack((x_axis, y_axis, z_axis))
+    
+    # 6. Apply inverse rotation to align with palm coordinate system
+    # This transforms points from world coordinates to palm coordinates
+    pts_rotated = pts_normalized @ rotation_matrix
+    
+    return pts_rotated
+
 # Hand Processor with MediaPipe
 class HandProcessor:
     def __init__(self):
@@ -185,7 +247,8 @@ class StereoHandTracker:
         
         output = {
             "found": False,
-            "joints": None,
+            "keypoint_absolute": None,
+            "keypoint_relative": None, 
             "image_left": None,
             "image_right": None,
             "px_left": None,
@@ -243,12 +306,13 @@ class StereoHandTracker:
                                            ud_r.reshape(-1, 2).T)
             
             # Convert to 3D
-            pts3d = (pts_4d[:3] / pts_4d[3]).T
+            pts3d_absolute = (pts_4d[:3] / pts_4d[3]).T
+            pts3d_relative = compute_relative_coordinates(pts3d_absolute)
 
             # Apply calibration or tracking constraints
             if not self.calibration_done:
                 output["phase"] = f"CALIBRATION ({self.calib_counts}/{self.calib_frames_total})"
-                calibrate_lengths(self.bone_accum, pts3d)
+                calibrate_lengths(self.bone_accum, pts3d_absolute)                
                 self.calib_counts += 1
                 
                 if self.calib_counts >= self.calib_frames_total:
@@ -257,10 +321,12 @@ class StereoHandTracker:
                     print("Calibration finished. Switching to Tracking Mode.")
             else:
                 output["phase"] = "GESTURE TRACKING"
-                pts3d = apply_chain_correction(pts3d, self.bone_lengths_final)
+                pts3d_absolute = apply_chain_correction(pts3d_absolute, self.bone_lengths_final)
+                pts3d_relative = compute_relative_coordinates(pts3d_absolute)
 
             output["found"] = True
-            output["joints"] = pts3d
+            output["keypoint_absolute"] = pts3d_absolute
+            output["keypoint_relative"] = pts3d_relative
             
         return output
 
@@ -270,65 +336,115 @@ class StereoHandTracker:
 
 # Visualization class for real-time display
 class HandVisualizerAllInOne:
-    """Displays stereo camera feeds and 3D hand reconstruction"""
+    """Displays stereo camera feeds and 3D hand reconstruction for both absolute and relative coordinates"""
     def __init__(self):
         plt.ion()
-        self.fig = plt.figure(figsize=(16, 12))
+        self.fig = plt.figure(figsize=(20, 12))  # Increased width for additional plots
         self.conn = list(mp.solutions.hands.HAND_CONNECTIONS)
         
         # Fixed display dimensions
         self.display_width = 640
         self.display_height = 360
 
-        # Create subplot layout
-        gs = gridspec.GridSpec(2, 2, height_ratios=[1, 3], hspace=0.1, wspace=0.1)
+        # Create subplot layout: 2 rows, 3 columns
+        gs = gridspec.GridSpec(2, 3, height_ratios=[1, 3], hspace=0.1, wspace=0.15)
 
-        # Camera views
+        # Camera views - first row, first two columns
         self.ax_l = self.fig.add_subplot(gs[0, 0])
         self.ax_l.axis('off')
+        self.ax_l.set_title('Left Camera')
         self.im_l_disp = self.ax_l.imshow(np.zeros((self.display_height, self.display_width, 3), dtype=np.uint8))
         
         self.ax_r = self.fig.add_subplot(gs[0, 1])
         self.ax_r.axis('off')
+        self.ax_r.set_title('Right Camera')
         self.im_r_disp = self.ax_r.imshow(np.zeros((self.display_height, self.display_width, 3), dtype=np.uint8))
 
-        # 3D views
-        self.ax3d_front = self.fig.add_subplot(gs[1, 0], projection='3d')
-        self.ax3d_front.view_init(-90, -90)
-        self._init_3d_axis(self.ax3d_front)
+        # Placeholder for the third column in first row (empty)
+        self.ax_placeholder = self.fig.add_subplot(gs[0, 2])
+        self.ax_placeholder.axis('off')
+        self.ax_placeholder.set_title('Coordinate Systems')
+        # Add text explanation
+        self.ax_placeholder.text(0.5, 0.7, 'Absolute: World coordinates\nRelative: Palm-centered', 
+                                 ha='center', va='center', transform=self.ax_placeholder.transAxes, fontsize=12)
+        self.ax_placeholder.text(0.5, 0.3, 'Red: Absolute\nGreen: Relative', 
+                                 ha='center', va='center', transform=self.ax_placeholder.transAxes, fontsize=12)
 
-        self.ax3d_side = self.fig.add_subplot(gs[1, 1], projection='3d')
-        self.ax3d_side.view_init(0, 0)
-        self._init_3d_axis(self.ax3d_side)
+        # 3D views - second row, three columns
+        # Absolute coordinates - front view
+        self.ax3d_abs_front = self.fig.add_subplot(gs[1, 0], projection='3d')
+        self.ax3d_abs_front.view_init(-90, -90)
+        self.ax3d_abs_front.set_title('Absolute Coords - Front View')
+        self._init_3d_axis(self.ax3d_abs_front)
 
-        # Initialize visualization elements
+        # Absolute coordinates - side view  
+        self.ax3d_abs_side = self.fig.add_subplot(gs[1, 1], projection='3d')
+        self.ax3d_abs_side.view_init(0, 0)
+        self.ax3d_abs_side.set_title('Absolute Coords - Side View')
+        self._init_3d_axis(self.ax3d_abs_side)
+
+        # Relative coordinates - front view
+        self.ax3d_rel_front = self.fig.add_subplot(gs[1, 2], projection='3d')
+        self.ax3d_rel_front.view_init(0, 45)
+        self.ax3d_rel_front.set_title('Relative Coords - Front View')
+        self._init_relative_3d_axis(self.ax3d_rel_front)
+
+        # Initialize visualization elements for both absolute and relative coordinates
+        self._init_visualization_elements()
+
+        self.fig.tight_layout()
+
+    def _init_3d_axis(self, ax):
+        """Initialize 3D axis limits for absolute coordinates (world scale)"""
+        ax.set_xlim(-150, 150)
+        ax.set_ylim(-150, 150)
+        ax.set_zlim(100, 400)
+        # Set labels
+        ax.set_xlabel('X (mm)')
+        ax.set_ylabel('Y (mm)')
+        ax.set_zlabel('Z (mm)')
+
+    def _init_relative_3d_axis(self, ax):
+        """Initialize 3D axis limits for relative coordinates (normalized scale)"""
+        ax.set_xlim(-1.5, 1.5)
+        ax.set_ylim(-1.5, 1.5)
+        ax.set_zlim(-1.5, 1.5)
+        # Set labels
+        ax.set_xlabel('X (normalized)')
+        ax.set_ylabel('Y (normalized)')
+        ax.set_zlabel('Z (normalized)')
+
+    def _init_visualization_elements(self):
+        """Initialize visualization elements for both coordinate systems"""
+        # 2D landmarks for camera views
         self.lines_2d_l = [self.ax_l.plot([], [], 'g-', linewidth=2)[0] for _ in self.conn]
         self.points_2d_l = self.ax_l.plot([], [], 'ro', markersize=4)[0]
         self.lines_2d_r = [self.ax_r.plot([], [], 'g-', linewidth=2)[0] for _ in self.conn]
         self.points_2d_r = self.ax_r.plot([], [], 'ro', markersize=4)[0]
 
-        self.scats_3d = []
-        self.lines_3d_collections = []
-        for ax in [self.ax3d_front, self.ax3d_side]:
-            scat = ax.scatter([], [], [], c='r', s=40)
+        # 3D visualization for absolute coordinates (two views)
+        self.scats_abs = []
+        self.lines_abs = []
+        for ax in [self.ax3d_abs_front, self.ax3d_abs_side]:
+            scat = ax.scatter([], [], [], c='r', s=40, label='keypoint')
             lines = [ax.plot([], [], [], 'b-', linewidth=2)[0] for _ in self.conn]
-            self.scats_3d.append(scat)
-            self.lines_3d_collections.append(lines)
+            self.scats_abs.append(scat)
+            self.lines_abs.append(lines)
+            # Add legend
+            ax.legend()
 
-        self.fig.tight_layout()
-
-    def _init_3d_axis(self, ax):
-        """Initialize 3D axis limits"""
-        ax.set_xlim(-150, 150)
-        ax.set_ylim(-150, 150)
-        ax.set_zlim(100, 400)
+        # 3D visualization for relative coordinates (one view)
+        self.scat_rel = self.ax3d_rel_front.scatter([], [], [], c='g', s=40, label='keypoint')
+        self.lines_rel = [self.ax3d_rel_front.plot([], [], [], 'y-', linewidth=2)[0] for _ in self.conn]
+        # Add legend
+        self.ax3d_rel_front.legend()
 
     def set_status(self, text):
         """Update window title with tracking status"""
         self.fig.suptitle(f"Stereo Hand Tracking - {text}", fontsize=14)
 
-    def update(self, img_l, img_r, pts_l, pts_r, pts3d, rotated_width, rotated_height):
-        """Update all visualization elements"""
+    def update(self, img_l, img_r, pts_l, pts_r, pts3d_absolute, pts3d_relative, rotated_width, rotated_height):
+        """Update all visualization elements including both coordinate systems"""
         try:
             # Scale images to fit display while preserving aspect ratio
             h_l, w_l = img_l.shape[:2]
@@ -369,14 +485,22 @@ class HandVisualizerAllInOne:
             self._update2d(self.lines_2d_l, self.points_2d_l, pts_l, scale_factors_l, (w_l, h_l))
             self._update2d(self.lines_2d_r, self.points_2d_r, pts_r, scale_factors_r, (w_r, h_r))
             
-            # Update 3D visualization
-            if pts3d is not None:
-                for i in range(2):
-                    self.scats_3d[i]._offsets3d = (pts3d[:, 0], pts3d[:, 1], pts3d[:, 2])
-                    for line, (s, e) in zip(self.lines_3d_collections[i], self.conn):
-                        line.set_data([pts3d[s, 0], pts3d[e, 0]],
-                                      [pts3d[s, 1], pts3d[e, 1]])
-                        line.set_3d_properties([pts3d[s, 2], pts3d[e, 2]])
+            # Update 3D visualization for absolute coordinates
+            if pts3d_absolute is not None:
+                for i in range(2):  # For both front and side views
+                    self.scats_abs[i]._offsets3d = (pts3d_absolute[:, 0], pts3d_absolute[:, 1], pts3d_absolute[:, 2])
+                    for line, (s, e) in zip(self.lines_abs[i], self.conn):
+                        line.set_data([pts3d_absolute[s, 0], pts3d_absolute[e, 0]],
+                                      [pts3d_absolute[s, 1], pts3d_absolute[e, 1]])
+                        line.set_3d_properties([pts3d_absolute[s, 2], pts3d_absolute[e, 2]])
+
+            # Update 3D visualization for relative coordinates
+            if pts3d_relative is not None:
+                self.scat_rel._offsets3d = (pts3d_relative[:, 0], pts3d_relative[:, 1], pts3d_relative[:, 2])
+                for line, (s, e) in zip(self.lines_rel, self.conn):
+                    line.set_data([pts3d_relative[s, 0], pts3d_relative[e, 0]],
+                                  [pts3d_relative[s, 1], pts3d_relative[e, 1]])
+                    line.set_3d_properties([pts3d_relative[s, 2], pts3d_relative[e, 2]])
             
             plt.pause(0.001)
         except Exception as e:
@@ -401,7 +525,6 @@ class HandVisualizerAllInOne:
             points.set_data([], [])
             for line in lines:
                 line.set_data([], [])
-
 
 # Main application loop
 def main():
@@ -433,7 +556,8 @@ def main():
                 data["image_right"], 
                 data["px_left"], 
                 data["px_right"], 
-                data["joints"],
+                data["keypoint_absolute"],
+                data["keypoint_relative"],
                 rotated_width,
                 rotated_height
             )
