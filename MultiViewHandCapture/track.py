@@ -11,7 +11,6 @@ import time
 import json
 
 from MultiViewHandCapture.camera import CameraStream, rotate_image
-from MultiViewHandCapture.joint_constraints import apply_joint_constraints
 from MultiViewHandCapture.config import CAMERA_INDEX, FULL_WIDTH, HEIGHT, CALIBRATION_FRAMES, ROTATE_LEFT, ROTATE_RIGHT
 
 # One Euro Filter for smoothing landmarks
@@ -259,7 +258,6 @@ class StereoHandTracker:
             else:
                 output["phase"] = "GESTURE TRACKING"
                 pts3d = apply_chain_correction(pts3d, self.bone_lengths_final)
-                pts3d = apply_joint_constraints(pts3d)
 
             output["found"] = True
             output["joints"] = pts3d
@@ -427,7 +425,6 @@ def main():
             visualizer.set_status(data["phase"])
 
             # Update visualization with rotated dimensions
-            # 修改: 添加安全检查，确保参数存在
             rotated_width = data.get("rotated_width", data["image_left"].shape[1])
             rotated_height = data.get("rotated_height", data["image_left"].shape[0])
             
