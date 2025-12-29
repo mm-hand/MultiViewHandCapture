@@ -134,10 +134,15 @@ class HandProcessor:
         res = self.mp_hands.process(img)
         if res.multi_hand_landmarks:
             raw = np.array([[lm.x, lm.y] for lm in res.multi_hand_landmarks[0].landmark])
-            return self.filter(raw)
+            handedness = res.multi_handedness[0].classification[0].label
+            if handedness == 'Right':
+                handedness = 'Left'
+            elif handedness == 'Left':
+                handedness = 'Right'
+            return self.filter(raw), handedness
         else:
             self.filter.reset()
-            return None
+            return None, None
 
 # Finger bone structure definitions
 fingers = {
@@ -277,8 +282,8 @@ class StereoHandTracker:
         output["image_right"] = img_r_rgb
 
         # Process with MediaPipe
-        pts_norm_l = self.proc_l.process(img_l_rgb)
-        pts_norm_r = self.proc_r.process(img_r_rgb)
+        pts_norm_l, handedness_l = self.proc_l.process(img_l_rgb)
+        pts_norm_r, handedness_r = self.proc_r.process(img_r_rgb) 
         
         px_l = None
         px_r = None
@@ -309,9 +314,11 @@ class StereoHandTracker:
             pts3d_absolute = (pts_4d[:3] / pts_4d[3]).T
             pts3d_relative = compute_relative_coordinates(pts3d_absolute)
 
+            final_handedness = handedness_l if handedness_l else handedness_r
+
             # Apply calibration or tracking constraints
             if not self.calibration_done:
-                output["phase"] = f"CALIBRATION ({self.calib_counts}/{self.calib_frames_total})"
+                output["phase"] = f"CALIBRATION ({self.calib_counts}/{self.calib_frames_total}) - {final_handedness} Hand"
                 calibrate_lengths(self.bone_accum, pts3d_absolute)                
                 self.calib_counts += 1
                 
@@ -320,11 +327,12 @@ class StereoHandTracker:
                     self.calibration_done = True
                     print("Calibration finished. Switching to Tracking Mode.")
             else:
-                output["phase"] = "GESTURE TRACKING"
+                output["phase"] = f"GESTURE TRACKING - {final_handedness} Hand"
                 pts3d_absolute = apply_chain_correction(pts3d_absolute, self.bone_lengths_final)
                 pts3d_relative = compute_relative_coordinates(pts3d_absolute)
 
             output["found"] = True
+            output["handedness"] = final_handedness
             output["keypoint_absolute"] = pts3d_absolute
             output["keypoint_relative"] = pts3d_relative
             
@@ -391,8 +399,6 @@ class HandVisualizerAllInOne:
 
         # Initialize visualization elements for both absolute and relative coordinates
         self._init_visualization_elements()
-
-        self.fig.tight_layout()
 
     def _init_3d_axis(self, ax):
         """Initialize 3D axis limits for absolute coordinates (world scale)"""
