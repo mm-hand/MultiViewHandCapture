@@ -13,6 +13,8 @@ import json
 from MultiViewHandCapture.camera import CameraStream, rotate_image
 from MultiViewHandCapture.config import CAMERA_INDEX, FULL_WIDTH, HEIGHT, CALIBRATION_FRAMES, ROTATE_LEFT, ROTATE_RIGHT
 
+AVERAGE_PALM_SIZE = 0.085
+
 # One Euro Filter for smoothing landmarks
 class OneEuroFilter:
     """Smooths noisy data while keeping responsiveness."""
@@ -80,7 +82,7 @@ def compute_relative_coordinates(pts3d_absolute):
         return None
     
     # 3. Length normalization
-    pts_normalized = pts_centered / palm_size
+    pts_normalized = pts_centered * AVERAGE_PALM_SIZE / palm_size 
     
     # 4. Improved rotation normalization - align with palm coordinate system
     
@@ -412,13 +414,13 @@ class HandVisualizerAllInOne:
 
     def _init_relative_3d_axis(self, ax):
         """Initialize 3D axis limits for relative coordinates (normalized scale)"""
-        ax.set_xlim(-1.5, 1.5)
-        ax.set_ylim(-1.5, 1.5)
-        ax.set_zlim(-1.5, 1.5)
+        ax.set_xlim(0, 0.2)
+        ax.set_ylim(0, 0.2)
+        ax.set_zlim(0, 0.2)
         # Set labels
-        ax.set_xlabel('X (normalized)')
-        ax.set_ylabel('Y (normalized)')
-        ax.set_zlabel('Z (normalized)')
+        ax.set_xlabel('X (average palm)')
+        ax.set_ylabel('Y (average palm)')
+        ax.set_zlabel('Z (average palm)')
 
     def _init_visualization_elements(self):
         """Initialize visualization elements for both coordinate systems"""
