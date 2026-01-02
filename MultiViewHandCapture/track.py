@@ -13,7 +13,7 @@ import json
 from MultiViewHandCapture.camera import CameraStream, rotate_image
 from MultiViewHandCapture.config import CAMERA_INDEX, FULL_WIDTH, HEIGHT, CALIBRATION_FRAMES, ROTATE_LEFT, ROTATE_RIGHT
 
-AVERAGE_PALM_SIZE = 0.085
+AVERAGE_PALM_SIZE = 0.086
 
 # One Euro Filter for smoothing landmarks
 class OneEuroFilter:
@@ -84,32 +84,22 @@ def compute_relative_coordinates(pts3d_absolute):
     # 3. Length normalization
     pts_normalized = pts_centered * AVERAGE_PALM_SIZE / palm_size 
     
-    # 4. Improved rotation normalization - align with palm coordinate system
+    # 4. Define Coordinate System (Modified)
     
-    # 4.1 Z-axis: from wrist to average of four finger bases
-    finger_bases = pts_normalized[finger_base_indices]
-    finger_center = np.mean(finger_bases, axis=0)
-    z_axis = finger_center - pts_normalized[0]  # Wrist to finger center
+    # 4.1 Z-axis: Wrist to Middle Finger Base (0 -> 9)
+    # Direction: From wrist extending towards the fingers
+    z_axis = pts_normalized[9] - pts_normalized[0]
     z_axis = z_axis / np.linalg.norm(z_axis)
     
-    # 4.2 Y-axis: average of two orthogonal vectors in the hand plane
-    # Vector 1: from index finger base to ring finger base
-    vec_y1 = pts_normalized[13] - pts_normalized[5]  # Ring to index
-    vec_y1 = vec_y1 / np.linalg.norm(vec_y1)
-    
-    # Vector 2: from middle finger base to pinky finger base
-    vec_y2 = pts_normalized[17] - pts_normalized[9]  # Pinky to middle
-    vec_y2 = vec_y2 / np.linalg.norm(vec_y2)
-    
-    # Average of the two vectors
-    y_axis_avg = (vec_y1 + vec_y2) / 2.0
-    y_axis_avg = y_axis_avg / np.linalg.norm(y_axis_avg)
-    
-    # 4.3 X-axis: cross product of average Y-axis and Z-axis
-    x_axis = np.cross(y_axis_avg, z_axis)
+    # 4.2 Calculate X-axis: Normal to palm plane
+    # Use vector from Pinky Base (17) to Index Base (5) as approximate Y direction (Fingers -> Thumb)
+    # Cross product of (Approx_Y) and (Z) gives X (Normal perpendicular to palm)
+    vec_fingers_to_thumb = pts_normalized[5] - pts_normalized[17]
+    x_axis = np.cross(vec_fingers_to_thumb, z_axis)
     x_axis = x_axis / np.linalg.norm(x_axis)
     
-    # 4.4 Recompute Y-axis to ensure orthogonality
+    # 4.3 Y-axis: Orthogonal vector (Direction: Fingers to Thumb)
+    # Recompute Y to ensure it is perpendicular to both Z and X
     y_axis = np.cross(z_axis, x_axis)
     y_axis = y_axis / np.linalg.norm(y_axis)
     
