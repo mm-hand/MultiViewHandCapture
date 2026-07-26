@@ -1,117 +1,43 @@
 # MultiView Hand Capture
-Stereo Camera Hand Tracking & Calibration with MediaPipe + OpenCV
 
-https://github.com/user-attachments/assets/9b7e31db-df5e-4ed3-96cb-e328d1466306
+一个扁平、可直接运行的双目 3D 手部跟踪脚本。
 
-(The hand tracking has intial delay because I open OBS to record this video. The delay becomes trivial later.)
+处理顺序：MediaPipe 21 点检测 → 双目三角化与异常值拦截 → 3D 点 One Euro
+滤波 → ±20% 骨长约束 → MCP/PIP/DIP 屈伸角非负约束 → 角度 One Euro
+滤波 → 最小旋转修正 21 个 3D 点。连续坏帧会保留最后结果 3 帧，之后隐藏并
+重置滤波器。
 
-## 📖 Introduction
+## 使用
 
-MultiViewHandCapture is a Python project for real-time stereoscopic hand tracking using two synchronized camera streams (left and right eye images from a stereo camera).
-It includes:
-
-- Camera calibration tools for high-precision stereo setup
-- Robust stereo camera testing
-- Real-time 3D reconstruction of hand pose using MediaPipe Hands and OpenCV
-- Finger bone length calibration to produce more stable and realistic hand models
-
-This project is designed for low-latency tracking, with threaded camera capture and optimized visualizations using Matplotlib.
-
-## Hardware
-
-You only need a stereo camera like [this](https://item.taobao.com/item.htm?abbucket=10&id=743230798887&mi_id=0000bwamz5ZMYErS1WTgKf9IdOl1ESCRqd82DVDK83dPOOA&ns=1&priceTId=2150408117645701455644197e1de5&skuId=5298428819307&spm=a21n57.1.hoverItem.13&utparam=%7B%22aplus_abtest%22%3A%2244a2c4e89250625a3c3a3487ebe963e3%22%7D&xxc=taobaoSearch) and a 3D-printed support.
-
-<div align="center">
-  <img src="./images/hardware.jpg" alt="Cheap Stereo camera under $70" width="50%" />
-</div>
-
-
-<div align="center">
-  <img src="./images/hardware1.jpg" alt="The whole hareware" width="20%" />
-</div>
-
-## ⚙️ How It Works
-
-### 1. Stereo Camera Calibration (calibrate.py)
-
-- Uses a known checkerboard pattern (default: 9×6 squares, each 23.5 mm) viewed by both lenses.
-- Detects corresponding points in both images.
-
-Performs:
-- Intrinsic calibration for each camera
-- Stereo calibration to find rotation R, translation T between cameras
-- Saves parameters (K1, K2, D1, D2, R, T) to stereo_params.json.
-
-### 2. Camera Class and Testing (camera.py)
-- Opens the stereo camera feed in MJPG format for smoother performance.
-- Displays left/right combined feed at reduced resolution for responsiveness.
-- Prints FPS and handles dropped frames gracefully.
-
-### 3. Configuration (config.py)
-Central place for editable parameters.
-
-### 4. Stereo Hand Tracking (track.py)
-Initialization:
-- Loads stereo parameters from stereo_params.json
-Starts threaded stereo camera feed
-
-Hand Detection:
-- Runs MediaPipe Hands separately on left & right images
-- Applies One Euro Filter to smooth landmarks while keeping motion responsiveness
-3D Reconstruction:
-- Undistorts 2D landmark positions in both images
-Triangulates points in 3D using OpenCV’s cv2.triangulatePoints
-
-Finger Length Calibration:
-- First 100 frames: measure average length of each finger bone
-- Afterwards: correct detected geometry to match calibrated lengths constraints
-
-Normalization:
-- Computes hand pose relative to palm
-
-Visualization:
-- Displays left/right camera views with hand overlays
-Shows reconstructed 3D hand (front & side views, absolute & relative) with Matplotlib
-- Status text indicates “Calibration (x/y images needed)” or “Gesture Tracking”
-
-## 🚀 Usage
-
-1. Install dependencies
-```
-git clone https://github.com/StarCycle/MultiViewHandCapture
-cd MultiViewHandCapture
-pip install -e .
-```
-2. Edit `config.py` to set the following parameters:
-```
-CAMERA_INDEX = 0              # Default camera device index
-SINGLE_WIDTH  = 1280          # Width of one camera image
-HEIGHT        = 720           # Height of one camera image
-FULL_WIDTH    = SINGLE_WIDTH * 2  # Stereo image total width (e.g. 2560 for 1280x720 * 2)
-
-# Calibration settings
-BOARD_SIZE    = (9, 6)        # Checkerboard pattern size
-SQUARE_SIZE   = 23.5          # Checkerboard square size in mm
-
-# Calibration parameters
-CALIBRATION_FRAMES = 100      # Number of frames for bone length calibration
-```
-3. Calibrate your stereo camera
-First print this [checkerboard](./images/pattern.png) for calibration.
-```
-python calibrate.py
-```
-Note: Press C when both camera views show the complete checkerboard to capture. Minimum 10 images required.
-
-4. Run Hand Tracking
-```
+```bash
+python -m pip install -r requirements.txt
+python calibrate.py   # 已有 stereo_params.json 时无需重复标定
 python track.py
 ```
-**Stage 1**: Calibration mode for first 100 frames (“Calibration (x/100 images needed)” shown in title).
 
-**Stage 2**: Gesture tracking with corrected finger bone lengths.
+相机编号、左右画面旋转、棋盘格尺寸和滤波参数都在 `config.py`。标定时使用
+`pattern.png`，让棋盘格同时完整出现在两个画面中；按 `C` 采样，至少 10 对后
+按 `Q` 计算并保存。
 
-## Limitations
+`StereoProcessor.process_frame(frame)` 的主要输出为：
 
-- Your palm must be within the field of view of both cameras, and the palm should face the two cameras as squarely as possible to get better performance of mediapipe.
-- The hand model is not optimized for low-latency tracking because of limited camera FPS and filtering needed for Meriapipe. It does not work well for very fast gestures. 
+```python
+{
+    "found": True,
+    "stale": False,
+    "handedness": "Left",             # 按未镜像的左相机视角
+    "keypoint_absolute": ...,          # (21, 3)，毫米
+    "keypoint_relative": ...,          # (21, 3)，掌心坐标，米
+    "phase": "GESTURE TRACKING - Left Hand",
+    "quality": {
+        "reprojection_error": 0.8,
+        "rejected_reason": None,       # detection/reprojection/depth/hand-size...
+    },
+}
+```
+
+本地回归录像放在 `test_data/`，不会提交到 Git。运行全部测试：
+
+```bash
+python -m unittest -v test_hand_capture.py
+```
