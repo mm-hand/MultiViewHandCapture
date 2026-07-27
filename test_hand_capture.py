@@ -14,9 +14,12 @@ from hand_core import (
     enforce_lengths,
     extract_angles,
     geometry_error,
+    relative_points,
+    split_stereo,
     swap_handedness,
 )
 from config import BONE_TOLERANCE
+from retarget import Retargeter, RobotModel
 
 
 def straight_hand(handedness):
@@ -114,6 +117,48 @@ class CoreTests(unittest.TestCase):
         self.assertIsNone(processor.last)
 
 
+class RetargetTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.model = RobotModel()
+
+    def test_contract_limits_and_fk(self):
+        self.assertEqual(self.model.topic, "/raw_ik_target")
+        self.assertEqual(
+            self.model.layout,
+            "mmhand:J00-J20:urdf_deg:structure_urdf_v2:v3:73FD45FA",
+        )
+        self.assertEqual(len(self.model.names), 21)
+        self.assertTrue(np.all(self.model.lower >= 0))
+        links, origins = self.model.fk(np.zeros(21))
+        self.assertIn("base_link", links)
+        self.assertEqual(len(origins), 26)
+        for points in self.model.neutral.values():
+            self.assertTrue(np.isfinite(points).all())
+
+    def test_global_finite_difference_ik(self):
+        human = relative_points(
+            apply_angles(
+                straight_hand("Left"),
+                "Left",
+                np.array((20, 30, 25, 20, 40, 30, 20, 50, 30, 15, 40, 25, 10, 30)),
+            )
+        )
+        retargeter = Retargeter(self.model)
+        target = retargeter.targets(human)
+        residual = retargeter.residual(retargeter.raw_q, target)
+        jacobian = retargeter.jacobian(retargeter.raw_q, target, residual)
+        self.assertEqual(jacobian.shape, (len(residual), 21))
+        self.assertTrue(np.isfinite(jacobian).all())
+        initial = np.sqrt(np.mean(residual**2))
+        for frame in range(5):
+            result = retargeter.solve(human, frame / 30)
+        self.assertTrue(result["success"])
+        self.assertLess(result["rms"], initial)
+        self.assertTrue(np.all(result["q"] >= self.model.lower - 1e-10))
+        self.assertTrue(np.all(result["q"] <= self.model.upper + 1e-10))
+
+
 class VideoRegressionTests(unittest.TestCase):
     def test_recordings(self):
         folder = Path(__file__).parent / "test_data"
@@ -132,7 +177,7 @@ class VideoRegressionTests(unittest.TestCase):
                         ok, frame = capture.read()
                         if not ok:
                             break
-                        result = processor.process_frame(frame, frame_number / fps)
+                        result = processor.process(*split_stereo(frame), frame_number / fps)
                         frame_number += 1
                         if not result["found"] or result["stale"]:
                             continue
@@ -176,7 +221,7 @@ class VideoRegressionTests(unittest.TestCase):
                         ok, frame = capture.read()
                         if not ok:
                             break
-                        result = processor.process_frame(frame, frame_number / fps)
+                        result = processor.process(*split_stereo(frame), frame_number / fps)
                         frame_number += 1
                         if (
                             not result["found"]

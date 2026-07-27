@@ -7,13 +7,10 @@ import numpy as np
 from config import (
     BOARD_SIZE,
     CAMERA_INDEX,
-    FULL_WIDTH,
     PARAMS_PATH,
-    ROTATE_LEFT,
-    ROTATE_RIGHT,
     SQUARE_SIZE,
 )
-from hand_core import Camera, rotate_image
+from hand_core import Camera
 
 
 def collect():
@@ -26,12 +23,9 @@ def collect():
     time.sleep(1)
     try:
         while True:
-            ok, frame = camera.read()
-            if not ok or frame.shape[1] != FULL_WIDTH:
+            ok, left, right, _ = camera.read()
+            if not ok:
                 continue
-            middle = FULL_WIDTH // 2
-            left = rotate_image(frame[:, :middle], ROTATE_LEFT)
-            right = rotate_image(frame[:, middle:], ROTATE_RIGHT)
             gray = [cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) for image in (left, right)]
             found = [cv2.findChessboardCorners(image, BOARD_SIZE) for image in gray]
             views = []

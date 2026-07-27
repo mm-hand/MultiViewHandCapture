@@ -1,0 +1,20 @@
+name: mmhand
+channels:
+  - conda-forge
+  - robostack-jazzy
+  - nodefaults
+dependencies:
+  - python=3.12
+  - numpy=1.26
+  - ros-jazzy-ros-base
+  - ros-jazzy-std-msgs
+  - ros-jazzy-rmw-cyclonedds-cpp
+  - viser=1.0.30
+  - yourdfpy=0.0.60
+  - opencv=5.0
+  - scipy=1.14
+  - pip
+variables:
+  PYTHONNOUSERSITE: "1"
+  MPLCONFIGDIR: /tmp/mvhc-matplotlib
+  RMW_IMPLEMENTATION: rmw_cyclonedds_cpp

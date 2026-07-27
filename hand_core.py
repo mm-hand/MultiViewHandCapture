@@ -22,11 +22,11 @@ from config import (
     POINT_FILTER,
     ROTATE_LEFT,
     ROTATE_RIGHT,
+    STANDARD_PALM_SIZE,
     STALE_FRAMES,
 )
 
 EPS = 1e-8
-AVERAGE_PALM_SIZE = 0.086
 FINGER_CHAINS = (
     (0, 1, 2, 3, 4),
     (0, 5, 6, 7, 8),
@@ -53,6 +53,13 @@ def rotate_image(image, angle):
     return cv2.warpAffine(image, matrix, size)
 
 
+def split_stereo(frame):
+    if frame is None or frame.shape[1] != FULL_WIDTH:
+        return None, None
+    middle = FULL_WIDTH // 2
+    return rotate_image(frame[:, :middle], ROTATE_LEFT), rotate_image(frame[:, middle:], ROTATE_RIGHT)
+
+
 class Camera:
     def __init__(self, index, width=FULL_WIDTH, height=HEIGHT):
         backend = cv2.CAP_V4L2 if os.name == "posix" else cv2.CAP_ANY
@@ -64,6 +71,7 @@ class Camera:
         if not self.capture.isOpened():
             raise RuntimeError(f"Unable to open camera {index}")
         self.ok, self.frame = self.capture.read()
+        self.timestamp = time.monotonic()
         self.lock, self.running = threading.Lock(), True
         self.thread = threading.Thread(target=self._read, daemon=True)
         self.thread.start()
@@ -73,13 +81,16 @@ class Camera:
             ok, frame = self.capture.read()
             if ok and frame is not None:
                 with self.lock:
-                    self.ok, self.frame = ok, frame
+                    self.ok, self.frame, self.timestamp = ok, frame, time.monotonic()
             else:
                 time.sleep(0.005)
 
     def read(self):
         with self.lock:
-            return (self.ok, self.frame.copy()) if self.ok and self.frame is not None else (False, None)
+            if not self.ok or self.frame is None:
+                return False, None, None, None
+            left, right = split_stereo(self.frame.copy())
+            return left is not None, left, right, self.timestamp
 
     def close(self):
         self.running = False
@@ -214,7 +225,7 @@ def relative_points(points):
     palm_size = np.mean([np.linalg.norm(centered[index]) for index in (5, 9, 13, 17)])
     if palm_size < EPS:
         return None
-    points = centered * AVERAGE_PALM_SIZE / palm_size
+    points = centered * STANDARD_PALM_SIZE / palm_size
     z_axis = _unit(points[9])
     x_axis = _unit(np.cross(points[5] - points[17], z_axis))
     y_axis = _unit(np.cross(z_axis, x_axis))
@@ -344,13 +355,11 @@ class StereoProcessor:
             self.kinematics.reset_filters()
         return output
 
-    def process_frame(self, frame, timestamp=None):
+    def process(self, left, right, timestamp=None):
         output = self._empty()
-        if frame is None or frame.shape[1] != FULL_WIDTH:
+        if left is None or right is None:
             return self._reject(output, "frame-size")
         timestamp = time.monotonic() if timestamp is None else timestamp
-        left = rotate_image(frame[:, : FULL_WIDTH // 2], ROTATE_LEFT)
-        right = rotate_image(frame[:, FULL_WIDTH // 2 :], ROTATE_RIGHT)
         left_rgb, right_rgb = cv2.cvtColor(left, cv2.COLOR_BGR2RGB), cv2.cvtColor(right, cv2.COLOR_BGR2RGB)
         output["image_left"], output["image_right"] = left_rgb, right_rgb
         left_norm, label, _ = self.left_detector.detect(left_rgb)
