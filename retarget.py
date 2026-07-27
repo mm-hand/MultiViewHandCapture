@@ -125,11 +125,14 @@ class Retargeter:
         model=None,
         scaling=C.VECTOR_SCALING,
         weights=C.VECTOR_WEIGHTS,
+        thumb_weights=C.THUMB_ANGLE_WEIGHTS,
         alpha=C.VECTOR_LOW_PASS_ALPHA,
     ):
         self.model = RobotModel() if model is None else model
         count = len(C.VECTOR_MAP)
-        scaling, weights = np.asarray(scaling, float), np.asarray(weights, float)
+        scaling, weights, thumb_weights = map(
+            lambda value: np.asarray(value, float), (scaling, weights, thumb_weights)
+        )
         if scaling.ndim == 0:
             scaling = np.full(count, scaling)
         if weights.ndim == 0:
@@ -138,9 +141,23 @@ class Retargeter:
             raise ValueError(f"scaling must be a positive scalar or {count}-vector")
         if weights.shape != (count,) or not np.isfinite(weights).all() or np.any(weights <= 0):
             raise ValueError(f"weights must be a positive scalar or {count}-vector")
+        if thumb_weights.shape != (2,) or not np.isfinite(thumb_weights).all() or np.any(thumb_weights < 0):
+            raise ValueError("thumb_weights must be a non-negative 2-vector")
+        rotvecs = np.asarray(C.VECTOR_ROTATION_VECS, float)
+        if rotvecs.shape != (count, 3):
+            raise ValueError(f"VECTOR_ROTATION_VECS must have shape ({count}, 3)")
+        self.rotations = np.asarray([
+            np.eye(3) if np.linalg.norm(vector) < EPS else _rotation(vector, np.linalg.norm(vector))
+            for vector in rotvecs
+        ])
         self.scaling, self.weights = scaling[:, None], weights
+        self.thumb_weights = thumb_weights
+        self.thumb_offset = np.radians(C.THUMB_BEND_OFFSET_DEG)
         self.filter = LowPass(alpha)
-        self.raw_q = np.clip(np.zeros(21), self.model.lower, self.model.upper)
+        self.neutral = np.zeros(21)
+        self.neutral[[0, 4, 8, 12, 16]] = np.radians(C.MCP_AA_NEUTRAL_DEG)
+        self.neutral = np.clip(self.neutral, self.model.lower, self.model.upper)
+        self.raw_q = self.neutral.copy()
 
     @staticmethod
     def _hand_frame(points):
@@ -155,7 +172,7 @@ class Retargeter:
             normal, z = -normal, -z
         return np.column_stack((x, normal, z))
 
-    def targets(self, points, handedness="Left"):
+    def human_vectors(self, points, handedness="Left"):
         points = (np.asarray(points, float) - points[0]) * 0.001
         mano = points @ self._hand_frame(points) @ np.asarray(C.OPERATOR2MANO_LEFT)
         robot = mano[:, (2, 1, 0)] * (1, 1, -1)
@@ -165,7 +182,26 @@ class Retargeter:
         tasks = np.asarray([item[1] for item in C.VECTOR_MAP])
         return robot[tasks] - robot[origins]
 
-    def objective(self, q, target, last=None):
+    def targets(self, points, handedness="Left"):
+        return np.einsum("vij,vj->vi", self.rotations, self.human_vectors(points, handedness))
+
+    @staticmethod
+    def _bend(vectors, jacobian=None):
+        output, gradients = [], []
+        for first, second in ((17, 18), (18, 19)):
+            u, v = vectors[first], vectors[second]
+            nu, nv = max(np.linalg.norm(u), EPS), max(np.linalg.norm(v), EPS)
+            uh, vh = u / nu, v / nv
+            cosine = np.clip(np.dot(uh, vh), -1 + EPS, 1 - EPS)
+            output.append(np.arccos(cosine))
+            if jacobian is not None:
+                du = (np.eye(3) - np.outer(uh, uh)) @ jacobian[first] / nu
+                dv = (np.eye(3) - np.outer(vh, vh)) @ jacobian[second] / nv
+                derivative = vh @ du + uh @ dv
+                gradients.append(-derivative / max(np.sqrt(1 - cosine * cosine), 1e-6))
+        return np.asarray(output) if jacobian is None else (np.asarray(output), np.asarray(gradients))
+
+    def objective(self, q, target, last=None, human_bends=None):
         vectors, jacobian = self.model.vectors(q, True)
         error = vectors - target * self.scaling
         distance = np.linalg.norm(error, axis=1)
@@ -175,6 +211,20 @@ class Retargeter:
         total = self.weights.sum()
         gradient = np.einsum("v,vi,vij->j", self.weights, direction, jacobian) / total
         value = np.dot(self.weights, loss) / total
+        if human_bends is not None:
+            bends, bend_jacobian = self._bend(vectors, jacobian)
+            angle_error = bends - human_bends - self.thumb_offset
+            delta = np.radians(C.THUMB_ANGLE_HUBER_DEG)
+            absolute = np.abs(angle_error)
+            quadratic = absolute < delta
+            angle_loss = np.where(
+                quadratic, 0.5 * angle_error**2 / delta, absolute - 0.5 * delta
+            )
+            angle_direction = np.where(quadratic, angle_error / delta, np.sign(angle_error))
+            value += np.dot(self.thumb_weights, angle_loss)
+            gradient += np.einsum(
+                "a,a,aj->j", self.thumb_weights, angle_direction, bend_jacobian
+            )
         if last is not None:
             delta = q - last
             value += C.VECTOR_NORM_DELTA * np.dot(delta, delta)
@@ -186,9 +236,11 @@ class Retargeter:
         if points.shape != (21, 3) or not np.isfinite(points).all():
             return self._failure(float("inf"))
         try:
-            target, last = self.targets(points, handedness), self.raw_q.copy()
+            human = self.human_vectors(points, handedness)
+            target = np.einsum("vij,vj->vi", self.rotations, human)
+            human_bends, last = self._bend(human), self.raw_q.copy()
             result = minimize(
-                lambda q: self.objective(q, target, last)[:2],
+                lambda q: self.objective(q, target, last, human_bends)[:2],
                 last,
                 jac=True,
                 bounds=tuple(zip(self.model.lower, self.model.upper)),
@@ -196,7 +248,7 @@ class Retargeter:
                 options={"ftol": 1e-6, "maxiter": C.VECTOR_MAX_EVAL},
             )
             q = np.asarray(result.x)
-            _, _, rms = self.objective(q, target)
+            _, _, rms = self.objective(q, target, human_bends=human_bends)
         except (np.linalg.LinAlgError, ValueError):
             return self._failure(float("inf"))
         if not result.success or not np.isfinite(q).all() or not np.isfinite(rms):
@@ -220,3 +272,4 @@ class Retargeter:
 
     def pause(self):
         self.filter.reset()
+        self.raw_q = self.neutral.copy()
