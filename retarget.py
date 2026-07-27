@@ -137,7 +137,12 @@ class RobotModel:
 class Retargeter:
     def __init__(self, model=None, scaling=C.VECTOR_SCALING, alpha=C.VECTOR_LOW_PASS_ALPHA):
         self.model = RobotModel() if model is None else model
-        self.scaling, self.filter = scaling, LowPass(alpha)
+        scaling = np.asarray(scaling, float)
+        if scaling.ndim == 0:
+            scaling = np.full(16, scaling)
+        if scaling.shape != (16,) or not np.isfinite(scaling).all() or np.any(scaling <= 0):
+            raise ValueError("scaling must be a positive scalar or 16-vector")
+        self.scaling, self.filter = scaling[:, None], LowPass(alpha)
         self.raw_q = self.model.lower.copy()
 
     @staticmethod
@@ -196,19 +201,21 @@ class Retargeter:
             return self._failure(rms)
         self.raw_q = np.clip(q, self.model.lower, self.model.upper)
         filtered = np.clip(self.filter(self.raw_q), self.model.lower, self.model.upper)
+        pose_rms = float(np.sqrt(np.mean((self.model.vectors(filtered) - target) ** 2)))
         return {
             "success": True,
             "q": filtered,
             "q_raw": self.raw_q.copy(),
             "q_deg": self.model.contract_degrees(filtered),
             "rms": rms,
+            "pose_rms": pose_rms,
             "points": self.model.points(filtered),
         }
 
     def _failure(self, rms):
         return {
             "success": False, "q": None, "q_raw": self.raw_q.copy(), "q_deg": None,
-            "rms": rms, "points": self.model.points(self.raw_q),
+            "rms": rms, "pose_rms": float("inf"), "points": self.model.points(self.raw_q),
         }
 
     def pause(self):

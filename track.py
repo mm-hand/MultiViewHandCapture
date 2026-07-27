@@ -142,7 +142,7 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
         if quality["reprojection_error"] is not None:
             detail += f" · reprojection: {quality['reprojection_error']:.1f} px"
         if robot is not None:
-            detail += f" · Vector RMSE: {robot['rms'] * 1000:.1f} mm"
+            detail += f" · Pose RMSE: {robot['pose_rms'] * 1000:.1f} mm"
         self.status = f"{result['phase']}{detail}"
         views = [
             _overlay(image, points) if image is not None else np.zeros((360, 640, 3), np.uint8)

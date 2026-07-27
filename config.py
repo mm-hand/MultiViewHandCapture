@@ -38,7 +38,12 @@ VECTOR_TASK_LINKS = (
 VECTOR_HUMAN_ORIGINS = (0,) * 16
 VECTOR_HUMAN_TASKS = (4, 8, 12, 16, 20, 3, 7, 11, 15, 19, 2, 6, 10, 14, 18, 1)
 OPERATOR2MANO_LEFT = ((0, 0, -1), (1, 0, 0), (0, -1, 0))
-VECTOR_SCALING = 1.0
+# Per-vector scales in VECTOR_TASK_LINKS order, tuned on all four local recordings.
+VECTOR_SCALING = (
+    1.05, 1.20, 1.05, 1.05, 1.05,
+    1.00, 1.40, 1.40, 1.40, 0.85,
+    1.20, 0.85, 1.20, 1.35, 1.20, 1.20,
+)
 VECTOR_HUBER_DELTA = 0.02
 VECTOR_NORM_DELTA = 0.004
 VECTOR_LOW_PASS_ALPHA = 0.4

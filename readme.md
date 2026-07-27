@@ -74,7 +74,9 @@ Retarget 只接受稳定、非 stale、已经完成骨长标定的 `Left`：
 这是父仓库 dex-retargeting 的普通 Vector 方法：16 个向量统一使用 SmoothL1
 距离，上一帧原始角度既作 warm start，也用于小权重时序正则。没有 DexPilot、
 分段、阻尼最小二乘、接触状态、碰撞项、DIP 解锁 hack、Torch 或额外进程。
-默认 `scaling=1.0`、`alpha=0.4`，由本地左手对指录像的 9 组参数回归选出。
+16 个向量分别使用 `config.py` 中的 scaling，`alpha=0.4`。scaling 由四段
+本地录像自动搜索，并以人手/机器人 PIP、DIP 角度、原始向量误差、对指距离
+和运动平滑度共同评分；运行时不包含调参代码。
 
 ## ROS 2 契约
 
