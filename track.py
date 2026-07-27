@@ -36,14 +36,10 @@ class Viewer:
         from viser.extras import ViserUrdf
 
         self.servers = [viser.ViserServer(port=port) for port in VIEW_PORTS]
-        raw, normalized, robot_server = self.servers
+        raw, robot_server = self.servers
         self._camera(raw, (0, 0, 0.15), (0, 0, 0.45), (0, -1, 0), 55)
-        self._camera(normalized, (0.24, 0, 0.05), (0, 0, 0.05), (0, 0, 1), 42)
         self._camera(robot_server, (0.28, -0.32, 0.22), (0, 0, 0.06), (0, 0, 1), 42)
-        self.handles = {
-            "raw": self._skeleton(raw, (255, 80, 80), 0.008),
-            "normalized": self._skeleton(normalized, (60, 170, 255), 0.004),
-        }
+        self.handles = {"raw": self._skeleton(raw, (255, 80, 80), 0.008)}
         self.urdf = self.urdf_names = None
         if model is not None:
             robot_server.scene.add_frame("/robot", show_axes=False)
@@ -78,25 +74,24 @@ class Viewer:
 
     def _start_dashboard(self):
         owner = self
-        raw_port, normalized_port, robot_port = [server.get_port() for server in self.servers]
+        raw_port, robot_port = [server.get_port() for server in self.servers]
         page = f"""<!doctype html><html><head><meta charset="utf-8">
 <title>MultiView Hand Capture</title><style>
 *{{box-sizing:border-box}} body{{margin:0;height:100vh;background:#101318;color:#eef;
-font:15px sans-serif;display:grid;grid-template:38vh 62vh/repeat(3,1fr);gap:6px}}
+font:15px sans-serif;display:grid;grid-template:40vh 60vh/repeat(2,1fr);gap:6px}}
 .panel{{position:relative;overflow:hidden;background:#181d25;border:1px solid #343b48}}
-.stereo{{grid-column:1/4}} h2{{position:absolute;z-index:2;margin:0;padding:8px 12px;
+.stereo{{grid-column:1/3}} h2{{position:absolute;z-index:2;margin:0;padding:8px 12px;
 font-size:15px;background:#101318cc;border-radius:0 0 6px 0}}
 img,iframe{{width:100%;height:100%;display:block;border:0;object-fit:contain}}
 #status{{color:#9bd;margin-left:12px;font-weight:normal}}</style></head><body>
 <section class="panel stereo"><h2>Stereo + MediaPipe <span id="status">WAITING</span></h2>
 <img id="stereo"></section>
 <section class="panel"><h2>Raw 3D · camera frame · m</h2><iframe id="raw"></iframe></section>
-<section class="panel"><h2>Normalized hand · 0.086 m</h2><iframe id="normalized"></iframe></section>
-<section class="panel"><h2>Retargeted MMHand URDF</h2><iframe id="robot"></iframe></section>
+<section class="panel"><h2>Retargeted HKU Hand V2</h2><iframe id="robot"></iframe></section>
 <script>
 const host=location.hostname, statusText=document.getElementById("status"),
 stereoImage=document.getElementById("stereo");
-for(const [id,port] of [["raw",{raw_port}],["normalized",{normalized_port}],["robot",{robot_port}]])
+for(const [id,port] of [["raw",{raw_port}],["robot",{robot_port}]])
   document.getElementById(id).src=`http://${{host}}:${{port}}`;
 setInterval(()=>{{stereoImage.src="/stereo.jpg?t="+Date.now();
 fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(1000 / WEB_FPS)});
@@ -145,7 +140,7 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
         quality = result["quality"]
         detail = f" · rejected: {quality['rejected_reason']}" if quality["rejected_reason"] else ""
         if robot is not None:
-            detail += f" · IK RMS: {robot['rms']:.3f}"
+            detail += f" · Vector RMSE: {robot['rms'] * 1000:.1f} mm"
         self.status = f"{result['phase']}{detail}"
         views = [
             _overlay(image, points) if image is not None else np.zeros((360, 640, 3), np.uint8)
@@ -159,7 +154,6 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
             self.stereo = encoded.tobytes()
         absolute = result["keypoint_absolute"]
         self._update_skeleton("raw", None if absolute is None else absolute * 0.001)
-        self._update_skeleton("normalized", result["keypoint_relative"])
         if robot is not None and robot["success"] and self.urdf is not None:
             self.urdf.update_cfg(np.asarray([robot["q"][self.robot_index[name]] for name in self.urdf_names]))
 
@@ -230,7 +224,7 @@ def main():
             robot = None
             if retargeter is not None:
                 if valid and result["handedness"] == "Left" and result["phase"].startswith("GESTURE"):
-                    robot = retargeter.solve(result["keypoint_relative"], timestamp)
+                    robot = retargeter.solve(result["keypoint_absolute"], timestamp)
                     if ros is not None and robot["success"]:
                         ros.joints(robot["q_deg"])
                 else:

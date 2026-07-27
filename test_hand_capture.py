@@ -1,3 +1,4 @@
+import time
 import unittest
 from pathlib import Path
 
@@ -14,11 +15,10 @@ from hand_core import (
     enforce_lengths,
     extract_angles,
     geometry_error,
-    relative_points,
     split_stereo,
     swap_handedness,
 )
-from config import BONE_TOLERANCE
+from config import BONE_TOLERANCE, ROBOT_TO_CONTRACT
 from retarget import Retargeter, RobotModel
 
 
@@ -122,41 +122,59 @@ class RetargetTests(unittest.TestCase):
     def setUpClass(cls):
         cls.model = RobotModel()
 
-    def test_contract_limits_and_fk(self):
+    def test_contract_limits_and_mapping(self):
         self.assertEqual(self.model.topic, "/raw_ik_target")
         self.assertEqual(
             self.model.layout,
             "mmhand:J00-J20:urdf_deg:structure_urdf_v2:v3:73FD45FA",
         )
         self.assertEqual(len(self.model.names), 21)
-        self.assertTrue(np.all(self.model.lower >= 0))
-        links, origins = self.model.fk(np.zeros(21))
-        self.assertIn("base_link", links)
-        self.assertEqual(len(origins), 26)
-        for points in self.model.neutral.values():
-            self.assertTrue(np.isfinite(points).all())
+        self.assertTrue(np.all(self.model.lower <= self.model.upper))
+        self.assertEqual(self.model.vectors(self.model.lower).shape, (16, 3))
+        self.assertEqual(set(self.model.points(self.model.lower)), {
+            "1-tip_Link", "2-tip_Link", "3-tip_Link", "4-tip_Link", "5-tip_Link",
+        })
+        q = np.linspace(0, 0.2, 21)
+        published = np.radians(self.model.contract_degrees(q))
+        np.testing.assert_allclose(published[np.asarray(ROBOT_TO_CONTRACT)], q)
 
-    def test_global_finite_difference_ik(self):
-        human = relative_points(
-            apply_angles(
-                straight_hand("Left"),
-                "Left",
-                np.array((20, 30, 25, 20, 40, 30, 20, 50, 30, 15, 40, 25, 10, 30)),
+    def test_analytic_vector_gradient(self):
+        q = self.model.lower + 0.3 * (self.model.upper - self.model.lower)
+        target = self.model.vectors(q * 0.8)
+        retargeter = Retargeter(self.model)
+        value, gradient, _ = retargeter.objective(q, target, q * 0.9)
+        numeric, step = [], 1e-6
+        for index in range(21):
+            plus, minus = q.copy(), q.copy()
+            plus[index] += step
+            minus[index] -= step
+            numeric.append(
+                (
+                    retargeter.objective(plus, target, q * 0.9)[0]
+                    - retargeter.objective(minus, target, q * 0.9)[0]
+                )
+                / (2 * step)
             )
+        self.assertTrue(np.isfinite(value))
+        np.testing.assert_allclose(gradient, numeric, atol=1e-7)
+
+    def test_vector_solve_and_filter_reset(self):
+        human = apply_angles(
+            straight_hand("Left"),
+            "Left",
+            np.array((20, 30, 25, 20, 40, 30, 20, 50, 30, 15, 40, 25, 10, 30)),
         )
         retargeter = Retargeter(self.model)
         target = retargeter.targets(human)
-        residual = retargeter.residual(retargeter.raw_q, target)
-        jacobian = retargeter.jacobian(retargeter.raw_q, target, residual)
-        self.assertEqual(jacobian.shape, (len(residual), 21))
-        self.assertTrue(np.isfinite(jacobian).all())
-        initial = np.sqrt(np.mean(residual**2))
-        for frame in range(5):
-            result = retargeter.solve(human, frame / 30)
+        initial = retargeter.objective(retargeter.raw_q, target)[2]
+        result = retargeter.solve(human)
         self.assertTrue(result["success"])
         self.assertLess(result["rms"], initial)
         self.assertTrue(np.all(result["q"] >= self.model.lower - 1e-10))
         self.assertTrue(np.all(result["q"] <= self.model.upper + 1e-10))
+        self.assertIsNotNone(retargeter.filter.value)
+        retargeter.pause()
+        self.assertIsNone(retargeter.filter.value)
 
 
 class VideoRegressionTests(unittest.TestCase):
@@ -214,6 +232,8 @@ class VideoRegressionTests(unittest.TestCase):
             with self.subTest(name=name):
                 capture, processor = cv2.VideoCapture(str(folder / name)), StereoProcessor()
                 baseline, output, labels = [], [], []
+                retargeter = Retargeter() if expected_hand == "Left" else None
+                robot_distance, robot_rms, solve_time = [], [], []
                 fps = capture.get(cv2.CAP_PROP_FPS) or 30
                 frame_number = 0
                 try:
@@ -234,6 +254,17 @@ class VideoRegressionTests(unittest.TestCase):
                         baseline.append([np.linalg.norm(point[4] - point[i]) for i in (8, 12, 16, 20)])
                         output.append([np.linalg.norm(final[4] - final[i]) for i in (8, 12, 16, 20)])
                         labels.append(result["handedness"])
+                        if retargeter is not None:
+                            started = time.perf_counter()
+                            robot = retargeter.solve(final)
+                            solve_time.append(time.perf_counter() - started)
+                            self.assertTrue(robot["success"])
+                            tips, thumb = robot["points"], robot["points"]["5-tip_Link"]
+                            robot_distance.append([
+                                np.linalg.norm(tips[name] - thumb)
+                                for name in ("1-tip_Link", "2-tip_Link", "3-tip_Link", "4-tip_Link")
+                            ])
+                            robot_rms.append(robot["rms"])
                         self.assertGreaterEqual(np.min(extract_angles(final, result["handedness"])), -1e-5)
                         for chain in FINGER_CHAINS:
                             for start, end in zip(chain[:-1], chain[1:]):
@@ -257,6 +288,16 @@ class VideoRegressionTests(unittest.TestCase):
                         np.percentile(output[contact, finger], 95),
                         np.percentile(baseline[contact, finger], 95) + 12,
                     )
+                if retargeter is not None:
+                    robot_distance = np.asarray(robot_distance)
+                    contact_medians = [
+                        np.median(robot_distance[baseline[:, finger] < 15, finger])
+                        for finger in range(4)
+                    ]
+                    self.assertLess(np.mean(contact_medians), 0.035)
+                    self.assertLess(np.median(robot_rms), 0.03)
+                    self.assertLess(np.median(solve_time), 0.033)
+                    self.assertLess(np.percentile(solve_time, 95), 0.05)
 
 
 if __name__ == "__main__":

@@ -3,28 +3,9 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 
 import numpy as np
+from scipy.optimize import minimize
 
-from config import (
-    HUMAN_TO_ROBOT_PALM,
-    IK_EPSILON,
-    IK_ITERATIONS,
-    IK_MAX_RMS,
-    IK_MAX_STEP,
-    IK_NO_IMPROVEMENT,
-    IK_PINV_RCOND,
-    IK_STOP_RMS,
-    IK_WEIGHTS,
-    JOINT_FILTER,
-    ROBOT_BASE_LINK,
-    ROBOT_CHAINS,
-    ROBOT_FE_INDICES,
-    ROBOT_TIP_LINKS,
-    ROBOT_TIP_OFFSETS,
-    STANDARD_PALM_SIZE,
-    URDF_CONTRACT_PATH,
-    URDF_PATH,
-)
-from hand_core import OneEuro
+import config as C
 
 EPS = 1e-9
 
@@ -35,255 +16,199 @@ def _values(text, default):
 
 def _rotation(axis, angle):
     axis = np.asarray(axis, float)
-    axis = axis / max(np.linalg.norm(axis), EPS)
+    axis /= max(np.linalg.norm(axis), EPS)
     cross = np.array(((0, -axis[2], axis[1]), (axis[2], 0, -axis[0]), (-axis[1], axis[0], 0)))
-    return np.eye(3) + np.sin(angle) * cross + (1 - np.cos(angle)) * (cross @ cross)
+    return np.eye(3) + np.sin(angle) * cross + (1 - np.cos(angle)) * cross @ cross
 
 
-def _origin(element):
-    xyz = _values(element.get("xyz"), "0 0 0")
-    roll, pitch, yaw = _values(element.get("rpy"), "0 0 0")
-    rx, ry, rz = _rotation((1, 0, 0), roll), _rotation((0, 1, 0), pitch), _rotation((0, 0, 1), yaw)
+def _origin(node):
+    xyz = _values(node.get("xyz"), "0 0 0")
+    roll, pitch, yaw = _values(node.get("rpy"), "0 0 0")
     transform = np.eye(4)
-    transform[:3, :3], transform[:3, 3] = rz @ ry @ rx, xyz
+    transform[:3, :3] = _rotation((0, 0, 1), yaw) @ _rotation((0, 1, 0), pitch) @ _rotation((1, 0, 0), roll)
+    transform[:3, 3] = xyz
     return transform
 
 
-def _unit(vector, fallback):
-    norm = np.linalg.norm(vector)
-    return vector / norm if norm > EPS else fallback / max(np.linalg.norm(fallback), EPS)
+class LowPass:
+    def __init__(self, alpha):
+        self.alpha, self.value = alpha, None
+
+    def __call__(self, value):
+        self.value = value.copy() if self.value is None else self.alpha * value + (1 - self.alpha) * self.value
+        return self.value
+
+    def reset(self):
+        self.value = None
 
 
 class RobotModel:
-    def __init__(self, urdf_path=URDF_PATH, contract_path=URDF_CONTRACT_PATH):
-        contract = json.loads(contract_path.read_text())
-        self.topic = contract["topic"]
-        self.names = tuple(joint["name"] for joint in contract["joints"])
-        self.layout = (
-            f"mmhand:J00-J20:{contract['input_space']}:{contract['mapping_id']}:"
-            f"v{contract['mapping_version']}:{contract['urdf_config_crc']}"
-        )
-        limits = np.radians([joint["limit_deg"] for joint in contract["joints"]])
-        limits[list(ROBOT_FE_INDICES), 0] = 0
-        self.lower, self.upper = limits.T
-
-        self.joints, self.children = {}, defaultdict(list)
+    def __init__(self, urdf_path=C.URDF_PATH, contract_path=C.URDF_CONTRACT_PATH):
+        self.joints, self.children, parent_joint = {}, defaultdict(list), {}
+        urdf_limits = {}
         for node in ET.parse(urdf_path).getroot().findall("joint"):
-            origin = node.find("origin")
+            origin, axis, limit = node.find("origin"), node.find("axis"), node.find("limit")
             joint = {
                 "type": node.get("type"),
                 "parent": node.find("parent").get("link"),
                 "child": node.find("child").get("link"),
                 "origin": _origin(origin) if origin is not None else np.eye(4),
-                "axis": _values(node.find("axis").get("xyz"), "1 0 0")
-                if node.find("axis") is not None
-                else np.array((1.0, 0, 0)),
+                "axis": _values(axis.get("xyz"), "1 0 0") if axis is not None else np.array((1.0, 0, 0)),
             }
-            self.joints[node.get("name")] = joint
-            self.children[joint["parent"]].append(node.get("name"))
-        missing = set(self.names) - self.joints.keys()
-        if missing:
-            raise ValueError(f"URDF is missing contract joints: {sorted(missing)}")
-        self.index = {name: i for i, name in enumerate(self.names)}
-        self.fingers = tuple(ROBOT_CHAINS)
+            name = node.get("name")
+            self.joints[name] = joint
+            self.children[joint["parent"]].append(name)
+            parent_joint[joint["child"]] = name
+            if joint["type"] == "revolute":
+                urdf_limits[name] = (float(limit.get("lower")), float(limit.get("upper")))
+        self.names = tuple(name for name in C.ROBOT_JOINT_NAMES if name in urdf_limits)
+        if self.names != C.ROBOT_JOINT_NAMES:
+            raise ValueError(f"Unexpected HKU Hand joints: {self.names}")
+        self.index = {name: index for index, name in enumerate(self.names)}
 
-        self.neutral = self.points(np.zeros(21))
-        long_mcps = [self.neutral[name][0] for name in self.fingers if name != "thumb"]
-        forward = _unit(np.mean(long_mcps, axis=0) - self.neutral["palm"], np.array((1.0, 0, 0)))
-        width = _unit(
-            self.neutral["pinky"][0] - self.neutral["index"][0], np.array((0, 1.0, 0))
+        contract = json.loads(contract_path.read_text())
+        contract_limits = np.radians([joint["limit_deg"] for joint in contract["joints"]])
+        mapping = np.asarray(C.ROBOT_TO_CONTRACT)
+        limits = np.asarray([urdf_limits[name] for name in self.names])
+        self.lower = np.maximum(limits[:, 0], contract_limits[mapping, 0])
+        self.upper = np.minimum(limits[:, 1], contract_limits[mapping, 1])
+        if np.any(self.lower > self.upper):
+            raise ValueError("URDF and ROS contract joint limits do not overlap")
+        self.topic = contract["topic"]
+        self.layout = (
+            f"mmhand:J00-J20:{contract['input_space']}:{contract['mapping_id']}:"
+            f"v{contract['mapping_version']}:{contract['urdf_config_crc']}"
         )
-        normal = _unit(np.cross(forward, width), np.array((0, 0, 1.0)))
-        width = _unit(np.cross(normal, forward), width)
-        self.palm_rotation = np.column_stack((forward, width, normal))
-        self.human_to_base = self.palm_rotation @ np.asarray(HUMAN_TO_ROBOT_PALM, float)
-        self.palm_size = np.mean(np.linalg.norm(np.asarray(long_mcps) - self.neutral["palm"], axis=1))
-        self.palm_scale = self.palm_size / STANDARD_PALM_SIZE
-        self.local_lengths = {
-            name: np.linalg.norm(self._local(self.neutral, name), axis=1) for name in self.fingers
-        }
-        self.anchor_lengths = {
-            name: np.linalg.norm(
-                self.neutral[name][-1] - self.neutral[name][1 if name == "thumb" else 0]
-            )
-            for name in self.fingers
-        }
-        self.hand_lengths = {
-            name: np.linalg.norm(self.neutral[name][-1] - self.neutral["palm"])
-            for name in self.fingers
-        }
+        self.links = tuple(dict.fromkeys(C.VECTOR_ORIGIN_LINKS + C.VECTOR_TASK_LINKS))
+        self.origin = np.asarray([self.links.index(name) for name in C.VECTOR_ORIGIN_LINKS])
+        self.task = np.asarray([self.links.index(name) for name in C.VECTOR_TASK_LINKS])
+        self.tip_links = tuple(f"{finger}-tip_Link" for finger in (5, 1, 2, 3, 4))
+        self.ancestors = {}
+        for link in self.links:
+            chain, cursor = [], link
+            while cursor in parent_joint:
+                name = parent_joint[cursor]
+                if name in self.index:
+                    chain.append(self.index[name])
+                cursor = self.joints[name]["parent"]
+            self.ancestors[link] = chain
 
     def fk(self, q):
-        link_transforms, joint_origins = {ROBOT_BASE_LINK: np.eye(4)}, {}
-        stack = [ROBOT_BASE_LINK]
+        transforms, origins, axes = {"base_link": np.eye(4)}, np.zeros((21, 3)), np.zeros((21, 3))
+        stack = ["base_link"]
         while stack:
             parent = stack.pop()
             for name in self.children[parent]:
                 joint = self.joints[name]
-                frame = link_transforms[parent] @ joint["origin"]
-                joint_origins[name] = frame[:3, 3].copy()
+                frame = transforms[parent] @ joint["origin"]
                 child = frame
-                if joint["type"] in ("revolute", "continuous"):
+                if name in self.index:
+                    index = self.index[name]
+                    origins[index], axes[index] = frame[:3, 3], frame[:3, :3] @ joint["axis"]
                     motion = np.eye(4)
-                    motion[:3, :3] = _rotation(joint["axis"], q[self.index[name]])
+                    motion[:3, :3] = _rotation(joint["axis"], q[index])
                     child = frame @ motion
-                link_transforms[joint["child"]] = child
+                transforms[joint["child"]] = child
                 stack.append(joint["child"])
-        return link_transforms, joint_origins
+        return transforms, origins, axes
+
+    def vectors(self, q, jacobian=False):
+        transforms, origins, axes = self.fk(q)
+        positions = np.asarray([transforms[name][:3, 3] for name in self.links])
+        vectors = positions[self.task] - positions[self.origin]
+        if not jacobian:
+            return vectors
+        link_jacobian = np.zeros((len(self.links), 3, 21))
+        for row, name in enumerate(self.links):
+            for joint in self.ancestors[name]:
+                link_jacobian[row, :, joint] = np.cross(axes[joint], positions[row] - origins[joint])
+        return vectors, link_jacobian[self.task] - link_jacobian[self.origin]
 
     def points(self, q):
-        links, origins = self.fk(q)
-        output = {"palm": links[ROBOT_BASE_LINK][:3, 3].copy()}
-        for name, (_, indices) in ROBOT_CHAINS.items():
-            joints = [self.names[index] for index in indices]
-            start = 1
-            landmarks = [origins[joints[i]] for i in range(start, start + 3)]
-            offset = np.r_[ROBOT_TIP_OFFSETS[name], 1.0]
-            landmarks.append((links[ROBOT_TIP_LINKS[name]] @ offset)[:3])
-            output[name] = np.asarray(landmarks)
-        return output
+        transforms, _, _ = self.fk(q)
+        return {name: transforms[name][:3, 3].copy() for name in self.tip_links}
 
-    @staticmethod
-    def _local(points, name):
-        finger, palm = points[name], points["palm"]
-        if name == "thumb":
-            return np.asarray((finger[0] - palm, finger[1] - palm, finger[2] - finger[1], finger[3] - finger[2]))
-        return np.asarray((finger[0] - palm, finger[1] - finger[0], finger[2] - finger[1], finger[3] - finger[2]))
+    def contract_degrees(self, q):
+        output = np.empty(21)
+        output[np.asarray(C.ROBOT_TO_CONTRACT)] = q
+        return np.degrees(output)
 
 
 class Retargeter:
-    def __init__(self, model=None):
+    def __init__(self, model=None, scaling=C.VECTOR_SCALING, alpha=C.VECTOR_LOW_PASS_ALPHA):
         self.model = RobotModel() if model is None else model
-        self.raw_q = np.zeros(21)
-        self.filter = OneEuro(*JOINT_FILTER)
+        self.scaling, self.filter = scaling, LowPass(alpha)
+        self.raw_q = self.model.lower.copy()
 
-    def _direction(self, human_vector, robot_vector, length):
-        vector = self.model.human_to_base @ human_vector
-        return _unit(vector, robot_vector) * length
+    @staticmethod
+    def _hand_frame(points):
+        palm = points[[0, 5, 9]]
+        x = palm[0] - palm[2]
+        _, _, vh = np.linalg.svd(palm - palm.mean(0))
+        normal = vh[2]
+        x -= np.dot(x, normal) * normal
+        x /= max(np.linalg.norm(x), EPS)
+        z = np.cross(x, normal)
+        if np.dot(z, palm[1] - palm[2]) < 0:
+            normal, z = -normal, -z
+        return np.column_stack((x, normal, z))
 
-    def targets(self, human):
-        human = np.asarray(human, float)
-        target = {"local": {}, "anchor": {}, "hand": {}, "thumb_tip": {}}
-        for name, (indices, _) in ROBOT_CHAINS.items():
-            finger = human[list(indices)]
-            if name == "thumb":
-                vectors = (finger[0] - human[0], finger[1] - human[0], finger[2] - finger[1], finger[3] - finger[2])
-                anchor = finger[3] - finger[1]
-            else:
-                vectors = (finger[0] - human[0], finger[1] - finger[0], finger[2] - finger[1], finger[3] - finger[2])
-                anchor = finger[3] - finger[0]
-            neutral = self.model._local(self.model.neutral, name)
-            target["local"][name] = np.asarray(
-                [
-                    self._direction(vector, reference, length)
-                    for vector, reference, length in zip(vectors, neutral, self.model.local_lengths[name])
-                ]
-            )
-            robot_anchor = self.model.neutral[name][-1] - self.model.neutral[name][
-                1 if name == "thumb" else 0
-            ]
-            target["anchor"][name] = self._direction(
-                anchor, robot_anchor, self.model.anchor_lengths[name]
-            )
-            target["hand"][name] = self._direction(
-                finger[-1] - human[0],
-                self.model.neutral[name][-1] - self.model.neutral["palm"],
-                self.model.hand_lengths[name],
-            )
-        thumb_tip = human[ROBOT_CHAINS["thumb"][0][-1]]
-        for name in self.model.fingers:
-            if name != "thumb":
-                tip = human[ROBOT_CHAINS[name][0][-1]]
-                target["thumb_tip"][name] = self.model.human_to_base @ (tip - thumb_tip) * self.model.palm_scale
-        return target
+    def targets(self, points):
+        points = (np.asarray(points, float) - points[0]) * 0.001
+        mano = points @ self._hand_frame(points) @ np.asarray(C.OPERATOR2MANO_LEFT)
+        hku = mano[:, (2, 1, 0)] * (1, 1, -1)
+        return hku[np.asarray(C.VECTOR_HUMAN_TASKS)] - hku[np.asarray(C.VECTOR_HUMAN_ORIGINS)]
 
-    def residual(self, q, target):
-        points, residuals = self.model.points(q), []
-        for name in self.model.fingers:
-            local = (self.model._local(points, name) - target["local"][name]) / self.model.local_lengths[name][:, None]
-            residuals.append(np.sqrt(IK_WEIGHTS["local"]) * local.ravel())
-            anchor_index = 1 if name == "thumb" else 0
-            anchor = points[name][-1] - points[name][anchor_index]
-            residuals.append(
-                np.sqrt(IK_WEIGHTS["anchor_tip"])
-                * (anchor - target["anchor"][name])
-                / self.model.anchor_lengths[name]
-            )
-            hand = points[name][-1] - points["palm"]
-            residuals.append(
-                np.sqrt(IK_WEIGHTS["hand_tip"])
-                * (hand - target["hand"][name])
-                / self.model.hand_lengths[name]
-            )
-        for name, expected in target["thumb_tip"].items():
-            actual = points[name][-1] - points["thumb"][-1]
-            residuals.append(
-                np.sqrt(IK_WEIGHTS["thumb_tip"]) * (actual - expected) / self.model.palm_size
-            )
-        return np.concatenate(residuals)
+    def objective(self, q, target, last=None):
+        vectors, jacobian = self.model.vectors(q, True)
+        error = vectors - target * self.scaling
+        distance = np.linalg.norm(error, axis=1)
+        quadratic = distance < C.VECTOR_HUBER_DELTA
+        loss = np.where(quadratic, 0.5 * distance**2 / C.VECTOR_HUBER_DELTA, distance - 0.5 * C.VECTOR_HUBER_DELTA)
+        direction = error / np.maximum(np.where(quadratic, C.VECTOR_HUBER_DELTA, distance)[:, None], EPS)
+        gradient = np.einsum("vi,vij->j", direction, jacobian) / len(error)
+        value = loss.mean()
+        if last is not None:
+            delta = q - last
+            value += C.VECTOR_NORM_DELTA * np.dot(delta, delta)
+            gradient += 2 * C.VECTOR_NORM_DELTA * delta
+        return float(value), gradient, float(np.sqrt(np.mean(distance**2)))
 
-    def jacobian(self, q, target, residual=None):
-        residual = self.residual(q, target) if residual is None else residual
-        jacobian = np.empty((len(residual), 21))
-        for index in range(21):
-            step = IK_EPSILON if q[index] < self.model.upper[index] else -IK_EPSILON
-            sample = q.copy()
-            sample[index] = np.clip(sample[index] + step, self.model.lower[index], self.model.upper[index])
-            delta = sample[index] - q[index]
-            jacobian[:, index] = (
-                (self.residual(sample, target) - residual) / delta if abs(delta) > EPS else 0
-            )
-        return jacobian
-
-    def solve(self, human, timestamp):
-        human = np.asarray(human, float)
-        if human.shape != (21, 3) or not np.isfinite(human).all():
+    def solve(self, points, timestamp=None):
+        points = np.asarray(points, float)
+        if points.shape != (21, 3) or not np.isfinite(points).all():
             return self._failure(float("inf"))
-        target, q = self.targets(human), self.raw_q.copy()
-        residual = self.residual(q, target)
-        best_q, best_rms = q.copy(), float(np.sqrt(np.mean(residual**2)))
-        stalled = 0
         try:
-            for _ in range(IK_ITERATIONS):
-                if best_rms <= IK_STOP_RMS:
-                    break
-                step = -np.linalg.pinv(
-                    self.jacobian(q, target, residual), rcond=IK_PINV_RCOND
-                ) @ residual
-                peak = np.max(np.abs(step))
-                if peak > IK_MAX_STEP:
-                    step *= IK_MAX_STEP / peak
-                q = np.clip(q + step, self.model.lower, self.model.upper)
-                residual = self.residual(q, target)
-                rms = float(np.sqrt(np.mean(residual**2)))
-                if rms + 1e-7 < best_rms:
-                    best_q, best_rms, stalled = q.copy(), rms, 0
-                else:
-                    stalled += 1
-                    if stalled >= IK_NO_IMPROVEMENT:
-                        break
-        except np.linalg.LinAlgError:
-            return self._failure(best_rms)
-        self.raw_q = best_q
-        success = np.isfinite(best_rms) and best_rms <= IK_MAX_RMS
-        filtered = np.clip(self.filter(best_q, timestamp), self.model.lower, self.model.upper) if success else None
+            target, last = self.targets(points), self.raw_q.copy()
+            result = minimize(
+                lambda q: self.objective(q, target, last)[:2],
+                last,
+                jac=True,
+                bounds=tuple(zip(self.model.lower, self.model.upper)),
+                method="SLSQP",
+                options={"ftol": 1e-6, "maxiter": C.VECTOR_MAX_EVAL},
+            )
+            q = np.asarray(result.x)
+            _, _, rms = self.objective(q, target)
+        except (np.linalg.LinAlgError, ValueError):
+            return self._failure(float("inf"))
+        if not result.success or not np.isfinite(q).all() or not np.isfinite(rms):
+            return self._failure(rms)
+        self.raw_q = np.clip(q, self.model.lower, self.model.upper)
+        filtered = np.clip(self.filter(self.raw_q), self.model.lower, self.model.upper)
         return {
-            "success": success,
+            "success": True,
             "q": filtered,
-            "q_raw": best_q,
-            "q_deg": None if filtered is None else np.degrees(filtered),
-            "rms": best_rms,
-            "points": self.model.points(best_q if filtered is None else filtered),
+            "q_raw": self.raw_q.copy(),
+            "q_deg": self.model.contract_degrees(filtered),
+            "rms": rms,
+            "points": self.model.points(filtered),
         }
 
     def _failure(self, rms):
         return {
-            "success": False,
-            "q": None,
-            "q_raw": self.raw_q.copy(),
-            "q_deg": None,
-            "rms": rms,
-            "points": self.model.points(self.raw_q),
+            "success": False, "q": None, "q_raw": self.raw_q.copy(), "q_deg": None,
+            "rms": rms, "points": self.model.points(self.raw_q),
         }
 
     def pause(self):

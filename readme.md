@@ -1,6 +1,6 @@
 # MultiView Hand Capture
 
-双目 MediaPipe 21 点重建、MMHand 数值 retarget、Viser Web 可视化和可选 ROS 2
+双目 MediaPipe 21 点重建、HKU Hand V2 Vector retarget、Viser Web 可视化和可选 ROS 2
 发布。它是直接运行的脚本，不是 Python/ROS 软件包。
 
 ## 环境
@@ -38,15 +38,14 @@ python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 python calibrate.py                         # 已有 stereo_params.json 时跳过
 python track.py --mode points              # 只跟踪、显示
 python track.py --mode points --ros        # 发布标准化 21 点
-python track.py --mode retarget            # 左手 → MMHand，并显示 URDF
+python track.py --mode retarget            # 左手 → HKU Hand V2，并显示 URDF
 python track.py --mode retarget --ros      # 同时发布机器人角度
 ```
 
 浏览器打开 `http://localhost:8080`。上方整行显示左右相机和 MediaPipe
-叠加；下方三个独立、可旋转的 3D 视口分别显示相机坐标系原始点、掌心局部
-坐标系的 0.086 m 标准人手，以及 retarget 后的完整 MMHand URDF。三个视口
-使用独立相机和尺度，不会因放在同一场景而被整体缩小。内部视口使用
-`config.py` 中的 8081–8083 端口。
+叠加；下方两个独立、可旋转的大视口分别显示相机坐标系原始 3D 点和
+retarget 后的完整 HKU Hand V2 URDF。内部视口使用 8081、8082 端口。
+标准化 21 点仍用于 ROS points 输出，但不再占用一个 Web 视口。
 
 当前相机是单个 2560×720 MJPEG 设备，左右各 1280×720。`Camera.read()` 的
 输出已统一为 `(ok, left, right, timestamp)`；以后接 D435 只需实现相同接口，
@@ -68,13 +67,14 @@ MediaPipe 2D → 双目三角化 → 3D One Euro → 骨长约束
 Retarget 只接受稳定、非 stale、已经完成骨长标定的 `Left`：
 
 ```text
-标准人手 21 点 → 全手 21 变量有限差分 Jacobian
-→ Moore-Penrose pseudoinverse → 关节限位 → 关节 One Euro
+21 点 → 腕点坐标系与 HKU 坐标变换 → 16 个掌心到指骨/指尖向量
+→ URDF 解析 Jacobian + SLSQP → 关节限位 → 固定系数低通
 ```
 
-单个全局目标只包含四类向量：局部骨段、低权重的指根到指尖、低权重的手掌到
-指尖、拇指尖到其余四个指尖。没有分段、阻尼最小二乘、参考姿态、接触状态、
-碰撞项或 PIP/DIP 耦合。上一帧原始角度只作下一帧初值。
+这是父仓库 dex-retargeting 的普通 Vector 方法：16 个向量统一使用 SmoothL1
+距离，上一帧原始角度既作 warm start，也用于小权重时序正则。没有 DexPilot、
+分段、阻尼最小二乘、接触状态、碰撞项、DIP 解锁 hack、Torch 或额外进程。
+默认 `scaling=1.0`、`alpha=0.4`，由本地左手对指录像的 9 组参数回归选出。
 
 ## ROS 2 契约
 
@@ -99,13 +99,15 @@ Retarget 只接受稳定、非 stale、已经完成骨长标定的 `Left`：
 ```text
 config.py       所有配置和语义映射
 hand_core.py    相机、双目重建、人手滤波
-retarget.py     URDF FK 和全局数值 IK
+retarget.py     Vector 目标、URDF 解析 Jacobian 和 SLSQP
 track.py        Web、ROS 和主循环
 calibrate.py    双目标定
 ```
 
-MMHand URDF、contract 和 STL 位于 `assets/mmhand/`。本地录像位于被 Git 忽略
-的 `test_data/`。测试命令：
+HKU Hand V2 URDF、最小 STL 集合及现有 MMHand ROS contract 位于
+`assets/mmhand/`。ROS 输出按 `4→J00...J03, 3→J04...J07, 2→J08...J11,
+1→J12...J15, 5→J16...J20` 重排。本地录像位于被 Git 忽略的 `test_data/`。
+测试命令：
 
 ```bash
 python -m unittest -v test_hand_capture.py

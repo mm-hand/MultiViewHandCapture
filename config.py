@@ -22,47 +22,32 @@ MAX_HAND_RADIUS = 300.0
 STALE_FRAMES, HAND_SWITCH_FRAMES = 3, 5
 STANDARD_PALM_SIZE = 0.086
 
-# MMHand semantics. q always follows the contract's J00...J20 order.
-ROBOT_BASE_LINK = "base_link"
-ROBOT_CHAINS = {
-    "pinky": ((17, 18, 19, 20), (0, 1, 2, 3)),
-    "ring": ((13, 14, 15, 16), (4, 5, 6, 7)),
-    "middle": ((9, 10, 11, 12), (8, 9, 10, 11)),
-    "index": ((5, 6, 7, 8), (12, 13, 14, 15)),
-    "thumb": ((1, 2, 3, 4), (20, 16, 17, 18, 19)),
-}
-ROBOT_TIP_LINKS = {
-    "pinky": "finger_4_fingertip_1",
-    "ring": "finger_3_fingertip_1",
-    "middle": "finger_2_fingertip_1",
-    "index": "finger_1_fingertip_1",
-    "thumb": "mmhand_thumb_1_finger_7_fingertip_1",
-}
-ROBOT_TIP_OFFSETS = {
-    "pinky": (0.0275333939, 0.0199599086, -0.0025148951),
-    "ring": (0.0275333939, 0.0199599086, -0.0025148951),
-    "middle": (0.0292021721, 0.0182175597, -0.0025476633),
-    "index": (0.0295156873, 0.0177043729, -0.0025476633),
-    "thumb": (0.0174200966, -0.0060131696, -0.0291124871),
-}
-ROBOT_FE_INDICES = (1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19)
-HUMAN_TO_ROBOT_PALM = ((0, 0, 1), (0, 1, 0), (1, 0, 0))
-
-# Full-hand finite-difference pseudoinverse IK.
-IK_WEIGHTS = {"local": 1.0, "anchor_tip": 0.2, "hand_tip": 0.2, "thumb_tip": 1.0}
-IK_ITERATIONS = 6
-IK_EPSILON = 1e-4
-IK_PINV_RCOND = 1e-5
-IK_MAX_STEP = 0.18
-IK_STOP_RMS = 1e-3
-IK_MAX_RMS = 0.75
-IK_NO_IMPROVEMENT = 2
-JOINT_FILTER = (1.0, 0.02, 1.0)
+# dex-retargeting HKU Hand V2 ordinary Vector method.
+ROBOT_JOINT_NAMES = tuple(
+    [f"{finger}-{joint}" for finger in range(1, 5) for joint in range(1, 5)]
+    + [f"5-{joint}" for joint in range(1, 6)]
+)
+# Robot order -> the existing MMHand J00...J20 ROS contract.
+ROBOT_TO_CONTRACT = (12, 13, 14, 15, 8, 9, 10, 11, 4, 5, 6, 7, 0, 1, 2, 3, 16, 17, 18, 19, 20)
+VECTOR_ORIGIN_LINKS = ("base_link",) * 16
+VECTOR_TASK_LINKS = (
+    "5-tip_Link", "1-tip_Link", "2-tip_Link", "3-tip_Link", "4-tip_Link",
+    "5-4_Link", "1-3_Link", "2-3_Link", "3-3_Link", "4-3_Link",
+    "5-3_Link", "1-2_Link", "2-2_Link", "3-2_Link", "4-2_Link", "5-2_Link",
+)
+VECTOR_HUMAN_ORIGINS = (0,) * 16
+VECTOR_HUMAN_TASKS = (4, 8, 12, 16, 20, 3, 7, 11, 15, 19, 2, 6, 10, 14, 18, 1)
+OPERATOR2MANO_LEFT = ((0, 0, -1), (1, 0, 0), (0, -1, 0))
+VECTOR_SCALING = 1.0
+VECTOR_HUBER_DELTA = 0.02
+VECTOR_NORM_DELTA = 0.004
+VECTOR_LOW_PASS_ALPHA = 0.4
+VECTOR_MAX_EVAL = 50
 
 # Runtime output and viewer.
 KEYPOINT_TOPIC = "/hand/keypoints"
 KEYPOINT_LAYOUT = "mvhc:keypoints:v1:palm_local_m:size=0.086"
-WEB_PORT, VIEW_PORTS, WEB_FPS = 8080, (8081, 8082, 8083), 15
+WEB_PORT, VIEW_PORTS, WEB_FPS = 8080, (8081, 8082), 15
 SKELETON_EDGES = tuple(
     edge
     for chain in (
