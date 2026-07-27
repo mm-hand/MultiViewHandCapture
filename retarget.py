@@ -1,4 +1,3 @@
-import json
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 
@@ -43,7 +42,7 @@ class LowPass:
 
 
 class RobotModel:
-    def __init__(self, urdf_path=C.URDF_PATH, contract_path=C.URDF_CONTRACT_PATH):
+    def __init__(self, urdf_path=C.URDF_PATH):
         self.joints, self.children, parent_joint = {}, defaultdict(list), {}
         urdf_limits = {}
         for node in ET.parse(urdf_path).getroot().findall("joint"):
@@ -63,22 +62,11 @@ class RobotModel:
                 urdf_limits[name] = (float(limit.get("lower")), float(limit.get("upper")))
         self.names = tuple(name for name in C.ROBOT_JOINT_NAMES if name in urdf_limits)
         if self.names != C.ROBOT_JOINT_NAMES:
-            raise ValueError(f"Unexpected HKU Hand joints: {self.names}")
+            raise ValueError(f"Unexpected MMHand joints: {self.names}")
         self.index = {name: index for index, name in enumerate(self.names)}
 
-        contract = json.loads(contract_path.read_text())
-        contract_limits = np.radians([joint["limit_deg"] for joint in contract["joints"]])
-        mapping = np.asarray(C.ROBOT_TO_CONTRACT)
         limits = np.asarray([urdf_limits[name] for name in self.names])
-        self.lower = np.maximum(limits[:, 0], contract_limits[mapping, 0])
-        self.upper = np.minimum(limits[:, 1], contract_limits[mapping, 1])
-        if np.any(self.lower > self.upper):
-            raise ValueError("URDF and ROS contract joint limits do not overlap")
-        self.topic = contract["topic"]
-        self.layout = (
-            f"mmhand:J00-J20:{contract['input_space']}:{contract['mapping_id']}:"
-            f"v{contract['mapping_version']}:{contract['urdf_config_crc']}"
-        )
+        self.lower, self.upper = limits.T
         self.links = tuple(dict.fromkeys(C.VECTOR_ORIGIN_LINKS + C.VECTOR_TASK_LINKS))
         self.origin = np.asarray([self.links.index(name) for name in C.VECTOR_ORIGIN_LINKS])
         self.task = np.asarray([self.links.index(name) for name in C.VECTOR_TASK_LINKS])
@@ -128,11 +116,6 @@ class RobotModel:
         transforms, _, _ = self.fk(q)
         return {name: transforms[name][:3, 3].copy() for name in self.tip_links}
 
-    def contract_degrees(self, q):
-        output = np.empty(21)
-        output[np.asarray(C.ROBOT_TO_CONTRACT)] = q
-        return np.degrees(output)
-
 
 class Retargeter:
     def __init__(self, model=None, scaling=C.VECTOR_SCALING, alpha=C.VECTOR_LOW_PASS_ALPHA):
@@ -143,7 +126,7 @@ class Retargeter:
         if scaling.shape != (16,) or not np.isfinite(scaling).all() or np.any(scaling <= 0):
             raise ValueError("scaling must be a positive scalar or 16-vector")
         self.scaling, self.filter = scaling[:, None], LowPass(alpha)
-        self.raw_q = self.model.lower.copy()
+        self.raw_q = np.clip(np.zeros(21), self.model.lower, self.model.upper)
 
     @staticmethod
     def _hand_frame(points):
@@ -161,8 +144,8 @@ class Retargeter:
     def targets(self, points):
         points = (np.asarray(points, float) - points[0]) * 0.001
         mano = points @ self._hand_frame(points) @ np.asarray(C.OPERATOR2MANO_LEFT)
-        hku = mano[:, (2, 1, 0)] * (1, 1, -1)
-        return hku[np.asarray(C.VECTOR_HUMAN_TASKS)] - hku[np.asarray(C.VECTOR_HUMAN_ORIGINS)]
+        robot = mano[:, (2, 1, 0)] * (1, 1, -1)
+        return robot[np.asarray(C.VECTOR_HUMAN_TASKS)] - robot[np.asarray(C.VECTOR_HUMAN_ORIGINS)]
 
     def objective(self, q, target, last=None):
         vectors, jacobian = self.model.vectors(q, True)
@@ -206,7 +189,7 @@ class Retargeter:
             "success": True,
             "q": filtered,
             "q_raw": self.raw_q.copy(),
-            "q_deg": self.model.contract_degrees(filtered),
+            "q_deg": np.degrees(filtered),
             "rms": rms,
             "pose_rms": pose_rms,
             "points": self.model.points(filtered),

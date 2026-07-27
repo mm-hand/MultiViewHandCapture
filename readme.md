@@ -1,6 +1,6 @@
 # MultiView Hand Capture
 
-双目 MediaPipe 21 点重建、HKU Hand V2 Vector retarget、Viser Web 可视化和可选 ROS 2
+双目 MediaPipe 21 点重建、MMHand Vector retarget、Viser Web 可视化和可选 ROS 2
 发布。它是直接运行的脚本，不是 Python/ROS 软件包。
 
 ## 环境
@@ -38,13 +38,13 @@ python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 python calibrate.py                         # 已有 stereo_params.json 时跳过
 python track.py --mode points              # 只跟踪、显示
 python track.py --mode points --ros        # 发布标准化 21 点
-python track.py --mode retarget            # 左手 → HKU Hand V2，并显示 URDF
+python track.py --mode retarget            # 左手 → MMHand，并显示 URDF
 python track.py --mode retarget --ros      # 同时发布机器人角度
 ```
 
 浏览器打开 `http://localhost:8080`。上方整行显示左右相机和 MediaPipe
 叠加；左下以正对掌面的固定初始视角显示腕点坐标系、0.086 m 标准掌尺寸的
-归一化手势，右下显示 retarget 后的完整 HKU Hand V2 URDF。内部视口使用
+归一化手势，右下显示 retarget 后的完整 MMHand URDF。内部视口使用
 8081、8082 端口。
 
 当前相机是单个 2560×720 MJPEG 设备，左右各 1280×720。`Camera.read()` 的
@@ -67,16 +67,15 @@ MediaPipe 2D → 双目三角化 → 3D One Euro → 骨长约束
 Retarget 只接受稳定、非 stale、已经完成骨长标定的 `Left`：
 
 ```text
-21 点 → 腕点坐标系与 HKU 坐标变换 → 16 个掌心到指骨/指尖向量
+21 点 → 腕点坐标系与 MMHand 坐标变换 → 16 个掌心到指骨/指尖向量
 → URDF 解析 Jacobian + SLSQP → 关节限位 → 固定系数低通
 ```
 
 这是父仓库 dex-retargeting 的普通 Vector 方法：16 个向量统一使用 SmoothL1
 距离，上一帧原始角度既作 warm start，也用于小权重时序正则。没有 DexPilot、
 分段、阻尼最小二乘、接触状态、碰撞项、DIP 解锁 hack、Torch 或额外进程。
-16 个向量分别使用 `config.py` 中的 scaling，`alpha=0.4`。scaling 由四段
-本地录像自动搜索，并以人手/机器人 PIP、DIP 角度、原始向量误差、对指距离
-和运动平滑度共同评分；运行时不包含调参代码。
+16 个向量分别使用 `config.py` 中的 scaling，`alpha=0.4`。当前 scaling
+沿用上一版模型参数；替换 MMHand URDF 后尚未重新调参，运行时不包含调参代码。
 
 ## ROS 2 契约
 
@@ -92,7 +91,7 @@ Retarget 只接受稳定、非 stale、已经完成骨长标定的 `Left`：
 - topic：`/raw_ik_target`
 - type：`std_msgs/Float32MultiArray`
 - data：21 个 float，J00...J20 的 URDF 角度，单位 degree
-- layout：`mmhand:J00-J20:urdf_deg:structure_urdf_v2:v3:73FD45FA`
+- layout：`mmhand:J00-J20:urdf_deg`
 
 手丢失、stale、右手或 IK 失败时不发布机器人角度。
 
@@ -106,9 +105,10 @@ track.py        Web、ROS 和主循环
 calibrate.py    双目标定
 ```
 
-HKU Hand V2 URDF、最小 STL 集合及现有 MMHand ROS contract 位于
-`assets/mmhand/`。ROS 输出按 `4→J00...J03, 3→J04...J07, 2→J08...J11,
-1→J12...J15, 5→J16...J20` 重排。本地录像位于被 Git 忽略的 `test_data/`。
+MMHand URDF 和 STL 来自父仓库 `structure` 的 `1326daf`，位于
+`assets/mmhand/`。URDF 是关节名、轴向和限位的唯一来源；ROS 输出直接按
+小指、无名指、中指、食指、拇指排列为 J00...J20。本地录像位于被 Git 忽略的
+`test_data/`。
 测试命令：
 
 ```bash

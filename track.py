@@ -10,6 +10,8 @@ from config import (
     CAMERA_INDEX,
     KEYPOINT_LAYOUT,
     KEYPOINT_TOPIC,
+    ROBOT_LAYOUT,
+    ROBOT_TOPIC,
     SKELETON_EDGES,
     URDF_PATH,
     WEB_FPS,
@@ -87,7 +89,7 @@ img,iframe{{width:100%;height:100%;display:block;border:0;object-fit:contain}}
 <section class="panel stereo"><h2>Stereo + MediaPipe <span id="status">WAITING</span></h2>
 <img id="stereo"></section>
 <section class="panel"><h2>Normalized hand · wrist frame · 0.086 m</h2><iframe id="normalized"></iframe></section>
-<section class="panel"><h2>Retargeted HKU Hand V2</h2><iframe id="robot"></iframe></section>
+<section class="panel"><h2>Retargeted MMHand</h2><iframe id="robot"></iframe></section>
 <script>
 const host=location.hostname, statusText=document.getElementById("status"),
 stereoImage=document.getElementById("stereo");
@@ -166,16 +168,15 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
 
 
 class RosOutput:
-    def __init__(self, mode, model):
+    def __init__(self, mode):
         import rclpy
         from std_msgs.msg import Float32MultiArray
 
         rclpy.init(args=None)
         self.rclpy, self.message = rclpy, Float32MultiArray
         self.node = rclpy.create_node("multiview_hand_capture")
-        topic = KEYPOINT_TOPIC if mode == "points" else model.topic
+        topic = KEYPOINT_TOPIC if mode == "points" else ROBOT_TOPIC
         self.publisher = self.node.create_publisher(Float32MultiArray, topic, 1)
-        self.mode, self.model = mode, model
         print(f"ROS 2: publishing {topic}")
 
     def publish(self, values, label, shape):
@@ -194,7 +195,7 @@ class RosOutput:
         self.publish(points, f"{KEYPOINT_LAYOUT}:hand={handedness}", (21, 3))
 
     def joints(self, degrees):
-        self.publish(degrees, self.model.layout, (21,))
+        self.publish(degrees, ROBOT_LAYOUT, (21,))
 
     def close(self):
         self.node.destroy_node()
@@ -211,7 +212,7 @@ def main():
     retargeter = Retargeter() if args.mode == "retarget" else None
     camera, processor = Camera(args.camera), StereoProcessor()
     viewer = Viewer(None if retargeter is None else retargeter.model)
-    ros = RosOutput(args.mode, None if retargeter is None else retargeter.model) if args.ros else None
+    ros = RosOutput(args.mode) if args.ros else None
     last_timestamp = None
     try:
         while True:
