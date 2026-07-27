@@ -67,9 +67,11 @@ class RobotModel:
 
         limits = np.asarray([urdf_limits[name] for name in self.names])
         self.lower, self.upper = limits.T
-        self.links = tuple(dict.fromkeys(C.VECTOR_ORIGIN_LINKS + C.VECTOR_TASK_LINKS))
-        self.origin = np.asarray([self.links.index(name) for name in C.VECTOR_ORIGIN_LINKS])
-        self.task = np.asarray([self.links.index(name) for name in C.VECTOR_TASK_LINKS])
+        robot_origins = tuple(item[2] for item in C.VECTOR_MAP)
+        robot_tasks = tuple(item[3] for item in C.VECTOR_MAP)
+        self.links = tuple(dict.fromkeys(robot_origins + robot_tasks))
+        self.origin = np.asarray([self.links.index(name) for name in robot_origins])
+        self.task = np.asarray([self.links.index(name) for name in robot_tasks])
         self.tip_links = tuple(f"{finger}-tip_Link" for finger in (5, 1, 2, 3, 4))
         self.ancestors = {}
         for link in self.links:
@@ -118,14 +120,26 @@ class RobotModel:
 
 
 class Retargeter:
-    def __init__(self, model=None, scaling=C.VECTOR_SCALING, alpha=C.VECTOR_LOW_PASS_ALPHA):
+    def __init__(
+        self,
+        model=None,
+        scaling=C.VECTOR_SCALING,
+        weights=C.VECTOR_WEIGHTS,
+        alpha=C.VECTOR_LOW_PASS_ALPHA,
+    ):
         self.model = RobotModel() if model is None else model
-        scaling = np.asarray(scaling, float)
+        count = len(C.VECTOR_MAP)
+        scaling, weights = np.asarray(scaling, float), np.asarray(weights, float)
         if scaling.ndim == 0:
-            scaling = np.full(16, scaling)
-        if scaling.shape != (16,) or not np.isfinite(scaling).all() or np.any(scaling <= 0):
-            raise ValueError("scaling must be a positive scalar or 16-vector")
-        self.scaling, self.filter = scaling[:, None], LowPass(alpha)
+            scaling = np.full(count, scaling)
+        if weights.ndim == 0:
+            weights = np.full(count, weights)
+        if scaling.shape != (count,) or not np.isfinite(scaling).all() or np.any(scaling <= 0):
+            raise ValueError(f"scaling must be a positive scalar or {count}-vector")
+        if weights.shape != (count,) or not np.isfinite(weights).all() or np.any(weights <= 0):
+            raise ValueError(f"weights must be a positive scalar or {count}-vector")
+        self.scaling, self.weights = scaling[:, None], weights
+        self.filter = LowPass(alpha)
         self.raw_q = np.clip(np.zeros(21), self.model.lower, self.model.upper)
 
     @staticmethod
@@ -141,11 +155,15 @@ class Retargeter:
             normal, z = -normal, -z
         return np.column_stack((x, normal, z))
 
-    def targets(self, points):
+    def targets(self, points, handedness="Left"):
         points = (np.asarray(points, float) - points[0]) * 0.001
         mano = points @ self._hand_frame(points) @ np.asarray(C.OPERATOR2MANO_LEFT)
         robot = mano[:, (2, 1, 0)] * (1, 1, -1)
-        return robot[np.asarray(C.VECTOR_HUMAN_TASKS)] - robot[np.asarray(C.VECTOR_HUMAN_ORIGINS)]
+        if handedness == "Right":
+            robot[:, 2] *= -1
+        origins = np.asarray([item[0] for item in C.VECTOR_MAP])
+        tasks = np.asarray([item[1] for item in C.VECTOR_MAP])
+        return robot[tasks] - robot[origins]
 
     def objective(self, q, target, last=None):
         vectors, jacobian = self.model.vectors(q, True)
@@ -154,20 +172,21 @@ class Retargeter:
         quadratic = distance < C.VECTOR_HUBER_DELTA
         loss = np.where(quadratic, 0.5 * distance**2 / C.VECTOR_HUBER_DELTA, distance - 0.5 * C.VECTOR_HUBER_DELTA)
         direction = error / np.maximum(np.where(quadratic, C.VECTOR_HUBER_DELTA, distance)[:, None], EPS)
-        gradient = np.einsum("vi,vij->j", direction, jacobian) / len(error)
-        value = loss.mean()
+        total = self.weights.sum()
+        gradient = np.einsum("v,vi,vij->j", self.weights, direction, jacobian) / total
+        value = np.dot(self.weights, loss) / total
         if last is not None:
             delta = q - last
             value += C.VECTOR_NORM_DELTA * np.dot(delta, delta)
             gradient += 2 * C.VECTOR_NORM_DELTA * delta
         return float(value), gradient, float(np.sqrt(np.mean(distance**2)))
 
-    def solve(self, points, timestamp=None):
+    def solve(self, points, timestamp=None, handedness="Left"):
         points = np.asarray(points, float)
         if points.shape != (21, 3) or not np.isfinite(points).all():
             return self._failure(float("inf"))
         try:
-            target, last = self.targets(points), self.raw_q.copy()
+            target, last = self.targets(points, handedness), self.raw_q.copy()
             result = minimize(
                 lambda q: self.objective(q, target, last)[:2],
                 last,
@@ -184,21 +203,19 @@ class Retargeter:
             return self._failure(rms)
         self.raw_q = np.clip(q, self.model.lower, self.model.upper)
         filtered = np.clip(self.filter(self.raw_q), self.model.lower, self.model.upper)
-        pose_rms = float(np.sqrt(np.mean((self.model.vectors(filtered) - target) ** 2)))
         return {
             "success": True,
             "q": filtered,
             "q_raw": self.raw_q.copy(),
             "q_deg": np.degrees(filtered),
             "rms": rms,
-            "pose_rms": pose_rms,
             "points": self.model.points(filtered),
         }
 
     def _failure(self, rms):
         return {
             "success": False, "q": None, "q_raw": self.raw_q.copy(), "q_deg": None,
-            "rms": rms, "pose_rms": float("inf"), "points": self.model.points(self.raw_q),
+            "rms": rms, "points": self.model.points(self.raw_q),
         }
 
     def pause(self):

@@ -67,15 +67,15 @@ MediaPipe 2D → 双目三角化 → 3D One Euro → 骨长约束
 Retarget 只接受稳定、非 stale、已经完成骨长标定的 `Left`：
 
 ```text
-21 点 → 腕点坐标系与 MMHand 坐标变换 → 16 个掌心到指骨/指尖向量
+21 点 → 腕点坐标系与 MMHand 坐标变换 → 24 个对应人手/机器人向量
 → URDF 解析 Jacobian + SLSQP → 关节限位 → 固定系数低通
 ```
 
-这是父仓库 dex-retargeting 的普通 Vector 方法：16 个向量统一使用 SmoothL1
-距离，上一帧原始角度既作 warm start，也用于小权重时序正则。没有 DexPilot、
-分段、阻尼最小二乘、接触状态、碰撞项、DIP 解锁 hack、Torch 或额外进程。
-16 个向量分别使用 `config.py` 中的 scaling，`alpha=0.4`。当前 scaling
-沿用上一版模型参数；替换 MMHand URDF 后尚未重新调参，运行时不包含调参代码。
+24 个向量包括腕部到五个指尖、四指各三段指骨、拇指三段指骨，以及拇指尖到
+另外四个指尖。每项使用独立的静态 scaling 和 weight，并统一采用 SmoothL1；
+上一帧原始角度既作 warm start，也用于小权重时序正则。没有接触状态、动态增益、
+指腹方向、碰撞项、DexPilot、分段、阻尼最小二乘、Torch 或额外进程。
+运行时低通 `alpha=0.4`，所有映射和参数均在 `config.py`。
 
 ## ROS 2 契约
 
