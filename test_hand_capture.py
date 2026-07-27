@@ -94,7 +94,8 @@ class CoreTests(unittest.TestCase):
         points = np.zeros((21, 3))
         points[:, 2] = 400
         self.assertIsNone(geometry_error(points, 1))
-        self.assertEqual(geometry_error(points, 9), "reprojection")
+        self.assertIsNone(geometry_error(points, 30))
+        self.assertEqual(geometry_error(points, 31), "reprojection")
         points[1, 2] = 2000
         self.assertEqual(geometry_error(points, 1), "depth")
         points[1] = (400, 0, 400)

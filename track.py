@@ -36,10 +36,10 @@ class Viewer:
         from viser.extras import ViserUrdf
 
         self.servers = [viser.ViserServer(port=port) for port in VIEW_PORTS]
-        raw, robot_server = self.servers
-        self._camera(raw, (0, 0, 0.15), (0, 0, 0.45), (0, -1, 0), 55)
+        normalized, robot_server = self.servers
+        self._camera(normalized, (0.24, 0, 0.05), (0, 0, 0.05), (0, 0, 1), 42)
         self._camera(robot_server, (0.28, -0.32, 0.22), (0, 0, 0.06), (0, 0, 1), 42)
-        self.handles = {"raw": self._skeleton(raw, (255, 80, 80), 0.008)}
+        self.handles = {"normalized": self._skeleton(normalized, (60, 170, 255), 0.004)}
         self.urdf = self.urdf_names = None
         if model is not None:
             robot_server.scene.add_frame("/robot", show_axes=False)
@@ -74,7 +74,7 @@ class Viewer:
 
     def _start_dashboard(self):
         owner = self
-        raw_port, robot_port = [server.get_port() for server in self.servers]
+        normalized_port, robot_port = [server.get_port() for server in self.servers]
         page = f"""<!doctype html><html><head><meta charset="utf-8">
 <title>MultiView Hand Capture</title><style>
 *{{box-sizing:border-box}} body{{margin:0;height:100vh;background:#101318;color:#eef;
@@ -86,12 +86,12 @@ img,iframe{{width:100%;height:100%;display:block;border:0;object-fit:contain}}
 #status{{color:#9bd;margin-left:12px;font-weight:normal}}</style></head><body>
 <section class="panel stereo"><h2>Stereo + MediaPipe <span id="status">WAITING</span></h2>
 <img id="stereo"></section>
-<section class="panel"><h2>Raw 3D · camera frame · m</h2><iframe id="raw"></iframe></section>
+<section class="panel"><h2>Normalized hand · wrist frame · 0.086 m</h2><iframe id="normalized"></iframe></section>
 <section class="panel"><h2>Retargeted HKU Hand V2</h2><iframe id="robot"></iframe></section>
 <script>
 const host=location.hostname, statusText=document.getElementById("status"),
 stereoImage=document.getElementById("stereo");
-for(const [id,port] of [["raw",{raw_port}],["robot",{robot_port}]])
+for(const [id,port] of [["normalized",{normalized_port}],["robot",{robot_port}]])
   document.getElementById(id).src=`http://${{host}}:${{port}}`;
 setInterval(()=>{{stereoImage.src="/stereo.jpg?t="+Date.now();
 fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(1000 / WEB_FPS)});
@@ -139,6 +139,8 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
         self.last_update = now
         quality = result["quality"]
         detail = f" · rejected: {quality['rejected_reason']}" if quality["rejected_reason"] else ""
+        if quality["reprojection_error"] is not None:
+            detail += f" · reprojection: {quality['reprojection_error']:.1f} px"
         if robot is not None:
             detail += f" · Vector RMSE: {robot['rms'] * 1000:.1f} mm"
         self.status = f"{result['phase']}{detail}"
@@ -152,8 +154,7 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
         ok, encoded = cv2.imencode(".jpg", np.hstack(views), (cv2.IMWRITE_JPEG_QUALITY, 82))
         if ok:
             self.stereo = encoded.tobytes()
-        absolute = result["keypoint_absolute"]
-        self._update_skeleton("raw", None if absolute is None else absolute * 0.001)
+        self._update_skeleton("normalized", result["keypoint_relative"])
         if robot is not None and robot["success"] and self.urdf is not None:
             self.urdf.update_cfg(np.asarray([robot["q"][self.robot_index[name]] for name in self.urdf_names]))
 

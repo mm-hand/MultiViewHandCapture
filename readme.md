@@ -43,9 +43,9 @@ python track.py --mode retarget --ros      # 同时发布机器人角度
 ```
 
 浏览器打开 `http://localhost:8080`。上方整行显示左右相机和 MediaPipe
-叠加；下方两个独立、可旋转的大视口分别显示相机坐标系原始 3D 点和
-retarget 后的完整 HKU Hand V2 URDF。内部视口使用 8081、8082 端口。
-标准化 21 点仍用于 ROS points 输出，但不再占用一个 Web 视口。
+叠加；左下以正对掌面的固定初始视角显示腕点坐标系、0.086 m 标准掌尺寸的
+归一化手势，右下显示 retarget 后的完整 HKU Hand V2 URDF。内部视口使用
+8081、8082 端口。
 
 当前相机是单个 2560×720 MJPEG 设备，左右各 1280×720。`Camera.read()` 的
 输出已统一为 `(ok, left, right, timestamp)`；以后接 D435 只需实现相同接口，
