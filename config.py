@@ -19,7 +19,7 @@ BONE_TOLERANCE = 0.20
 POINT_FILTER = (1.0, 0.01, 1.0)
 ANGLE_FILTER = (1.0, 0.02, 1.0)
 MAX_REPROJECTION_ERROR = 30.0
-DEPTH_RANGE = (100.0, 1500.0)
+Z_RANGE_MM = (100.0, 1500.0)
 MAX_HAND_RADIUS = 300.0
 STALE_FRAMES, HAND_SWITCH_FRAMES = 3, 5
 STANDARD_PALM_SIZE = 0.086
@@ -38,8 +38,9 @@ ROBOT_JOINT_NAMES = (
     "mmhand_thumb_1_finger_7_distal_phalanx_1_PIP_Joint",
     "mmhand_thumb_1_finger_7_fingertip_1_DIP_Joint", "Thumb_CMC",
 )
-# Four-finger A-A zero points (Little, Ring, Middle, Index). No spread offset.
+# Mechanical A-A neutral positions; four-finger order is Little, Ring, Middle, Index.
 MCP_AA_NEUTRAL_DEG = (36, 29, 31, 23)
+THUMB_MCP_AA_NEUTRAL_DEG = 28
 
 # Thumb tip position, tip-to-fingertip vectors, and pad direction.
 MMHAND_PALM_ORIGIN = (-0.083953, -0.037473, -0.047264)

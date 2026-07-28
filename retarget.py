@@ -104,7 +104,7 @@ class Retargeter:
         self.tip_weight = np.sqrt(C.THUMB_TIP_WEIGHT)
         self.neutral = np.zeros(21)
         self.neutral[AA] = np.radians(C.MCP_AA_NEUTRAL_DEG)
-        self.neutral[16] = np.radians(28)
+        self.neutral[16] = np.radians(C.THUMB_MCP_AA_NEUTRAL_DEG)
         self.model.lower[17:20] = np.maximum(self.model.lower[17:20], 0)
         self.q = np.clip(self.neutral, self.model.lower, self.model.upper)
 

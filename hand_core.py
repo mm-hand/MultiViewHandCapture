@@ -14,7 +14,6 @@ from config import (
     D435_FPS,
     D435_HEIGHT,
     D435_WIDTH,
-    DEPTH_RANGE,
     FINGER_CHAINS,
     FULL_WIDTH,
     HAND_SWITCH_FRAMES,
@@ -27,6 +26,7 @@ from config import (
     ROTATE_RIGHT,
     STANDARD_PALM_SIZE,
     STALE_FRAMES,
+    Z_RANGE_MM,
 )
 
 EPS = 1e-8
@@ -369,7 +369,7 @@ def geometry_error(points, reprojection_error):
         return "non-finite"
     if reprojection_error > MAX_REPROJECTION_ERROR:
         return "reprojection"
-    if np.any((points[:, 2] < DEPTH_RANGE[0]) | (points[:, 2] > DEPTH_RANGE[1])):
+    if np.any((points[:, 2] < Z_RANGE_MM[0]) | (points[:, 2] > Z_RANGE_MM[1])):
         return "depth"
     if np.max(np.linalg.norm(points - points[0], axis=1)) > MAX_HAND_RADIUS:
         return "hand-size"
