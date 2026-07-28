@@ -11,7 +11,7 @@ EPS = 1e-9
 THUMB = np.arange(16, 21)
 AA = np.array((0, 4, 8, 12))
 FINGER_TIPS = tuple(f"{finger}-tip_Link" for finger in (1, 2, 3, 4))
-THUMB_LINKS = (
+THUMB_POINTS = (
     "mmhand_thumb_1_thumb_abduction_adduction_link_1",
     "mmhand_thumb_1_finger_7_fingertip_1",
     "5-tip_Link",
@@ -63,6 +63,16 @@ class RobotModel:
             raise ValueError(f"Unexpected MMHand joints: {self.names}")
         self.index = {name: index for index, name in enumerate(self.names)}
         self.lower, self.upper = np.asarray([limits[name] for name in self.names]).T
+        q = np.zeros(21)
+        q[AA] = np.radians(C.MCP_AA_NEUTRAL_DEG)
+        transforms = self.fk(q)
+        mcp = np.asarray([transforms[f"finger_{i}_proximal_phalanx_1"][:3, 3] for i in range(1, 5)])
+        pip = np.asarray([transforms[f"finger_{i}_distal_phalanx_1"][:3, 3] for i in range(1, 5)])
+        side = _unit(mcp[0] - mcp[3])
+        forward = _unit((pip - mcp).mean(0) - side * np.dot((pip - mcp).mean(0), side))
+        normal = _unit(np.cross(side, forward))
+        self.palm_position = transforms["palm_1"][:3, 3]
+        self.palm_frame = np.column_stack((normal, np.cross(forward, normal), forward))
 
     def fk(self, q):
         transforms, stack = {"base_link": np.eye(4)}, ["base_link"]
@@ -81,20 +91,20 @@ class RobotModel:
 
     def thumb(self, q):
         transforms = self.fk(q)
-        origin, dip, tip = (transforms[name][:3, 3] for name in THUMB_LINKS)
-        normal = transforms[THUMB_LINKS[1]][:3, :3] @ np.asarray(C.THUMB_PAD_AXIS)
+        points = np.asarray([transforms[name][:3, 3] for name in THUMB_POINTS])
         fingers = np.asarray([transforms[name][:3, 3] for name in FINGER_TIPS])
-        return np.asarray((dip - origin, tip - origin)), tip, _unit(normal), fingers
+        points = (points - self.palm_position) @ self.palm_frame
+        fingers = (fingers - self.palm_position) @ self.palm_frame
+        normal = (transforms[THUMB_POINTS[1]][:3, :3] @ np.asarray(C.THUMB_PAD_AXIS)) @ self.palm_frame
+        return points, _unit(normal), fingers
+
 
 class Retargeter:
     def __init__(self, model=None):
         self.model = RobotModel() if model is None else model
-        self.rotations = np.asarray([
-            _rotation(vector, np.linalg.norm(vector))
-            for vector in np.asarray(C.THUMB_VECTOR_ROTATION_VECS)
-        ])
-        self.scaling = np.asarray(C.THUMB_VECTOR_SCALING)[:, None]
-        self.weights = np.sqrt(np.asarray(C.THUMB_VECTOR_WEIGHTS))[:, None]
+        self.palm_origin = np.asarray(C.MMHAND_PALM_ORIGIN)
+        self.scaling = np.asarray(C.THUMB_POSITION_SCALING)[:, None]
+        self.weights = np.sqrt(np.asarray(C.THUMB_POSITION_WEIGHTS))[:, None]
         self.neutral = np.zeros(21)
         self.neutral[AA] = np.radians(C.MCP_AA_NEUTRAL_DEG)
         self.neutral[16] = np.radians(28)
@@ -121,17 +131,16 @@ class Retargeter:
         return q
 
     def _task(self, points):
-        vectors = np.asarray((points[3] - points[1], points[4] - points[1]))
-        targets = np.einsum("vij,vj->vi", self.rotations, vectors) * self.scaling
+        targets = points[[2, 3, 4]] * self.scaling
         nearest = np.argsort(np.linalg.norm(points[[8, 12, 16, 20]] - points[4], axis=1))[:2]
         return targets, nearest
 
     def _residual(self, thumb, q, targets, nearest):
         q[THUMB] = thumb
-        vectors, tip, normal, fingers = self.model.thumb(q)
+        points, normal, fingers = self.model.thumb(q)
         lengths = np.maximum(np.linalg.norm(targets, axis=1)[:, None], EPS)
-        vector_error = self.weights * (vectors - targets) / lengths
-        toward = _unit(fingers[nearest].mean(0) - tip)
+        vector_error = self.weights * (points - self.palm_origin - targets) / lengths
+        toward = _unit(fingers[nearest].mean(0) - points[2])
         pad_error = np.sqrt(C.THUMB_PAD_WEIGHT) * (normal - toward)
         return np.r_[vector_error.ravel(), pad_error]
 
