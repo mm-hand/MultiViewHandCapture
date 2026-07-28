@@ -1,18 +1,51 @@
 # MultiView Hand Capture
 
-双目 MediaPipe 21 点重建、MMHand Vector retarget、Viser Web 可视化和可选 ROS 2
-发布。它是直接运行的脚本，不是 Python/ROS 软件包。
+## 简介
 
-## 环境
+用一个双目相机完成 MediaPipe 21 点手部重建、标准手归一化、MMHand retarget、
+Web 可视化和可选 ROS 2 发布。仓库是可直接运行的 Python 脚本，不需要构建为
+Python 或 ROS 软件包。
 
-环境名固定为 `mmhand`，同时包含 Python 3.12、RoboStack Jazzy 和运行依赖：
+主要功能：
+
+- 同时显示左右相机图像和 MediaPipe 2D 结果。
+- 输出毫米制相机坐标与 0.086 m 标准掌尺寸的 21 个三维关键点。
+- 对三维轨迹和非负屈伸角分别执行 One Euro 滤波。
+- 将稳定左手 retarget 为 MMHand 的 21 个 URDF 关节角。
+- 在同一网页显示归一化人手和 retarget 后的完整 MMHand URDF。
+- 可发布标准化关键点或机器人关节角 ROS 2 topic。
+
+当前相机输入是单个 `2560×720`、30 FPS MJPEG 设备，左右画面各
+`1280×720`。MMHand URDF 和 STL 位于 `assets/mmhand/`；关节名、轴向和限位
+以该 URDF 为准。相机、滤波、IK、Web 和 ROS 参数集中在 `config.py`。
+
+核心代码保持扁平：
+
+```text
+config.py       配置、关节顺序和 topic 契约
+hand_core.py    相机、MediaPipe、双目重建和人手滤波
+retarget.py     MMHand URDF FK 与极简拇指优化
+track.py        Web、ROS 和运行主循环
+calibrate.py    双目标定
+```
+
+## 安装
+
+克隆仓库：
+
+```bash
+git clone https://github.com/mm-hand/MultiViewHandCapture.git
+cd MultiViewHandCapture
+```
+
+项目使用固定的 `mmhand` Conda 环境。已有环境时更新：
 
 ```bash
 mamba env update -n mmhand -f environment.yml --prune
 conda activate mmhand
 ```
 
-若还没有这个环境，改用：
+首次安装时创建：
 
 ```bash
 mamba env create -f environment.yml
@@ -28,95 +61,129 @@ python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
   --no-deps mediapipe==0.10.21
 ```
 
-这里使用清华 PyPI 镜像，并特意带 `--no-deps`：本项目只使用 MediaPipe Hands，
-不让 pip 为未使用的 Tasks 功能额外安装 JAX/JAXlib，也不让 pip 覆盖环境中已经
-验证可用的 conda OpenCV。
+这里使用清华 PyPI 镜像，并用 `--no-deps` 避免 MediaPipe 为未使用的 Tasks
+功能安装 JAX/JAXlib，或覆盖 Conda 环境中已经验证的 OpenCV。
 
-## 运行
+## Quick Start
+
+首次使用、更换相机或改变两个镜头的相对位置后执行双目标定：
 
 ```bash
-python calibrate.py                         # 已有 stereo_params.json 时跳过
-python track.py --mode points              # 只跟踪、显示
-python track.py --mode points --ros        # 发布标准化 21 点
-python track.py --mode retarget            # 左手 → MMHand，并显示 URDF
-python track.py --mode retarget --ros      # 同时发布机器人角度
+python calibrate.py
 ```
 
-浏览器打开 `http://localhost:8080`。上方整行显示左右相机和 MediaPipe
-叠加；左下以正对掌面的固定初始视角显示腕点坐标系、0.086 m 标准掌尺寸的
-归一化手势，右下显示 retarget 后的完整 MMHand URDF。内部视口使用
-8081、8082 端口。
+标定窗口中将 `9×6` 内角点、格长 `23.5 mm` 的棋盘放在不同位置和角度：
 
-当前相机是单个 2560×720 MJPEG 设备，左右各 1280×720。`Camera.read()` 的
-输出已统一为 `(ok, left, right, timestamp)`；以后接 D435 只需实现相同接口，
-当前不包含未验证的 D435 代码。相机、标定、滤波、IK、URDF 语义和发布参数均在
-`config.py`。
+- `C`：保存当前有效双目图像对。
+- `Q`：结束采样并计算参数。
+- 至少采集 10 对；结果写入 `stereo_params.json`。
 
-## 数据流
+已有有效 `stereo_params.json` 时直接运行：
 
-人手重建：
-
-```text
-MediaPipe 2D → 双目三角化 → 3D One Euro → 骨长约束
-→ 非负屈伸角约束 → 角度 One Euro → 21 个 3D 点
+```bash
+python track.py --mode points              # 跟踪并显示标准化 21 点
+python track.py --mode points --ros        # 同时发布 21 点
+python track.py --mode retarget            # 左手 retarget，并显示 MMHand
+python track.py --mode retarget --ros      # 同时发布 MMHand 关节角
 ```
 
-`keypoint_absolute` 是毫米制相机坐标；`keypoint_relative` 是以腕点为原点、
-掌宽方向固定且掌尺寸归一到 0.086 m 的 21×3 米制坐标。
+如相机不是 `config.py` 中的默认编号：
 
-Retarget 只接受稳定、非 stale、已经完成骨长标定的 `Left`：
-
-```text
-21 点 → 四指关节角直传
-     → 三个拇指位置 + 指腹方向的 bounded least squares
-     → 21 个关节角
+```bash
+python track.py --mode retarget --camera 2
 ```
 
-四指 MCP F-E、PIP、DIP 直接复制人手角度。MCP A-A 只加机械中位零点：
-小指、无名指、中指、食指分别为 36°、29°、31°、23°，没有散开偏置。
+浏览器打开 `http://localhost:8080`：
 
-拇指只优化五个拇指关节。人手 Wrist→MCP/IP/TIP 分别匹配机器人
-Palm-origin→MCP/DIP/TIP；两套掌坐标轴语义相同，机器人掌原点是相对 URDF
-`palm_1` 的固定三维偏移。指腹法向软匹配距离人手拇指最近的两根手指所对应的
-机器人指尖中点。人手位置先归一到 0.086 m 标准掌尺寸；上一帧只作求解初值，
-不进入目标函数。没有额外旋转、全手 Vector loss、碰撞项、分段 IK、输出滤波、
-Torch 或额外进程。所有参数均在 `config.py`。
+- 上方：左右相机和 MediaPipe 叠加。
+- 左下：腕点坐标系中的 0.086 m 标准人手。
+- 右下：retarget 后的 MMHand URDF。
 
-## ROS 2 契约
-
-`--mode points --ros` 发布：
-
-- topic：`/hand/keypoints`
-- type：`std_msgs/Float32MultiArray`
-- data：63 个 float，顺序为 `x0,y0,z0,...`，单位 m
-- layout：含 `hand=Left` 或 `hand=Right`
-
-`--mode retarget --ros` 发布：
-
-- topic：`/raw_ik_target`
-- type：`std_msgs/Float32MultiArray`
-- data：21 个 float，J00...J20 的 URDF 角度，单位 degree
-- layout：`mmhand:J00-J20:urdf_deg`
-
-手丢失、stale、右手或 IK 失败时不发布机器人角度。
-
-## 文件
-
-```text
-config.py       所有配置和语义映射
-hand_core.py    相机、双目重建、人手滤波
-retarget.py     四指角度直传、拇指 Vector 优化和 URDF FK
-track.py        Web、ROS 和主循环
-calibrate.py    双目标定
-```
-
-MMHand URDF 和 STL 来自父仓库 `structure` 的 `1326daf`，位于
-`assets/mmhand/`。URDF 是关节名、轴向和限位的唯一来源；ROS 输出直接按
-小指、无名指、中指、食指、拇指排列为 J00...J20。本地录像位于被 Git 忽略的
-`test_data/`。
-
-测试命令：
+程序开始后先用 100 个有效帧估计骨长，状态从 `CALIBRATION` 变为
+`GESTURE TRACKING` 后才发布机器人角度。基础检查命令：
 
 ```bash
 python -m unittest -v test_hand_capture.py
 ```
+
+## 原理
+
+人手重建流程：
+
+```text
+MediaPipe 2D
+→ 双目三角化
+→ 3D One Euro
+→ 骨长约束
+→ 非负屈伸角
+→ 角度 One Euro
+→ 21 个 3D 点
+```
+
+`keypoint_absolute` 是毫米制相机坐标。`keypoint_relative` 以腕点为原点，
+使用掌面法向、由小指侧指向食指侧、手指前伸方向组成的掌坐标系，并把平均掌尺寸
+归一到 `0.086 m`。
+
+Retarget 只处理稳定、非 stale、完成骨长标定的左手：
+
+```text
+标准化 21 点
+→ 四指角度直传
+→ 拇指五自由度 bounded least squares
+→ MMHand 21 个关节角
+```
+
+四指 MCP F-E、PIP、DIP 直接使用人手屈伸角。MCP A-A 在人手侧摆角上加
+MMHand 的机械中位：小指、无名指、中指、食指分别为
+`36°、29°、31°、23°`，不增加额外散开偏置。
+
+拇指优化仅保留三类目标：
+
+1. 人手 Wrist→Thumb TIP 经一个尺度匹配机器人
+   Palm-origin→Thumb TIP。
+2. 人手 Thumb TIP→其余四指尖的四条向量直接匹配机器人对应向量，不再缩放。
+3. MMHand 指腹法向指向距离人手拇指最近的两个指尖所对应的机器人指尖中点。
+
+机器人掌坐标轴与人手掌坐标轴语义相同，掌原点是相对 URDF `palm_1` 的可调三维
+偏移。位置残差统一除以 `0.086 m`，使米制位置误差与无量纲方向误差处于相近
+数量级，同时避免对指向量接近零时按自身长度归一化导致发散。上一帧关节角只作为
+求解初值，不进入损失函数。
+
+## 输出 ROS 话题
+
+加 `--ros` 后，`track.py` 在同一进程内创建 ROS 2 节点
+`multiview_hand_capture`，消息类型均为 `std_msgs/msg/Float32MultiArray`。
+
+### `/hand/keypoints`
+
+由 `python track.py --mode points --ros` 发布。
+
+| 字段 | 内容 |
+|---|---|
+| data | 63 个 float：`x0,y0,z0,...,x20,y20,z20` |
+| shape | `21×3` |
+| 单位 | m |
+| 坐标系 | 腕点原点、掌坐标轴、掌尺寸 0.086 m |
+| layout label | `mvhc:keypoints:v1:palm_local_m:size=0.086:hand=Left/Right` |
+
+### `/raw_ik_target`
+
+由 `python track.py --mode retarget --ros` 发布。
+
+| 字段 | 内容 |
+|---|---|
+| data | 21 个 float，J00...J20 |
+| shape | `21` |
+| 单位 | degree，URDF 关节角 |
+| 顺序 | 小指、无名指、中指、食指、拇指 |
+| layout label | `mmhand:J00-J20:urdf_deg` |
+
+可用以下命令检查：
+
+```bash
+ros2 topic echo /hand/keypoints
+ros2 topic echo /raw_ik_target
+```
+
+手丢失、结果 stale、骨长标定未完成、检测到右手或 IK 失败时，不发布
+`/raw_ik_target`。

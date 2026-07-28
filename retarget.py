@@ -11,11 +11,8 @@ EPS = 1e-9
 THUMB = np.arange(16, 21)
 AA = np.array((0, 4, 8, 12))
 FINGER_TIPS = tuple(f"{finger}-tip_Link" for finger in (1, 2, 3, 4))
-THUMB_POINTS = (
-    "mmhand_thumb_1_thumb_abduction_adduction_link_1",
-    "mmhand_thumb_1_finger_7_fingertip_1",
-    "5-tip_Link",
-)
+THUMB_TIP = "5-tip_Link"
+THUMB_PAD_LINK = "mmhand_thumb_1_finger_7_fingertip_1"
 
 
 def _values(text, default):
@@ -91,20 +88,20 @@ class RobotModel:
 
     def thumb(self, q):
         transforms = self.fk(q)
-        points = np.asarray([transforms[name][:3, 3] for name in THUMB_POINTS])
+        tip = transforms[THUMB_TIP][:3, 3]
         fingers = np.asarray([transforms[name][:3, 3] for name in FINGER_TIPS])
-        points = (points - self.palm_position) @ self.palm_frame
+        tip = (tip - self.palm_position) @ self.palm_frame
         fingers = (fingers - self.palm_position) @ self.palm_frame
-        normal = (transforms[THUMB_POINTS[1]][:3, :3] @ np.asarray(C.THUMB_PAD_AXIS)) @ self.palm_frame
-        return points, _unit(normal), fingers
+        normal = (transforms[THUMB_PAD_LINK][:3, :3] @ np.asarray(C.THUMB_PAD_AXIS)) @ self.palm_frame
+        return tip, _unit(normal), fingers
 
 
 class Retargeter:
     def __init__(self, model=None):
         self.model = RobotModel() if model is None else model
         self.palm_origin = np.asarray(C.MMHAND_PALM_ORIGIN)
-        self.scaling = np.asarray(C.THUMB_POSITION_SCALING)[:, None]
-        self.weights = np.sqrt(np.asarray(C.THUMB_POSITION_WEIGHTS))[:, None]
+        self.tip_scale = C.THUMB_TIP_SCALE
+        self.tip_weight = np.sqrt(C.THUMB_TIP_WEIGHT)
         self.neutral = np.zeros(21)
         self.neutral[AA] = np.radians(C.MCP_AA_NEUTRAL_DEG)
         self.neutral[16] = np.radians(28)
@@ -131,18 +128,17 @@ class Retargeter:
         return q
 
     def _task(self, points):
-        targets = points[[2, 3, 4]] * self.scaling
-        nearest = np.argsort(np.linalg.norm(points[[8, 12, 16, 20]] - points[4], axis=1))[:2]
-        return targets, nearest
+        vectors = points[[8, 12, 16, 20]] - points[4]
+        return points[4] * self.tip_scale, vectors, np.argsort(np.linalg.norm(vectors, axis=1))[:2]
 
-    def _residual(self, thumb, q, targets, nearest):
+    def _residual(self, thumb, q, target, vectors, nearest):
         q[THUMB] = thumb
-        points, normal, fingers = self.model.thumb(q)
-        lengths = np.maximum(np.linalg.norm(targets, axis=1)[:, None], EPS)
-        vector_error = self.weights * (points - self.palm_origin - targets) / lengths
-        toward = _unit(fingers[nearest].mean(0) - points[2])
+        tip, normal, fingers = self.model.thumb(q)
+        tip_error = self.tip_weight * (tip - self.palm_origin - target) / C.STANDARD_PALM_SIZE
+        vector_error = (fingers - tip - vectors) / C.STANDARD_PALM_SIZE
+        toward = _unit(fingers[nearest].mean(0) - tip)
         pad_error = np.sqrt(C.THUMB_PAD_WEIGHT) * (normal - toward)
-        return np.r_[vector_error.ravel(), pad_error]
+        return np.r_[tip_error, vector_error.ravel(), pad_error]
 
     def solve(self, points, handedness="Left"):
         points = np.asarray(points, float)
@@ -151,10 +147,10 @@ class Retargeter:
         try:
             q = self._finger_q(points, handedness)
             q[:16] = np.clip(q[:16], self.model.lower[:16], self.model.upper[:16])
-            targets, nearest = self._task(points)
+            target, vectors, nearest = self._task(points)
             result = least_squares(
                 self._residual, self.q[THUMB], bounds=(self.model.lower[THUMB], self.model.upper[THUMB]),
-                args=(q, targets, nearest),
+                args=(q, target, vectors, nearest),
                 ftol=C.THUMB_FTOL, xtol=C.THUMB_FTOL, gtol=C.THUMB_FTOL,
                 max_nfev=C.THUMB_MAX_EVAL,
             )
