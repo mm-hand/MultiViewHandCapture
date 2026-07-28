@@ -5,12 +5,12 @@ import numpy as np
 from scipy.optimize import least_squares
 
 import config as C
-from hand_core import extract_angles, relative_points
+from hand_core import extract_angles
 
 EPS = 1e-9
 THUMB = np.arange(16, 21)
 AA = np.array((0, 4, 8, 12))
-TIP_LINKS = tuple(f"{finger}-tip_Link" for finger in (5, 1, 2, 3, 4))
+FINGER_TIPS = tuple(f"{finger}-tip_Link" for finger in (1, 2, 3, 4))
 THUMB_LINKS = (
     "mmhand_thumb_1_thumb_abduction_adduction_link_1",
     "mmhand_thumb_1_finger_7_fingertip_1",
@@ -83,13 +83,8 @@ class RobotModel:
         transforms = self.fk(q)
         origin, dip, tip = (transforms[name][:3, 3] for name in THUMB_LINKS)
         normal = transforms[THUMB_LINKS[1]][:3, :3] @ np.asarray(C.THUMB_PAD_AXIS)
-        fingers = np.asarray([transforms[name][:3, 3] for name in TIP_LINKS[1:]])
+        fingers = np.asarray([transforms[name][:3, 3] for name in FINGER_TIPS])
         return np.asarray((dip - origin, tip - origin)), tip, _unit(normal), fingers
-
-    def points(self, q):
-        transforms = self.fk(q)
-        return {name: transforms[name][:3, 3].copy() for name in TIP_LINKS}
-
 
 class Retargeter:
     def __init__(self, model=None):
@@ -104,7 +99,7 @@ class Retargeter:
         self.neutral[AA] = np.radians(C.MCP_AA_NEUTRAL_DEG)
         self.neutral[16] = np.radians(28)
         self.model.lower[17:20] = np.maximum(self.model.lower[17:20], 0)
-        self.raw_q = np.clip(self.neutral, self.model.lower, self.model.upper)
+        self.q = np.clip(self.neutral, self.model.lower, self.model.upper)
 
     @staticmethod
     def _finger_q(points, handedness):
@@ -125,18 +120,10 @@ class Retargeter:
             q[target + 1:target + 4] = flex[source:source + 3]
         return q
 
-    @staticmethod
-    def _human_points(points, handedness):
-        human = relative_points(points)
-        if human is None:
-            raise ValueError("degenerate hand")
-        return human
-
-    def _task(self, points, handedness):
-        human = self._human_points(points, handedness)
-        vectors = np.asarray((human[3] - human[1], human[4] - human[1]))
+    def _task(self, points):
+        vectors = np.asarray((points[3] - points[1], points[4] - points[1]))
         targets = np.einsum("vij,vj->vi", self.rotations, vectors) * self.scaling
-        nearest = np.argsort(np.linalg.norm(human[[8, 12, 16, 20]] - human[4], axis=1))[:2]
+        nearest = np.argsort(np.linalg.norm(points[[8, 12, 16, 20]] - points[4], axis=1))[:2]
         return targets, nearest
 
     def _residual(self, thumb, q, targets, nearest):
@@ -148,39 +135,27 @@ class Retargeter:
         pad_error = np.sqrt(C.THUMB_PAD_WEIGHT) * (normal - toward)
         return np.r_[vector_error.ravel(), pad_error]
 
-    def solve(self, points, timestamp=None, handedness="Left"):
+    def solve(self, points, handedness="Left"):
         points = np.asarray(points, float)
         if points.shape != (21, 3) or not np.isfinite(points).all():
-            return self._failure(float("inf"))
+            return None
         try:
             q = self._finger_q(points, handedness)
             q[:16] = np.clip(q[:16], self.model.lower[:16], self.model.upper[:16])
-            targets, nearest = self._task(points, handedness)
-            last = self.raw_q[THUMB].copy()
+            targets, nearest = self._task(points)
             result = least_squares(
-                self._residual, last, bounds=(self.model.lower[THUMB], self.model.upper[THUMB]),
+                self._residual, self.q[THUMB], bounds=(self.model.lower[THUMB], self.model.upper[THUMB]),
                 args=(q, targets, nearest),
                 ftol=C.THUMB_FTOL, xtol=C.THUMB_FTOL, gtol=C.THUMB_FTOL,
                 max_nfev=C.THUMB_MAX_EVAL,
             )
             q[THUMB] = result.x
-            vectors = self.model.thumb(q)[0]
-            rms = float(np.sqrt(np.mean((vectors - targets) ** 2)))
         except (np.linalg.LinAlgError, ValueError):
-            return self._failure(float("inf"))
+            return None
         if not np.isfinite(q).all():
-            return self._failure(rms)
-        self.raw_q = q
-        return {
-            "success": True, "q": q.copy(), "q_raw": q.copy(),
-            "q_deg": np.degrees(q), "rms": rms, "points": self.model.points(q),
-        }
-
-    def _failure(self, rms):
-        return {
-            "success": False, "q": None, "q_raw": self.raw_q.copy(), "q_deg": None,
-            "rms": rms, "points": self.model.points(self.raw_q),
-        }
+            return None
+        self.q = q
+        return q.copy()
 
     def pause(self):
-        self.raw_q = self.neutral.copy()
+        self.q = self.neutral.copy()

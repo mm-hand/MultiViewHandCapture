@@ -14,7 +14,6 @@ CALIBRATION_FRAMES = 100
 BONE_TOLERANCE = 0.20
 POINT_FILTER = (1.0, 0.01, 1.0)
 ANGLE_FILTER = (1.0, 0.02, 1.0)
-ENABLE_ANGLE_CONSTRAINTS = True
 MAX_REPROJECTION_ERROR = 30.0
 DEPTH_RANGE = (100.0, 1500.0)
 MAX_HAND_RADIUS = 300.0
@@ -56,14 +55,15 @@ KEYPOINT_LAYOUT = "mvhc:keypoints:v1:palm_local_m:size=0.086"
 ROBOT_TOPIC = "/raw_ik_target"
 ROBOT_LAYOUT = "mmhand:J00-J20:urdf_deg"
 WEB_PORT, VIEW_PORTS, WEB_FPS = 8080, (8081, 8082), 15
+FINGER_CHAINS = (
+    (0, 1, 2, 3, 4),
+    (0, 5, 6, 7, 8),
+    (0, 9, 10, 11, 12),
+    (0, 13, 14, 15, 16),
+    (0, 17, 18, 19, 20),
+)
 SKELETON_EDGES = tuple(
     edge
-    for chain in (
-        (0, 1, 2, 3, 4),
-        (0, 5, 6, 7, 8),
-        (0, 9, 10, 11, 12),
-        (0, 13, 14, 15, 16),
-        (0, 17, 18, 19, 20),
-    )
+    for chain in FINGER_CHAINS
     for edge in zip(chain[:-1], chain[1:])
 )

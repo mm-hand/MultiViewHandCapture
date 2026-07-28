@@ -12,7 +12,7 @@ from config import (
     BONE_TOLERANCE,
     CALIBRATION_FRAMES,
     DEPTH_RANGE,
-    ENABLE_ANGLE_CONSTRAINTS,
+    FINGER_CHAINS,
     FULL_WIDTH,
     HAND_SWITCH_FRAMES,
     HEIGHT,
@@ -27,13 +27,6 @@ from config import (
 )
 
 EPS = 1e-8
-FINGER_CHAINS = (
-    (0, 1, 2, 3, 4),
-    (0, 5, 6, 7, 8),
-    (0, 9, 10, 11, 12),
-    (0, 13, 14, 15, 16),
-    (0, 17, 18, 19, 20),
-)
 
 
 def rotate_image(image, angle):
@@ -249,9 +242,8 @@ class Kinematics:
                 self.lengths = {edge: float(np.median(values)) for edge, values in self.samples.items()}
             return points, f"CALIBRATION ({self.count}/{self.calibration_frames})"
         points = enforce_lengths(points, self.lengths)
-        if ENABLE_ANGLE_CONSTRAINTS:
-            angles = self.angle_filter(np.maximum(extract_angles(points, handedness), 0), timestamp)
-            points = apply_angles(points, handedness, angles)
+        angles = self.angle_filter(np.maximum(extract_angles(points, handedness), 0), timestamp)
+        points = apply_angles(points, handedness, angles)
         return points, "GESTURE TRACKING"
 
     def reset_filters(self):
@@ -293,11 +285,11 @@ class HandDetector:
     def detect(self, rgb):
         result = self.detector.process(rgb)
         if not result.multi_hand_landmarks:
-            return None, None, None
+            return None, None
         points = np.array([[p.x, p.y] for p in result.multi_hand_landmarks[0].landmark])
         category = result.multi_handedness[0].classification[0]
         # MediaPipe labels assume a mirrored selfie image; these camera frames are not mirrored.
-        return points, swap_handedness(category.label), category.score
+        return points, swap_handedness(category.label)
 
     def close(self):
         self.detector.close()
@@ -362,8 +354,8 @@ class StereoProcessor:
         timestamp = time.monotonic() if timestamp is None else timestamp
         left_rgb, right_rgb = cv2.cvtColor(left, cv2.COLOR_BGR2RGB), cv2.cvtColor(right, cv2.COLOR_BGR2RGB)
         output["image_left"], output["image_right"] = left_rgb, right_rgb
-        left_norm, label, _ = self.left_detector.detect(left_rgb)
-        right_norm, _, _ = self.right_detector.detect(right_rgb)
+        left_norm, label = self.left_detector.detect(left_rgb)
+        right_norm, _ = self.right_detector.detect(right_rgb)
         if left_norm is None or right_norm is None:
             return self._reject(output, "detection")
 

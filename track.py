@@ -155,8 +155,8 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
         if ok:
             self.stereo = encoded.tobytes()
         self._update_skeleton("normalized", result["keypoint_relative"])
-        if robot is not None and robot["success"] and self.urdf is not None:
-            self.urdf.update_cfg(np.asarray([robot["q"][self.robot_index[name]] for name in self.urdf_names]))
+        if robot is not None and self.urdf is not None:
+            self.urdf.update_cfg(np.asarray([robot[self.robot_index[name]] for name in self.urdf_names]))
 
     def close(self):
         self.http.shutdown()
@@ -224,9 +224,9 @@ def main():
             robot = None
             if retargeter is not None:
                 if valid and result["handedness"] == "Left" and result["phase"].startswith("GESTURE"):
-                    robot = retargeter.solve(result["keypoint_absolute"], timestamp)
-                    if ros is not None and robot["success"]:
-                        ros.joints(robot["q_deg"])
+                    robot = retargeter.solve(result["keypoint_relative"])
+                    if ros is not None and robot is not None:
+                        ros.joints(np.degrees(robot))
                 else:
                     retargeter.pause()
             elif ros is not None and valid:
