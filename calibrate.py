@@ -7,6 +7,7 @@ import numpy as np
 from config import (
     BOARD_SIZE,
     CAMERA_INDEX,
+    CAMERA_TYPE,
     PARAMS_PATH,
     SQUARE_SIZE,
 )
@@ -94,6 +95,8 @@ def solve(objects, lefts, rights, size):
 
 
 def main():
+    if CAMERA_TYPE != "stereo":
+        raise RuntimeError("Set CAMERA_TYPE='stereo' in config.py before calibration")
     objects, lefts, rights, size = collect()
     if len(objects) < 10:
         raise RuntimeError("至少需要 10 对有效棋盘格图像")

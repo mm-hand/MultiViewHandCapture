@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 from config import (
+    CAMERA_TYPE,
     CAMERA_INDEX,
     KEYPOINT_LAYOUT,
     KEYPOINT_TOPIC,
@@ -18,7 +19,7 @@ from config import (
     WEB_PORT,
     VIEW_PORTS,
 )
-from hand_core import Camera, StereoProcessor
+from hand_core import Camera, RealSenseCamera, StereoProcessor
 from retarget import Retargeter
 
 
@@ -204,11 +205,16 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("points", "retarget"), default="points")
     parser.add_argument("--ros", action="store_true")
-    parser.add_argument("--camera", type=int, default=CAMERA_INDEX)
     args = parser.parse_args()
 
     retargeter = Retargeter() if args.mode == "retarget" else None
-    camera, processor = Camera(args.camera), StereoProcessor()
+    if CAMERA_TYPE == "d435":
+        camera = RealSenseCamera(CAMERA_INDEX)
+        processor = StereoProcessor(camera.params)
+    elif CAMERA_TYPE == "stereo":
+        camera, processor = Camera(CAMERA_INDEX), StereoProcessor()
+    else:
+        raise ValueError("CAMERA_TYPE must be 'd435' or 'stereo'")
     viewer = Viewer(None if retargeter is None else retargeter.model)
     ros = RosOutput(args.mode) if args.ros else None
     last_timestamp = None

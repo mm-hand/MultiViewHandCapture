@@ -4,8 +4,12 @@ ROOT = Path(__file__).resolve().parent
 PARAMS_PATH = ROOT / "stereo_params.json"
 URDF_PATH = ROOT / "assets/mmhand/urdf/hand.urdf"
 
-# Stereo camera and human-hand reconstruction.
+# Camera: "d435" uses factory-calibrated stereo IR; "stereo" uses stereo_params.json.
+CAMERA_TYPE = "d435"
 CAMERA_INDEX = 0
+D435_WIDTH, D435_HEIGHT, D435_FPS = 1280, 720, 30
+
+# Legacy side-by-side stereo camera and human-hand reconstruction.
 SINGLE_WIDTH, HEIGHT = 1280, 720
 FULL_WIDTH = SINGLE_WIDTH * 2
 ROTATE_LEFT, ROTATE_RIGHT = 180, -180

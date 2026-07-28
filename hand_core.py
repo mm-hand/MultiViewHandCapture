@@ -11,6 +11,9 @@ from config import (
     ANGLE_FILTER,
     BONE_TOLERANCE,
     CALIBRATION_FRAMES,
+    D435_FPS,
+    D435_HEIGHT,
+    D435_WIDTH,
     DEPTH_RANGE,
     FINGER_CHAINS,
     FULL_WIDTH,
@@ -89,6 +92,72 @@ class Camera:
         self.running = False
         self.thread.join(timeout=1)
         self.capture.release()
+
+
+class RealSenseCamera:
+    def __init__(self, index, width=D435_WIDTH, height=D435_HEIGHT, fps=D435_FPS):
+        try:
+            import pyrealsense2 as rs
+        except ImportError as error:
+            raise RuntimeError("Install pyrealsense2 to use CAMERA_TYPE='d435'") from error
+
+        devices = rs.context().query_devices()
+        if not 0 <= index < len(devices):
+            raise RuntimeError(f"RealSense camera {index} not found ({len(devices)} connected)")
+        device = devices[index]
+        serial = device.get_info(rs.camera_info.serial_number)
+        self.pipeline = rs.pipeline()
+        config = rs.config()
+        config.enable_device(serial)
+        for stream in (1, 2):
+            config.enable_stream(rs.stream.infrared, stream, width, height, rs.format.y8, fps)
+        try:
+            profile = self.pipeline.start(config)
+        except Exception as error:
+            raise RuntimeError(f"Unable to open D435 {width}x{height}@{fps}: {error}") from error
+
+        sensor = profile.get_device().first_depth_sensor()
+        if sensor.supports(rs.option.emitter_enabled):
+            sensor.set_option(rs.option.emitter_enabled, 0)
+        left = profile.get_stream(rs.stream.infrared, 1).as_video_stream_profile()
+        right = profile.get_stream(rs.stream.infrared, 2).as_video_stream_profile()
+        self.params = self._params(left, right)
+        baseline = np.linalg.norm(self.params["T"])
+        print(f"D435 {serial}: {width}x{height}@{fps}, baseline {baseline:.2f} mm")
+
+    @staticmethod
+    def _params(left, right):
+        def matrix(profile):
+            value = profile.get_intrinsics()
+            return [[value.fx, 0, value.ppx], [0, value.fy, value.ppy], [0, 0, 1]]
+
+        extrinsics = left.get_extrinsics_to(right)
+        return {
+            "K1": matrix(left),
+            "D1": np.zeros(5),
+            "K2": matrix(right),
+            "D2": np.zeros(5),
+            "R": np.eye(3),
+            "T": np.asarray(extrinsics.translation) * 1000,
+        }
+
+    def read(self):
+        try:
+            frames = self.pipeline.wait_for_frames(1000)
+        except RuntimeError:
+            return False, None, None, None
+        left, right = frames.get_infrared_frame(1), frames.get_infrared_frame(2)
+        if not left or not right:
+            return False, None, None, None
+        return (
+            True,
+            np.asanyarray(left.get_data()),
+            np.asanyarray(right.get_data()),
+            time.monotonic(),
+        )
+
+    def close(self):
+        self.pipeline.stop()
 
 
 class OneEuro:
@@ -308,8 +377,8 @@ def geometry_error(points, reprojection_error):
 
 
 class StereoProcessor:
-    def __init__(self, params_path=PARAMS_PATH):
-        params = json.loads(params_path.read_text())
+    def __init__(self, params=None):
+        params = json.loads(PARAMS_PATH.read_text()) if params is None else params
         self.K1, self.D1 = np.asarray(params["K1"]), np.asarray(params["D1"])
         self.K2, self.D2 = np.asarray(params["K2"]), np.asarray(params["D2"])
         rotation, translation = np.asarray(params["R"]), np.asarray(params["T"])
@@ -352,7 +421,8 @@ class StereoProcessor:
         if left is None or right is None:
             return self._reject(output, "frame-size")
         timestamp = time.monotonic() if timestamp is None else timestamp
-        left_rgb, right_rgb = cv2.cvtColor(left, cv2.COLOR_BGR2RGB), cv2.cvtColor(right, cv2.COLOR_BGR2RGB)
+        conversion = cv2.COLOR_GRAY2RGB if left.ndim == 2 else cv2.COLOR_BGR2RGB
+        left_rgb, right_rgb = cv2.cvtColor(left, conversion), cv2.cvtColor(right, conversion)
         output["image_left"], output["image_right"] = left_rgb, right_rgb
         left_norm, label = self.left_detector.detect(left_rgb)
         right_norm, _ = self.right_detector.detect(right_rgb)

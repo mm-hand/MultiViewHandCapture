@@ -14,6 +14,9 @@ dependencies:
   - opencv=5.0
   - scipy=1.14
   - pip
+  - pip:
+      - --index-url=https://pypi.tuna.tsinghua.edu.cn/simple
+      - pyrealsense2==2.58.3.10794
 variables:
   PYTHONNOUSERSITE: "1"
   MPLCONFIGDIR: /tmp/mvhc-matplotlib

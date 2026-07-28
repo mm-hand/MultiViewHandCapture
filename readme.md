@@ -2,31 +2,32 @@
 
 ## 简介
 
-用一个双目相机完成 MediaPipe 21 点手部重建、标准手归一化、MMHand retarget、
-Web 可视化和可选 ROS 2 发布。仓库是可直接运行的 Python 脚本，不需要构建为
-Python 或 ROS 软件包。
+用 D435 双红外或普通拼接双目相机完成 MediaPipe 21 点手部重建、标准手归一化、
+MMHand retarget、Web 可视化和可选 ROS 2 发布。仓库是可直接运行的 Python
+脚本，不需要构建为 Python 或 ROS 软件包。
 
 主要功能：
 
-- 同时显示左右相机图像和 MediaPipe 2D 结果。
+- 同时显示左右图像和 MediaPipe 2D 结果。
 - 输出毫米制相机坐标与 0.086 m 标准掌尺寸的 21 个三维关键点。
 - 对三维轨迹和非负屈伸角分别执行 One Euro 滤波。
 - 将稳定左手 retarget 为 MMHand 的 21 个 URDF 关节角。
 - 在同一网页显示归一化人手和 retarget 后的完整 MMHand URDF。
 - 可发布标准化关键点或机器人关节角 ROS 2 topic。
 
-当前相机输入是单个 `2560×720`、30 FPS MJPEG 设备，左右画面各
-`1280×720`。MMHand URDF 和 STL 位于 `assets/mmhand/`；关节名、轴向和限位
-以该 URDF 为准。相机、滤波、IK、Web 和 ROS 参数集中在 `config.py`。
+默认输入是 D435 的两路 `1280×720`、30 FPS Y8 红外图像。程序不启用深度流，
+只从 RealSense SDK 读取出厂内参和左右相机外参，然后执行普通双目三角化。也可在
+`config.py` 切回单个 `2560×720` MJPEG 拼接双目设备。MMHand URDF 和 STL 位于
+`assets/mmhand/`；所有相机、滤波、IK、Web 和 ROS 参数集中在 `config.py`。
 
 核心代码保持扁平：
 
 ```text
 config.py       配置、关节顺序和 topic 契约
-hand_core.py    相机、MediaPipe、双目重建和人手滤波
+hand_core.py    普通双目/D435、MediaPipe、三角化和人手滤波
 retarget.py     MMHand URDF FK 与极简拇指优化
 track.py        Web、ROS 和运行主循环
-calibrate.py    双目标定
+calibrate.py    普通拼接双目标定
 ```
 
 ## 安装
@@ -63,10 +64,28 @@ python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 这里使用清华 PyPI 镜像，并用 `--no-deps` 避免 MediaPipe 为未使用的 Tasks
 功能安装 JAX/JAXlib，或覆盖 Conda 环境中已经验证的 OpenCV。
+`environment.yml` 也通过清华镜像安装 D435 所需的 `pyrealsense2`。
 
 ## Quick Start
 
-首次使用、更换相机或改变两个镜头的相对位置后执行双目标定：
+在 `config.py` 选择相机；编号也只在这里修改：
+
+```python
+CAMERA_TYPE = "d435"       # "d435" 或 "stereo"
+CAMERA_INDEX = 0           # 第几个 D435，或普通相机的 OpenCV 编号
+```
+
+D435 使用出厂标定，无需标定板，直接运行：
+
+```bash
+python track.py --mode points              # 跟踪并显示标准化 21 点
+python track.py --mode points --ros        # 同时发布 21 点
+python track.py --mode retarget            # 左手 retarget，并显示 MMHand
+python track.py --mode retarget --ros      # 同时发布 MMHand 关节角
+```
+
+使用普通拼接双目时，先设置 `CAMERA_TYPE = "stereo"`。首次使用、更换相机或改变
+两个镜头的相对位置后执行：
 
 ```bash
 python calibrate.py
@@ -78,24 +97,9 @@ python calibrate.py
 - `Q`：结束采样并计算参数。
 - 至少采集 10 对；结果写入 `stereo_params.json`。
 
-已有有效 `stereo_params.json` 时直接运行：
-
-```bash
-python track.py --mode points              # 跟踪并显示标准化 21 点
-python track.py --mode points --ros        # 同时发布 21 点
-python track.py --mode retarget            # 左手 retarget，并显示 MMHand
-python track.py --mode retarget --ros      # 同时发布 MMHand 关节角
-```
-
-如相机不是 `config.py` 中的默认编号：
-
-```bash
-python track.py --mode retarget --camera 2
-```
-
 浏览器打开 `http://localhost:8080`：
 
-- 上方：左右相机和 MediaPipe 叠加。
+- 上方：左右红外/彩色相机和 MediaPipe 叠加。
 - 左下：腕点坐标系中的 0.086 m 标准人手。
 - 右下：retarget 后的 MMHand URDF。
 
@@ -108,10 +112,11 @@ python -m unittest -v test_hand_capture.py
 
 ## 原理
 
-人手重建流程：
+两种相机共用同一条人手重建流程：
 
 ```text
-MediaPipe 2D
+左右图像上的 MediaPipe 2D
+→ D435 出厂参数或 stereo_params.json
 → 双目三角化
 → 3D One Euro
 → 骨长约束
@@ -119,6 +124,10 @@ MediaPipe 2D
 → 角度 One Euro
 → 21 个 3D 点
 ```
+
+D435 只打开同步左右红外流，不使用 SDK 生成的深度图。D400 左右红外图默认已经
+校正，因此程序直接使用活动流内参、单位旋转和 SDK 给出的米制基线；基线转换成
+毫米后复用普通双目的投影矩阵、三角化和 reprojection 检查。
 
 `keypoint_absolute` 是毫米制相机坐标。`keypoint_relative` 以腕点为原点，
 使用掌面法向、由小指侧指向食指侧、手指前伸方向组成的掌坐标系，并把平均掌尺寸
