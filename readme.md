@@ -83,7 +83,8 @@ D435_WIDTH, D435_HEIGHT, D435_FPS = 1280, 720, 30
 
 | 参数 | 默认值 | 含义 |
 |---|---:|---|
-| `CALIBRATION_FRAMES` | 100 | 初始骨长估计使用的有效帧数 |
+| `CALIBRATION_FRAMES` | 100 | 初始骨长估计使用的有效样本数 |
+| `CALIBRATION_HZ` | 10 Hz | 骨长样本的最大采样频率 |
 | `BONE_TOLERANCE` | 0.20 | 每根骨允许偏离标定长度的比例 |
 | `POINT_FILTER` | `(1.0, 0.01, 1.0)` | 三维点 One Euro 参数 |
 | `ANGLE_FILTER` | `(1.0, 0.02, 1.0)` | 屈伸角 One Euro 参数 |
@@ -197,8 +198,9 @@ python track.py --mode retarget --ros
 - 左下：腕部坐标系中的 `0.086 m` 标准人手。
 - 右下：retarget 后的 MMHand URDF。
 
-程序启动后先收集 100 个有效帧估计骨长。页面状态从 `CALIBRATION` 变为
-`GESTURE TRACKING` 后，retarget 和机器人 ROS 输出才会开始。
+程序启动后以最高 10 Hz 收集 100 个有效样本估计骨长，连续识别时约需 10 秒。
+页面状态从 `CALIBRATION` 变为 `GESTURE TRACKING` 后，retarget 和机器人 ROS
+输出才会开始。
 
 ## 代码文件结构
 
@@ -294,7 +296,8 @@ P2 = K2 [R | T]
 → 从骨长和角度恢复 21 点
 ```
 
-初始 100 个有效帧用于计算每根骨长度的中位数。之后每根骨只能在标定长度的
+初始骨长样本按 `CALIBRATION_HZ` 限速采集，避免不同相机帧率或处理速度改变标定
+时长。100 个有效样本用于计算每根骨长度的中位数。之后每根骨只能在标定长度的
 `1±BONE_TOLERANCE` 范围内变化。非负屈伸角允许手指弯曲，但不允许反弯。
 
 `relative_points()` 再将三维点：

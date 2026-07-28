@@ -11,6 +11,7 @@ from config import (
     ANGLE_FILTER,
     BONE_TOLERANCE,
     CALIBRATION_FRAMES,
+    CALIBRATION_HZ,
     D435_FPS,
     D435_HEIGHT,
     D435_WIDTH,
@@ -295,20 +296,23 @@ def relative_points(points):
 
 
 class Kinematics:
-    def __init__(self, calibration_frames=CALIBRATION_FRAMES):
+    def __init__(self, calibration_frames=CALIBRATION_FRAMES, calibration_hz=CALIBRATION_HZ):
         self.points_filter, self.angle_filter = OneEuro(*POINT_FILTER), OneEuro(*ANGLE_FILTER)
         self.calibration_frames = calibration_frames
+        self.calibration_period = 1 / calibration_hz
         self.samples = {edge: [] for chain in FINGER_CHAINS for edge in zip(chain[:-1], chain[1:])}
-        self.count, self.lengths = 0, None
+        self.count, self.lengths, self.last_sample = 0, None, None
 
     def update(self, points, handedness, timestamp):
         points = self.points_filter(points, timestamp)
         if self.lengths is None:
-            for (start, end), values in self.samples.items():
-                values.append(np.linalg.norm(points[end] - points[start]))
-            self.count += 1
-            if self.count >= self.calibration_frames:
-                self.lengths = {edge: float(np.median(values)) for edge, values in self.samples.items()}
+            if self.last_sample is None or timestamp - self.last_sample >= self.calibration_period - 1e-6:
+                for (start, end), values in self.samples.items():
+                    values.append(np.linalg.norm(points[end] - points[start]))
+                self.count += 1
+                self.last_sample = timestamp
+                if self.count >= self.calibration_frames:
+                    self.lengths = {edge: float(np.median(values)) for edge, values in self.samples.items()}
             return points, f"CALIBRATION ({self.count}/{self.calibration_frames})"
         points = enforce_lengths(points, self.lengths)
         angles = self.angle_filter(np.maximum(extract_angles(points, handedness), 0), timestamp)
