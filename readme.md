@@ -117,14 +117,16 @@ Index   A-A, F-E, PIP, DIP
 Thumb   MCP A-A, MCP F-E, PIP, DIP, CMC
 ```
 
-机械中位角：
+四指 A-A retarget 零位偏置：
 
 ```python
 MCP_AA_NEUTRAL_DEG = (36, 29, 31, 23)  # Little, Ring, Middle, Index
-THUMB_MCP_AA_NEUTRAL_DEG = 28
 ```
 
-拇指数值优化参数：
+该偏置把人手零侧摆映射到 MMHand 四指姿态，不属于 URDF 机械参数。拇指没有
+中位值；首次求解和暂停后的初值是将 URDF 零位裁进其关节上下限。
+
+其余拇指数值优化参数属于 retarget 标定或求解配置：
 
 | 参数 | 含义 |
 |---|---|
@@ -325,7 +327,7 @@ Retarget 只处理完成骨长估计、非 stale 的稳定左手。
 四指不执行数值优化：
 
 ```text
-人手 MCP A-A + 机械中位 → MMHand MCP A-A
+人手 MCP A-A + retarget 零位偏置 → MMHand MCP A-A
 人手 MCP F-E            → MMHand MCP F-E
 人手 PIP                → MMHand PIP
 人手 DIP                → MMHand DIP
@@ -349,8 +351,9 @@ direction = unit(c - t)
 
 因此四指全部参与，距离拇指尖越近的手指对目标方向影响越大。
 
-机器人 FK、关节轴和上下限均从 `assets/mmhand/urdf/hand.urdf` 读取。优化使用
-上一帧拇指关节角作为初值，但上一帧本身不进入目标函数。
+机器人 FK、关节轴和上下限均从 `assets/mmhand/urdf/hand.urdf` 原样读取，代码
+不会收紧或覆盖 URDF 限位。连续追踪时优化使用上一帧拇指关节角作为初值；首次
+求解和暂停后使用裁进 URDF 上下限的零位。初值本身不进入目标函数。
 
 ### 5. 状态、显示和输出
 

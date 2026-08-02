@@ -43,14 +43,15 @@ ROBOT_JOINT_NAMES = (
     "mmhand_thumb_1_finger_7_distal_phalanx_1_PIP_Joint",
     "mmhand_thumb_1_finger_7_fingertip_1_DIP_Joint", "Thumb_CMC",
 )
-# Mechanical A-A neutral positions; four-finger order is Little, Ring, Middle, Index.
+# Four-finger retarget A-A zero offsets; order is Little, Ring, Middle, Index.
+# These map a human zero-spread pose to MMHand and are not URDF joint parameters.
 MCP_AA_NEUTRAL_DEG = (36, 29, 31, 23)
-THUMB_MCP_AA_NEUTRAL_DEG = 28
 
-# Thumb tip position, tip-to-fingertip vectors, and pad direction.
-MMHAND_PALM_ORIGIN = (-0.083953, -0.037473, -0.047264)
-THUMB_TIP_SCALE = 0.614962
-THUMB_TIP_WEIGHT = 7.871241
+# MMHand-specific retarget calibration and solver parameters. Mechanical origins,
+# axes, limits, and topology come exclusively from the URDF.
+MMHAND_PALM_ORIGIN = (-0.046, -0.020, -0.060)
+THUMB_TIP_SCALE = 0.94
+THUMB_TIP_WEIGHT = 2.8
 THUMB_PAD_AXIS = (-0.200671, 0.970119, -0.136380)
 # Fingertip-link local pad normals; order is Index, Middle, Ring, Little.
 FINGER_PAD_AXES = (
@@ -59,7 +60,7 @@ FINGER_PAD_AXES = (
     (-0.180981, 0.121096, -0.976003),
     (-0.180981, 0.121096, -0.976003),
 )
-THUMB_PAD_WEIGHT = 1.286285
+THUMB_PAD_WEIGHT = 0.5
 THUMB_MAX_EVAL = 40
 THUMB_FTOL = 1e-5
 

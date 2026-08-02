@@ -1,4 +1,5 @@
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
@@ -35,8 +36,9 @@ from config import (
     POINT_FILTER,
     ROBOT_JOINT_NAMES,
     THUMB_TIP_SCALE,
+    URDF_PATH,
 )
-from retarget import Retargeter, RobotModel
+from retarget import Retargeter, RobotModel, THUMB
 from track import ROBOT_CAMERA_DISTANCE, _human_view_wxyz, _robot_camera_pose
 
 
@@ -229,6 +231,19 @@ class RetargetTests(unittest.TestCase):
         self.assertEqual(self.model.names, ROBOT_JOINT_NAMES)
         self.assertEqual(len(self.model.joints), 31)
         self.assertTrue(np.all(self.model.lower <= self.model.upper))
+        root = ET.parse(URDF_PATH).getroot()
+        urdf_limits = {
+            joint.get("name"): (
+                float(joint.find("limit").get("lower")),
+                float(joint.find("limit").get("upper")),
+            )
+            for joint in root.findall("joint")
+            if joint.get("type") == "revolute"
+        }
+        np.testing.assert_array_equal(
+            np.column_stack((self.model.lower, self.model.upper)),
+            np.asarray([urdf_limits[name] for name in self.model.names]),
+        )
         self.assertEqual(self.model.thumb(self.model.lower)[0].shape, (3,))
         np.testing.assert_allclose(self.model.palm_frame.T @ self.model.palm_frame, np.eye(3), atol=1e-8)
         self.assertGreater(np.linalg.det(self.model.palm_frame), 0)
@@ -271,8 +286,24 @@ class RetargetTests(unittest.TestCase):
             expected[[11, 12, 13, 8, 9, 10, 5, 6, 7, 2, 3, 4]],
         )
         np.testing.assert_allclose(np.degrees(result[[0, 4, 8, 12]]), MCP_AA_NEUTRAL_DEG)
+        expected_seed = np.clip(
+            np.zeros(len(THUMB)), self.model.lower[THUMB], self.model.upper[THUMB]
+        )
+        np.testing.assert_array_equal(retargeter.thumb_seed, expected_seed)
         retargeter.pause()
-        np.testing.assert_array_equal(retargeter.q, retargeter.neutral)
+        np.testing.assert_array_equal(retargeter.thumb_q, expected_seed)
+        self.assertIsNotNone(retargeter.solve(relative_points(human)))
+
+    def test_retargeter_does_not_override_urdf_limits(self):
+        lower, upper = self.model.lower.copy(), self.model.upper.copy()
+        Retargeter(self.model)
+        np.testing.assert_array_equal(self.model.lower, lower)
+        np.testing.assert_array_equal(self.model.upper, upper)
+
+    def test_four_finger_neutral_must_fit_urdf_limits(self):
+        with patch("retarget.C.MCP_AA_NEUTRAL_DEG", (360, 29, 31, 23)):
+            with self.assertRaisesRegex(ValueError, "Little_MCP_AA.*outside URDF limits"):
+                RobotModel()
 
     def test_thumb_targets(self):
         points = relative_points(straight_hand("Left"))
@@ -311,6 +342,8 @@ class VideoRegressionTests(unittest.TestCase):
             with self.subTest(name=name):
                 capture, processor = cv2.VideoCapture(str(folder / name)), StereoProcessor()
                 labels, radii, phases, angle_history = [], [], [], []
+                retargeter = Retargeter() if expected_hand == "Left" else None
+                robot_history, solve_failures = [], 0
                 accepted = 0
                 fps = capture.get(cv2.CAP_PROP_FPS) or 30
                 try:
@@ -321,6 +354,22 @@ class VideoRegressionTests(unittest.TestCase):
                             break
                         result = processor.process(*split_stereo(frame), frame_number / fps)
                         frame_number += 1
+                        valid_gesture = (
+                            result["found"]
+                            and not result["stale"]
+                            and result["keypoint_relative"] is not None
+                            and result["handedness"] == "Left"
+                            and result["phase"].startswith("GESTURE")
+                        )
+                        if retargeter is not None:
+                            if valid_gesture:
+                                robot = retargeter.solve(result["keypoint_relative"])
+                                if robot is None:
+                                    solve_failures += 1
+                                else:
+                                    robot_history.append(robot)
+                            else:
+                                retargeter.pause()
                         if not result["found"] or result["stale"]:
                             continue
                         points = result["keypoint_absolute"]
@@ -345,6 +394,14 @@ class VideoRegressionTests(unittest.TestCase):
                 self.assertGreaterEqual(np.min(angles), -1e-5)
                 first_tracking = next(i for i, phase in enumerate(phases) if phase.startswith("GESTURE"))
                 self.assertLess(abs(radii[first_tracking] - radii[first_tracking - 1]), 20)
+                if retargeter is not None:
+                    robots = np.asarray(robot_history)
+                    self.assertGreater(len(robots), 100)
+                    self.assertEqual(solve_failures, 0)
+                    self.assertTrue(np.isfinite(robots).all())
+                    self.assertTrue(np.all(robots >= retargeter.model.lower - 1e-10))
+                    self.assertTrue(np.all(robots <= retargeter.model.upper + 1e-10))
+                    self.assertGreater(np.max(np.ptp(robots, axis=0)), 0.1)
 
 if __name__ == "__main__":
     unittest.main()

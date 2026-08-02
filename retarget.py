@@ -42,6 +42,22 @@ def _origin(node):
     return transform
 
 
+def _aa_neutral(model):
+    values = np.radians(np.asarray(C.MCP_AA_NEUTRAL_DEG, float))
+    if values.shape != (len(AA),) or not np.isfinite(values).all():
+        raise ValueError(f"MCP_AA_NEUTRAL_DEG must contain {len(AA)} finite values")
+    invalid = (values < model.lower[AA]) | (values > model.upper[AA])
+    if np.any(invalid):
+        position = int(np.flatnonzero(invalid)[0])
+        index, value = AA[position], values[position]
+        lower, upper = model.lower[index], model.upper[index]
+        raise ValueError(
+            f"MCP_AA_NEUTRAL_DEG for {model.names[index]} is {np.degrees(value):.6g} deg, "
+            f"outside URDF limits [{np.degrees(lower):.6g}, {np.degrees(upper):.6g}] deg"
+        )
+    return values
+
+
 class RobotModel:
     def __init__(self, urdf_path=C.URDF_PATH):
         self.joints, self.children = {}, defaultdict(list)
@@ -64,8 +80,9 @@ class RobotModel:
             raise ValueError(f"Unexpected MMHand joints: {self.names}")
         self.index = {name: index for index, name in enumerate(self.names)}
         self.lower, self.upper = np.asarray([limits[name] for name in self.names]).T
-        q = np.zeros(21)
-        q[AA] = np.radians(C.MCP_AA_NEUTRAL_DEG)
+        self.aa_neutral = _aa_neutral(self)
+        q = np.zeros(len(self.names))
+        q[AA] = self.aa_neutral
         transforms = self.fk(q)
         mcp = np.asarray([transforms[f"finger_{i}_proximal_phalanx_1"][:3, 3] for i in range(1, 5)])
         pip = np.asarray([transforms[f"finger_{i}_distal_phalanx_1"][:3, 3] for i in range(1, 5)])
@@ -117,14 +134,12 @@ class Retargeter:
         self.palm_origin = np.asarray(C.MMHAND_PALM_ORIGIN)
         self.tip_scale = C.THUMB_TIP_SCALE
         self.tip_weight = np.sqrt(C.THUMB_TIP_WEIGHT)
-        self.neutral = np.zeros(21)
-        self.neutral[AA] = np.radians(C.MCP_AA_NEUTRAL_DEG)
-        self.neutral[16] = np.radians(C.THUMB_MCP_AA_NEUTRAL_DEG)
-        self.model.lower[17:20] = np.maximum(self.model.lower[17:20], 0)
-        self.q = np.clip(self.neutral, self.model.lower, self.model.upper)
+        self.thumb_seed = np.clip(
+            np.zeros(len(THUMB)), self.model.lower[THUMB], self.model.upper[THUMB]
+        )
+        self.thumb_q = self.thumb_seed.copy()
 
-    @staticmethod
-    def _finger_q(points, handedness):
+    def _finger_q(self, points, handedness):
         points = np.asarray(points, float)
         forward = _unit(points[9] - points[0])
         side = _unit(points[5] - points[17])
@@ -136,8 +151,8 @@ class Retargeter:
             for mcp in (5, 9, 13, 17)
         ]
         flex = np.maximum(np.radians(extract_angles(points, handedness)), 0)
-        q = np.zeros(21)
-        q[AA] = np.radians(C.MCP_AA_NEUTRAL_DEG) + np.asarray(aa)[::-1]
+        q = np.zeros(len(self.model.names))
+        q[AA] = self.model.aa_neutral + np.asarray(aa)[::-1]
         for source, target in zip((11, 8, 5, 2), (0, 4, 8, 12)):
             q[target + 1:target + 4] = flex[source:source + 3]
         return q
@@ -170,18 +185,19 @@ class Retargeter:
             q[:16] = np.clip(q[:16], self.model.lower[:16], self.model.upper[:16])
             target, vectors = self._task(points)
             result = least_squares(
-                self._residual, self.q[THUMB], bounds=(self.model.lower[THUMB], self.model.upper[THUMB]),
+                self._residual, self.thumb_q,
+                bounds=(self.model.lower[THUMB], self.model.upper[THUMB]),
                 args=(q, target, vectors),
                 ftol=C.THUMB_FTOL, xtol=C.THUMB_FTOL, gtol=C.THUMB_FTOL,
                 max_nfev=C.THUMB_MAX_EVAL,
             )
             q[THUMB] = result.x
-        except (np.linalg.LinAlgError, ValueError):
+        except np.linalg.LinAlgError:
             return None
         if not np.isfinite(q).all():
             return None
-        self.q = q
+        self.thumb_q = result.x.copy()
         return q.copy()
 
     def pause(self):
-        self.q = self.neutral.copy()
+        self.thumb_q = self.thumb_seed.copy()
