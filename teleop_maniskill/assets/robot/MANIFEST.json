@@ -1,0 +1,252 @@
+{
+  "generated_asset": "nero_capture_mmhand.urdf",
+  "runtime_files": [
+    {
+      "bytes": 3094,
+      "path": "ASSET_PROVENANCE.md",
+      "sha256": "e0382a2b82b7ea7984a2dc31adb0d1d24214c458ac8fa57896a359fbf56bb953"
+    },
+    {
+      "bytes": 2249,
+      "path": "LICENSE-MMHand-dex-retargeting-MIT.txt",
+      "sha256": "675aa7a3b272e561ea58b0eb779efc39172758eae05415634bb906cb4ed7b820"
+    },
+    {
+      "bytes": 11356,
+      "path": "LICENSE-UltraDexGrasp-Apache-2.0.txt",
+      "sha256": "43070e2d4e532684de521b885f385d0841030efa2b1a20bafb76133a5e1379c1"
+    },
+    {
+      "bytes": 290384,
+      "path": "meshes/mmhand/base_link.stl",
+      "sha256": "052769901c4d3495e325518f0a87ae121ad12e813b95fdf1503faefb721b8ae0"
+    },
+    {
+      "bytes": 2113684,
+      "path": "meshes/mmhand/finger_1_distal_phalanx_1.stl",
+      "sha256": "305a452893da69217f84378eae670d60a7fec2e0728de5ebd1b789f22a453f1a"
+    },
+    {
+      "bytes": 1084284,
+      "path": "meshes/mmhand/finger_1_fingertip_1.stl",
+      "sha256": "de013f45a3238aa56d703fdf78b164e88f86a4e1f163272d7daa0d5061dd674c"
+    },
+    {
+      "bytes": 1977084,
+      "path": "meshes/mmhand/finger_1_proximal_phalanx_1.stl",
+      "sha256": "8b78e73b5305fcbbc88ade60deca18d0ddee48544e2b2ff9cd7a3e7232056fb5"
+    },
+    {
+      "bytes": 2111684,
+      "path": "meshes/mmhand/finger_2_distal_phalanx_1.stl",
+      "sha256": "4d18efbbe6ab56b1c3e6bcb39f38b186bb115c8c6c0090b442db752f900954d1"
+    },
+    {
+      "bytes": 1070784,
+      "path": "meshes/mmhand/finger_2_fingertip_1.stl",
+      "sha256": "1852651df8f001078da4b49d4020c425f472cf8777afa62284d8d4bb2a52d34d"
+    },
+    {
+      "bytes": 1972684,
+      "path": "meshes/mmhand/finger_2_proximal_phalanx_1.stl",
+      "sha256": "f5bf050afe8214413c4c7d7af8e45fc6e6195b3c83b66854b722873005fda5ff"
+    },
+    {
+      "bytes": 2111084,
+      "path": "meshes/mmhand/finger_3_distal_phalanx_1.stl",
+      "sha256": "9ed4d9b856b993f0ad1925cdd81f32cda26f4c536beca516cf514aded8ec5e90"
+    },
+    {
+      "bytes": 1070484,
+      "path": "meshes/mmhand/finger_3_fingertip_1.stl",
+      "sha256": "995d32cdca0ebf0fecbde4d011149f46044f63f506c56b73239803f67e32bdf8"
+    },
+    {
+      "bytes": 1971684,
+      "path": "meshes/mmhand/finger_3_proximal_phalanx_1.stl",
+      "sha256": "35ab3bfbe3db8030a53479cff6affd0b7cde2cc5636fb8bc4578e207966c8b92"
+    },
+    {
+      "bytes": 2111084,
+      "path": "meshes/mmhand/finger_4_distal_phalanx_1.stl",
+      "sha256": "9e249165b446e66a13bc1ac4b3c66e4108a7e632617fdceed0e0c5c0d23bc755"
+    },
+    {
+      "bytes": 1070484,
+      "path": "meshes/mmhand/finger_4_fingertip_1.stl",
+      "sha256": "f72d32985dccf3d9664d8d24e64addaf17080ac9dada9a16020edc04b421a370"
+    },
+    {
+      "bytes": 1971684,
+      "path": "meshes/mmhand/finger_4_proximal_phalanx_1.stl",
+      "sha256": "2d95c4767a3dd6edc2367fb9c907c575d6bccfde55fa76abf5ae76db20eed104"
+    },
+    {
+      "bytes": 2082584,
+      "path": "meshes/mmhand/mmhand_thumb_1_finger_7_distal_phalanx_1.stl",
+      "sha256": "a04a5006a28382eb1b1dd5024e24a9007ce1dec37fc83db914b824c2aae37aad"
+    },
+    {
+      "bytes": 1073484,
+      "path": "meshes/mmhand/mmhand_thumb_1_finger_7_fingertip_1.stl",
+      "sha256": "3f53d7457090f97e945894f6564ea17721d4d63d74e59769f853c6ebbdb681f4"
+    },
+    {
+      "bytes": 1966484,
+      "path": "meshes/mmhand/mmhand_thumb_1_finger_7_proximal_phalanx_1.stl",
+      "sha256": "2b473fded21d16500fd16bd09ca506d7dff94eec53435c205024f7315efaa812"
+    },
+    {
+      "bytes": 1035084,
+      "path": "meshes/mmhand/mmhand_thumb_1_thumb_abduction_adduction_link_1.stl",
+      "sha256": "5d2ca77dd1ff9289446cb0134bf78f119f3172c4250f3bef6b99a306469ed038"
+    },
+    {
+      "bytes": 1848184,
+      "path": "meshes/mmhand/mmhand_thumb_1_thumb_base_1.stl",
+      "sha256": "ea23b68e550dbe977b78114a549f10a81e3b7256aeed120e212289740b90ed01"
+    },
+    {
+      "bytes": 3010184,
+      "path": "meshes/mmhand/palm_1.stl",
+      "sha256": "7587d976314c4e5f2d28035dbc75414c3ecec31dd2c893cb075b557ebd5100ca"
+    },
+    {
+      "bytes": 1066484,
+      "path": "meshes/mmhand/palm_1_abduction_adduction_link_1.stl",
+      "sha256": "eb09096cb9769c4e45caffc6a8dfd3283178b1e3f0ee4a267b69191582fe7bf2"
+    },
+    {
+      "bytes": 1064384,
+      "path": "meshes/mmhand/palm_1_abduction_adduction_link_2.stl",
+      "sha256": "c1f6e2917a1624692b97d0f93d14afabc92b34607544ae0241805726ba6d2efe"
+    },
+    {
+      "bytes": 1058484,
+      "path": "meshes/mmhand/palm_1_abduction_adduction_link_3.stl",
+      "sha256": "7cb54d3ed0b6588127a5c95ab1f5c4027caa89055ccf815485a53143d214fa52"
+    },
+    {
+      "bytes": 1058484,
+      "path": "meshes/mmhand/palm_1_abduction_adduction_link_4.stl",
+      "sha256": "d7127dc29b3830487c8df570f17929a608e5ebbe47091da4d7f143ada1d1c3a2"
+    },
+    {
+      "bytes": 1786884,
+      "path": "meshes/mmhand/palm_1_finger_base_1.stl",
+      "sha256": "40f18df0a35b12ce6cadf50e8e54410fe62dccaf0e73bf7ce82af068cfc52e02"
+    },
+    {
+      "bytes": 1786884,
+      "path": "meshes/mmhand/palm_1_finger_base_2.stl",
+      "sha256": "bcbd09f88f66ef445cb998de213270764f900e5e4697b582f35c42356fa50195"
+    },
+    {
+      "bytes": 1786884,
+      "path": "meshes/mmhand/palm_1_finger_base_3.stl",
+      "sha256": "28e8af26c49695c2a86876749033ebb9fb5b5896bcfb5d261091c3be0877b002"
+    },
+    {
+      "bytes": 1786884,
+      "path": "meshes/mmhand/palm_1_finger_base_4.stl",
+      "sha256": "93fb550a8d7956af645ce84117d87c2ce9ce59dd062dba6f6838e671aa0d99f6"
+    },
+    {
+      "bytes": 807284,
+      "path": "meshes/nero/collision/base_link.stl",
+      "sha256": "540462fb56e52091daa3cd1ad3acc3c19a43f120b2f11bae5a69b32b08c738b6"
+    },
+    {
+      "bytes": 665584,
+      "path": "meshes/nero/collision/gripper_flange.stl",
+      "sha256": "1ae6d1c5af001582a3328564839e8eb5f2acec02e7e2b19e65fc3c43f8a9c95a"
+    },
+    {
+      "bytes": 1130084,
+      "path": "meshes/nero/collision/link1.stl",
+      "sha256": "0e38bf33ce41f04d7e70e471768c00fa144ba4016a878b9a6d8303c319736e09"
+    },
+    {
+      "bytes": 1802534,
+      "path": "meshes/nero/collision/link2.stl",
+      "sha256": "fc9eb85db9fbd351c9f6e119f5fed33c6f0dd3bc3b11698a0f96aaeb2d36c721"
+    },
+    {
+      "bytes": 1947484,
+      "path": "meshes/nero/collision/link3.stl",
+      "sha256": "44c70f731ad5067d608ebebc9e59f3c231988f992dfac6cb01ee7a6bb4b053f1"
+    },
+    {
+      "bytes": 1814784,
+      "path": "meshes/nero/collision/link4.stl",
+      "sha256": "47242e9b5d8b06c912261756f24dddb1e7f54ac6e718232a25889115298b966d"
+    },
+    {
+      "bytes": 1810084,
+      "path": "meshes/nero/collision/link5.stl",
+      "sha256": "dc497f5a9bab2d0d314250134d4ec86617abea7205d122db41b765acdb86ae7e"
+    },
+    {
+      "bytes": 758284,
+      "path": "meshes/nero/collision/link6.stl",
+      "sha256": "66417d30596e33c890f4f141781023bd3ea15709a502e7f59b30f6676f556022"
+    },
+    {
+      "bytes": 149384,
+      "path": "meshes/nero/collision/link7.stl",
+      "sha256": "70a2f415358f9e46088673c92bfe78ca5b1072dd73b7ea24464ba3ebb4c3e647"
+    },
+    {
+      "bytes": 1101428,
+      "path": "meshes/nero/visual/base_link.dae",
+      "sha256": "a369d27a339834e4f59cd2b16065d62a37cb8e1bdd503e150787149e998f03f6"
+    },
+    {
+      "bytes": 903164,
+      "path": "meshes/nero/visual/gripper_flange.dae",
+      "sha256": "93b4fd381b2edd42a3ec946567027aa3392c65be2f3f00c5711b86f4070980fa"
+    },
+    {
+      "bytes": 1611774,
+      "path": "meshes/nero/visual/link1.dae",
+      "sha256": "8aafc23509ce76d9c6fdcf8ef49931a8def1b5bfd1f974cbe677031334da9404"
+    },
+    {
+      "bytes": 24698201,
+      "path": "meshes/nero/visual/link2.dae",
+      "sha256": "00b3eb4a91c8efd95f3c161ee5318b66cb3e2fa55dac5c139077cdd67463c2ac"
+    },
+    {
+      "bytes": 2916994,
+      "path": "meshes/nero/visual/link3.dae",
+      "sha256": "cd3f0f08ce02aa36bddc0c89efa7d040b927e589e1816da1fd14417511d2b7bc"
+    },
+    {
+      "bytes": 8077485,
+      "path": "meshes/nero/visual/link4.dae",
+      "sha256": "ea607e157c173ca81d0982a24f2fdd7e98c695d94e0055b58028ce36b09b8708"
+    },
+    {
+      "bytes": 2775278,
+      "path": "meshes/nero/visual/link5.dae",
+      "sha256": "7733ac4afd30e38360e7a7e833b0ed6192d6fd20c99062b636a236f06b8bfb97"
+    },
+    {
+      "bytes": 1202101,
+      "path": "meshes/nero/visual/link6.dae",
+      "sha256": "260e1808d888da15e7e4e417a3ab0340f2223a5ed4b37e330278862096ed6f85"
+    },
+    {
+      "bytes": 230712,
+      "path": "meshes/nero/visual/link7.dae",
+      "sha256": "8c2498c59bcf574386cbd7e01fd5d81ff2483e26ae2f0e919deec62a04bce77d"
+    },
+    {
+      "bytes": 48209,
+      "path": "nero_capture_mmhand.urdf",
+      "sha256": "e1e860b83941e60c27c1f78a7e00fef8757958565a41d506f2b6ab34a04206a5"
+    }
+  ],
+  "schema": "teleop.robot-assets.manifest.v1",
+  "total_bytes": 97806019
+}

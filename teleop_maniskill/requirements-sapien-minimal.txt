@@ -1,0 +1,11 @@
+# Install with:
+#   .venv/bin/python -m pip install --no-cache-dir --no-deps \
+#     -r teleop_maniskill/requirements-sapien-minimal.txt
+#
+# NumPy, OpenCV, lxml, networkx and requests are already visible on sys.path
+# in this project's existing space-saving virtual environment.
+sapien==3.0.3
+trimesh==4.12.2
+transforms3d==0.4.2
+pyperclip==1.11.0
+importlib_resources==7.1.0

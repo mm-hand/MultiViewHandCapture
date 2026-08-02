@@ -1,0 +1,1177 @@
+<?xml version='1.0' encoding='utf-8'?>
+<robot name="nero_capture_mmhand">
+  <!-- Modified portable combination: NERO arm + capture MMHand; see ASSET_PROVENANCE.md. -->
+  <material name="capture_hand_palm_dark">
+    <color rgba="0.16 0.18 0.22 1.0" />
+  </material>
+  <material name="capture_hand_finger_base">
+    <color rgba="0.38 0.41 0.46 1.0" />
+  </material>
+  <material name="capture_hand_silver">
+    <color rgba="0.72 0.75 0.80 1.0" />
+  </material>
+  <material name="capture_hand_fingertip_dark">
+    <color rgba="0.045 0.050 0.060 1.0" />
+  </material>
+  <link name="world" />
+  <link name="base_link">
+    <inertial>
+      <origin xyz="-0.00319465997 -0.00005467608 0.04321758463" rpy="0 0 0" />
+      <mass value="1.06458435" />
+      <inertia ixx="0.00102659855152" ixy="0.00000186219753" ixz="-0.00000295298037" iyy="0.00114399299508" iyz="-0.00000078763492" izz="0.00090872933022" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/visual/base_link.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/collision/base_link.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="world_to_base_link" type="fixed">
+    <parent link="world" />
+    <child link="base_link" />
+    <origin xyz="0 0 0" rpy="0 0 0" />
+  </joint>
+  <link name="link1">
+    <inertial>
+      <origin xyz="-0.00076810578 -0.00005718031 -0.00686372765" rpy="0 0 0" />
+      <mass value="0.76710504" />
+      <inertia ixx="0.00066689512233" ixy="0.00000273938306" ixz="0.00001463284987" iyy="0.00054501235592" iyz="0.00000183168344" izz="0.00051509465737" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/visual/link1.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/collision/link1.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint1" type="revolute">
+    <origin xyz="0 0 0.138" rpy="0 0 0" />
+    <parent link="base_link" />
+    <child link="link1" />
+    <axis xyz="0 0 1" />
+    <limit lower="-2.70526" upper="2.70526" effort="100" velocity="5" />
+  </joint>
+  <link name="link2">
+    <inertial>
+      <origin xyz="0.00079686657 -0.07890325930 0.00111849422" rpy="0 0 0" />
+      <mass value="0.69381908" />
+      <inertia ixx="0.00201093857656" ixy="-0.00002399426785" ixz="-0.00000072824714" iyy="0.00063544232555" iyz="0.00005831284343" izz="0.00181943989593" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/visual/link2.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/collision/link2.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint2" type="revolute">
+    <origin xyz="0 0 0" rpy="1.5707963  3.1415926 0" />
+    <parent link="link1" />
+    <child link="link2" />
+    <axis xyz="0 0 1" />
+    <limit lower="-1.74" upper="1.74" effort="100" velocity="5" />
+  </joint>
+  <link name="link3">
+    <inertial>
+      <origin xyz="0.00014513363 -0.00121378766 -0.04861136795" rpy="0 0 0" />
+      <mass value="0.67246544" />
+      <inertia ixx="0.00343229961910" ixy="-0.00000026976739" ixz="0.00000305078107" iyy="0.00338662526897" iyz="-0.00003550220027" izz="0.00028853579710" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/visual/link3.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/collision/link3.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint3" type="revolute">
+    <origin xyz="0 -0.31 0" rpy="-1.5707963  0 3.1415926926" />
+    <parent link="link2" />
+    <child link="link3" />
+    <axis xyz="0 0 1" />
+    <limit lower="-2.75" upper="2.75" effort="100" velocity="5" />
+  </joint>
+  <link name="link4">
+    <inertial>
+      <origin xyz="-0.00031334623 -0.05675192422 0.00076056133" rpy="0 0 0" />
+      <mass value="0.48451414" />
+      <inertia ixx="0.00050386693505" ixy="-0.00000529675237" ixz="0.00000006134740" iyy="0.00023502068202" iyz="0.00001815932566" izz="0.00040149523118" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/visual/link4.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/collision/link4.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint4" type="revolute">
+    <origin xyz="0 0 0" rpy="-1.5707963  0 3.1415926926" />
+    <parent link="link3" />
+    <child link="link4" />
+    <axis xyz="0 0 1" />
+    <limit lower="-1.01" upper="2.14" effort="100" velocity="5" />
+  </joint>
+  <link name="link5">
+    <inertial>
+      <origin xyz="0.00265591357 0.00201195753 -0.11620855434" rpy="0 0 0" />
+      <mass value="0.58368405" />
+      <inertia ixx="0.00089537686723" ixy="0.00000648218232" ixz="-0.00001463346849" iyy="0.00085866122972" iyz="-0.00004035185637" izz="0.00021774946532" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/visual/link5.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/collision/link5.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint5" type="revolute">
+    <origin xyz="0 -0.27001 0" rpy="1.5707963  -1.5707963  0" />
+    <parent link="link4" />
+    <child link="link5" />
+    <axis xyz="0 0 1" />
+    <limit lower="-2.75" upper="2.75" effort="100" velocity="5" />
+  </joint>
+  <link name="link6">
+    <inertial>
+      <origin xyz="0.00009501505 0.00107831174 -0.00019110990" rpy="0 0 0" />
+      <mass value="0.3140406" />
+      <inertia ixx="0.00006027211661" ixy="-0.00000024650903" ixz="0.00000015701294" iyy="0.00004699514792" iyz="0.00000004170875" izz="0.00005756771792" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/visual/link6.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/collision/link6.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint6" type="revolute">
+    <origin xyz="0 0 0" rpy="1.5707963  -1.5707963  0" />
+    <parent link="link5" />
+    <child link="link6" />
+    <axis xyz="0 0 1" />
+    <limit lower="-0.73" upper="0.95" effort="100" velocity="5" />
+  </joint>
+  <link name="link7">
+    <inertial>
+      <origin xyz="-0.00014000 -0.00010000 -0.00275000" rpy="0 0 0" />
+      <mass value="0.000001" />
+      <inertia ixx="1.1000000000000001e-07" ixy="0" ixz="0" iyy="1.1000000000000001e-07" iyz="0" izz="1.9999999999999999e-07" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/visual/link7.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/collision/link7.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="joint7" type="revolute">
+    <origin xyz="0 -0.0235 0" rpy="1.5707963 0 0" />
+    <parent link="link6" />
+    <child link="link7" />
+    <axis xyz="0 0 1" />
+    <limit lower="-1.5707963" upper="1.5707963" effort="100" velocity="5" />
+  </joint>
+  <link name="gripper_flange">
+    <inertial>
+      <origin xyz="0.000253201 -0.000322696 -0.010082901" rpy="0 0 0" />
+      <mass value="0.04771096" />
+      <inertia ixx="36.14107e-06" ixy="0" ixz="0" iyy="17.824164e-06" iyz="0" izz="26.95944e-06" />
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/visual/gripper_flange.dae" />
+      </geometry>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="meshes/nero/collision/gripper_flange.stl" />
+      </geometry>
+    </collision>
+  </link>
+  <joint name="gripper_flange_joint" type="fixed">
+    <origin xyz="0.031 0 -0.0235" rpy="-1.5708 0 -1.5708" />
+    <parent link="link7" />
+    <child link="gripper_flange" />
+  </joint>
+  <link name="capture_hand__base_link">
+    <inertial>
+      <origin xyz="0.007869 0.009305 -0.025594" rpy="0.0 0.0 0.0" />
+      <mass value="0.026671469266356558" />
+      <inertia ixx="3.5e-05" iyy="2e-05" izz="1.5e-05" ixy="-0.0" iyz="6e-06" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.0 -0.0 -0.0" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/base_link.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_palm_dark" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/base_link.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__palm_1">
+    <inertial>
+      <origin xyz="-0.056156 0.032547 -0.010165" rpy="0.0 0.0 0.0" />
+      <mass value="0.16539031129630477" />
+      <inertia ixx="0.000148" iyy="8.7e-05" izz="0.000188" ixy="1.1e-05" iyz="7e-06" ixz="1e-05" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.099 0.040324 0.033543" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_palm_dark" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="-0.099 0.040324 0.033543" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__palm_1_finger_base_1">
+    <inertial>
+      <origin xyz="0.08579 -0.041628 -0.032603" rpy="0.0 0.0 0.0" />
+      <mass value="0.010915583239628221" />
+      <inertia ixx="1e-06" iyy="1e-06" izz="1e-06" ixy="0.0" iyz="0.0" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="0.0049 -8e-06 0.009846" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_finger_base_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_finger_base" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.0049 -8e-06 0.009846" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_finger_base_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__palm_1_abduction_adduction_link_1">
+    <inertial>
+      <origin xyz="0.005719 0.002398 -0.010914" rpy="0.0 0.0 0.0" />
+      <mass value="0.0038835140540164664" />
+      <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="-0.0" iyz="0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.094061 0.040324 0.033343" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_abduction_adduction_link_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_finger_base" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="-0.094061 0.040324 0.033343" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_abduction_adduction_link_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__palm_1_finger_base_2">
+    <inertial>
+      <origin xyz="0.08579 -0.041628 -0.032603" rpy="0.0 0.0 0.0" />
+      <mass value="0.010915583239628221" />
+      <inertia ixx="1e-06" iyy="1e-06" izz="1e-06" ixy="0.0" iyz="0.0" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="0.0046 -0.024008 0.009846" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_finger_base_2.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_finger_base" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.0046 -0.024008 0.009846" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_finger_base_2.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__palm_1_finger_base_3">
+    <inertial>
+      <origin xyz="0.08579 -0.041628 -0.032603" rpy="0.0 0.0 0.0" />
+      <mass value="0.010915583239628221" />
+      <inertia ixx="1e-06" iyy="1e-06" izz="1e-06" ixy="0.0" iyz="0.0" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="0.0049 -0.048008 0.009846" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_finger_base_3.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_finger_base" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.0049 -0.048008 0.009846" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_finger_base_3.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__palm_1_finger_base_4">
+    <inertial>
+      <origin xyz="0.08579 -0.041628 -0.032603" rpy="0.0 0.0 0.0" />
+      <mass value="0.010915583239628221" />
+      <inertia ixx="1e-06" iyy="1e-06" izz="1e-06" ixy="0.0" iyz="0.0" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="0.020644 -0.071899 0.009878" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_finger_base_4.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_finger_base" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.020644 -0.071899 0.009878" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_finger_base_4.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__palm_1_abduction_adduction_link_2">
+    <inertial>
+      <origin xyz="0.00533 0.00317 -0.010914" rpy="0.0 0.0 0.0" />
+      <mass value="0.0038835140540164664" />
+      <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="-0.0" iyz="0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.094361 0.016324 0.033343" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_abduction_adduction_link_2.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_finger_base" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="-0.094361 0.016324 0.033343" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_abduction_adduction_link_2.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__palm_1_abduction_adduction_link_3">
+    <inertial>
+      <origin xyz="0.005034 0.003623 -0.010914" rpy="0.0 0.0 0.0" />
+      <mass value="0.0038835140540164664" />
+      <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="-0.0" iyz="0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.094061 -0.007676 0.033343" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_abduction_adduction_link_3.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_finger_base" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="-0.094061 -0.007676 0.033343" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_abduction_adduction_link_3.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__palm_1_abduction_adduction_link_4">
+    <inertial>
+      <origin xyz="0.005034 0.003623 -0.010914" rpy="0.0 0.0 0.0" />
+      <mass value="0.0038835140540164664" />
+      <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="-0.0" iyz="0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.078318 -0.031567 0.033375" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_abduction_adduction_link_4.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_finger_base" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="-0.078318 -0.031567 0.033375" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/palm_1_abduction_adduction_link_4.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__mmhand_thumb_1_thumb_base_1">
+    <inertial>
+      <origin xyz="0.000116 -6.2e-05 -0.022014" rpy="0.0 0.0 0.0" />
+      <mass value="0.01857949246514449" />
+      <inertia ixx="6e-06" iyy="6e-06" izz="1e-06" ixy="-0.0" iyz="-0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.046902 0.041185 0.024743" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/mmhand_thumb_1_thumb_base_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_finger_base" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="-0.046902 0.041185 0.024743" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/mmhand_thumb_1_thumb_base_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__mmhand_thumb_1_thumb_abduction_adduction_link_1">
+    <inertial>
+      <origin xyz="0.002316 0.008298 -0.009155" rpy="0.0 0.0 0.0" />
+      <mass value="0.0037666395780571542" />
+      <inertia ixx="1e-09" iyy="1e-09" izz="1e-09" ixy="0.0" iyz="0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.047808 0.053186 0.070195" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/mmhand_thumb_1_thumb_abduction_adduction_link_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_finger_base" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="-0.047808 0.053186 0.070195" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/mmhand_thumb_1_thumb_abduction_adduction_link_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__mmhand_thumb_1_finger_7_proximal_phalanx_1">
+    <inertial>
+      <origin xyz="0.010262 -0.003319 -0.014915" rpy="0.0 0.0 0.0" />
+      <mass value="0.008314052389766543" />
+      <inertia ixx="1e-06" iyy="2e-06" izz="1e-06" ixy="0.0" iyz="-0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.053502 0.046184 0.084702" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/mmhand_thumb_1_finger_7_proximal_phalanx_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_silver" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.01057385 -0.005413675 -0.013270006" rpy="-0.249095463 -0.370368164 0.328512437" />
+      <geometry>
+        <cylinder radius="0.012435313" length="0.026566819" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.015962101 -0.006986916 -0.025097661" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.012435313" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.005185599 -0.003840435 -0.00144235" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.012435313" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__mmhand_thumb_1_finger_7_distal_phalanx_1">
+    <inertial>
+      <origin xyz="0.008177 -0.002401 -0.011958" rpy="0.0 0.0 0.0" />
+      <mass value="0.006680553833901148" />
+      <inertia ixx="1.001e-06" iyy="1.001e-06" izz="1e-09" ixy="0.0" iyz="-0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.072601 0.053626 0.118037" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/mmhand_thumb_1_finger_7_distal_phalanx_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_silver" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.00633942 -0.002311572 -0.012565095" rpy="-0.190939476 -0.402345434 0.174458925" />
+      <geometry>
+        <cylinder radius="0.009876707" length="0.021416021" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.010716471 -0.003589566 -0.022173083" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009876707" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.00196237 -0.001033577 -0.002957108" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009876707" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__mmhand_thumb_1_finger_7_fingertip_1">
+    <inertial>
+      <origin xyz="0.011122 -0.001329 -0.010822" rpy="0.0 0.0 0.0" />
+      <mass value="0.005701382551402315" />
+      <inertia ixx="1.001e-06" iyy="1.001e-06" izz="1e-09" ixy="0.0" iyz="-0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.08315 0.060186 0.144589" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/mmhand_thumb_1_finger_7_fingertip_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_fingertip_dark" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.008157426 0.000638368 -0.013157966" rpy="-0.422218752 0.138693354 1.585261781" />
+      <geometry>
+        <cylinder radius="0.00930797" length="0.020825109" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.012366569 -0.000590601 -0.022397383" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.00930797" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.003948283 0.001867338 -0.003918551" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.00930797" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_1_proximal_phalanx_1">
+    <inertial>
+      <origin xyz="0.016336 0.008479 0.000169" rpy="0.0 0.0 0.0" />
+      <mass value="0.008314052389766543" />
+      <inertia ixx="1e-06" iyy="2e-06" izz="2e-06" ixy="-0.0" iyz="-0.0" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.105716 0.035214 0.044743" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_1_proximal_phalanx_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_silver" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.015417243 0.008633773 0.002711426" rpy="1.476755203 -0.086476817 -1.236735489" />
+      <geometry>
+        <cylinder radius="0.012400477" length="0.026569046" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.027767461 0.012807735 0.001486469" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.012400477" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.003067026 0.004459811 0.003936383" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.012400477" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_1_distal_phalanx_1">
+    <inertial>
+      <origin xyz="0.013021 0.006787 -0.000118" rpy="0.0 0.0 0.0" />
+      <mass value="0.006680553833901148" />
+      <inertia ixx="1e-09" iyy="1.001e-06" izz="1.001e-06" ixy="-0.0" iyz="0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.141791 0.020048 0.044803" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_1_distal_phalanx_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_silver" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.013348678 0.004961133 -0.000601904" rpy="-1.66472016 0.070673581 -1.251533466" />
+      <geometry>
+        <cylinder radius="0.009876129" length="0.021502949" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.003276722 0.001557147 0.000397083" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009876129" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.023420635 0.008365119 -0.001600892" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009876129" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_1_fingertip_1">
+    <inertial>
+      <origin xyz="0.011984 0.009936 -0.000464" rpy="0.0 0.0 0.0" />
+      <mass value="0.005701382551402315" />
+      <inertia ixx="1e-09" iyy="1.001e-06" izz="1.001e-06" ixy="-0.0" iyz="0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.170159 0.012661 0.044808" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_1_fingertip_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_fingertip_dark" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.01335369 0.00716374 -0.003411016" rpy="0.968156407 -1.404990932 -0.648674056" />
+      <geometry>
+        <cylinder radius="0.009262807" length="0.020835574" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.023001459 0.010424364 -0.004367931" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009262807" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.003705919 0.003903115 -0.002454102" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009262807" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_2_proximal_phalanx_1">
+    <inertial>
+      <origin xyz="0.014997 0.01067 0.000169" rpy="0.0 0.0 0.0" />
+      <mass value="0.008314052389766543" />
+      <inertia ixx="1.001e-06" iyy="1.001e-06" izz="2.001e-06" ixy="-1e-06" iyz="-0.0" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.105192 0.009641 0.044743" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_2_proximal_phalanx_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_silver" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.014044682 0.010665909 0.002657147" rpy="1.478252332 -0.085924859 -1.097380208" />
+      <geometry>
+        <cylinder radius="0.012424022" length="0.02647651" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.025656646 0.016498098 0.001455644" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.012424022" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.002432718 0.00483372 0.00385865" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.012424022" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_2_distal_phalanx_1">
+    <inertial>
+      <origin xyz="0.01195 0.008533 -0.000118" rpy="0.0 0.0 0.0" />
+      <mass value="0.006680553833901148" />
+      <inertia ixx="1e-09" iyy="1.001e-06" izz="1.001e-06" ixy="-0.0" iyz="0.0" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.138804 -0.010397 0.044803" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_2_distal_phalanx_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_silver" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.012549706 0.006758782 -0.00060657" rpy="-1.663215656 0.068557793 -1.111693944" />
+      <geometry>
+        <cylinder radius="0.009953366" length="0.021361511" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.003108985 0.002017114 0.000370272" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009953366" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.021990425 0.011500448 -0.001583412" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009953366" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_2_fingertip_1">
+    <inertial>
+      <origin xyz="0.010485 0.011507 -0.000464" rpy="0.0 0.0 0.0" />
+      <mass value="0.005701382551402315" />
+      <inertia ixx="1e-09" iyy="1.001e-06" izz="1.001e-06" ixy="-0.0" iyz="0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.165869 -0.02166 0.044808" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_2_fingertip_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_fingertip_dark" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.012228437 0.008927759 -0.003368595" rpy="1.087654272 -1.371287344 -0.630398007" />
+      <geometry>
+        <cylinder radius="0.009286031" length="0.020857118" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.021343147 0.013505685 -0.004311705" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009286031" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.003113725 0.004349832 -0.002425486" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009286031" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_3_proximal_phalanx_1">
+    <inertial>
+      <origin xyz="0.01401 0.011937 0.000169" rpy="0.0 0.0 0.0" />
+      <mass value="0.008314052389766543" />
+      <inertia ixx="1.001e-06" iyy="1.001e-06" izz="2.001e-06" ixy="-1e-06" iyz="-0.0" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.104268 -0.015277 0.044743" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_3_proximal_phalanx_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_silver" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.013083534 0.011843494 0.002647013" rpy="1.478070447 -0.086530753 -1.009845176" />
+      <geometry>
+        <cylinder radius="0.012421897" length="0.026506101" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.024154664 0.01867574 0.001441783" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.012421897" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.002012403 0.005011249 0.003852243" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.012421897" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_3_distal_phalanx_1">
+    <inertial>
+      <origin xyz="0.011161 0.009542 -0.000118" rpy="0.0 0.0 0.0" />
+      <mass value="0.006680553833901148" />
+      <inertia ixx="1e-06" iyy="1e-06" izz="1e-06" ixy="-0.0" iyz="0.0" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.136006 -0.038169 0.044803" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_3_distal_phalanx_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_silver" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.011911589 0.007814936 -0.000620976" rpy="-1.663396515 0.069195307 -1.024302341" />
+      <geometry>
+        <cylinder radius="0.009870392" length="0.021533148" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.0028493 0.002222392 0.000365566" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009870392" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.020973877 0.01340748 -0.001607519" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009870392" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_3_fingertip_1">
+    <inertial>
+      <origin xyz="0.009442 0.012377 -0.000464" rpy="0.0 0.0 0.0" />
+      <mass value="0.005701382551402315" />
+      <inertia ixx="1e-09" iyy="1e-09" izz="1.001e-06" ixy="-0.0" iyz="0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.161986 -0.051748 0.044808" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_3_fingertip_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_fingertip_dark" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.011397664 0.00995159 -0.003388134" rpy="1.133356894 -1.351280346 -0.589690264" />
+      <geometry>
+        <cylinder radius="0.009249611" length="0.020924213" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.020106421 0.015325961 -0.004336191" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009249611" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.002688907 0.004577219 -0.002440078" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009249611" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_4_proximal_phalanx_1">
+    <inertial>
+      <origin xyz="0.01401 0.011937 0.000169" rpy="0.0 0.0 0.0" />
+      <mass value="0.008314052389766543" />
+      <inertia ixx="1.001e-06" iyy="1.001e-06" izz="2.001e-06" ixy="-1e-06" iyz="-0.0" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.088524 -0.039168 0.044775" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_4_proximal_phalanx_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_silver" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.013083818 0.011843551 0.0026466" rpy="1.478070499 -0.086530618 -1.00984294" />
+      <geometry>
+        <cylinder radius="0.012421896" length="0.026506104" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.024154931 0.01867582 0.001441371" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.012421896" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.002012705 0.005011282 0.003851829" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.012421896" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_4_distal_phalanx_1">
+    <inertial>
+      <origin xyz="0.011161 0.009542 -0.000118" rpy="0.0 0.0 0.0" />
+      <mass value="0.006680553833901148" />
+      <inertia ixx="1e-06" iyy="1e-06" izz="1e-06" ixy="-0.0" iyz="0.0" ixz="-0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.120263 -0.06206 0.044835" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_4_distal_phalanx_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_silver" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.011911093 0.007814607 -0.000621308" rpy="-1.663396363 0.069179763 -1.024298638" />
+      <geometry>
+        <cylinder radius="0.009870318" length="0.021533255" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.002848774 0.002222017 0.000365239" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009870318" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.020973411 0.013407198 -0.001607854" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009870318" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__finger_4_fingertip_1">
+    <inertial>
+      <origin xyz="0.009442 0.012377 -0.000464" rpy="0.0 0.0 0.0" />
+      <mass value="0.005701382551402315" />
+      <inertia ixx="1e-09" iyy="1e-09" izz="1.001e-06" ixy="-0.0" iyz="0.0" ixz="0.0" />
+    </inertial>
+    <visual>
+      <origin xyz="-0.146243 -0.075639 0.04484" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <mesh filename="meshes/mmhand/finger_4_fingertip_1.stl" scale="0.001 0.001 0.001" />
+      </geometry>
+      <material name="capture_hand_fingertip_dark" />
+    </visual>
+    <collision name="collision_0">
+      <origin xyz="0.011397163 0.009951337 -0.003388467" rpy="1.133358348 -1.351279776 -0.589689491" />
+      <geometry>
+        <cylinder radius="0.009249611" length="0.020924206" />
+      </geometry>
+    </collision>
+    <collision name="collision_1">
+      <origin xyz="0.020105907 0.015325727 -0.004336522" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009249611" />
+      </geometry>
+    </collision>
+    <collision name="collision_2">
+      <origin xyz="0.00268842 0.004576947 -0.002440411" rpy="0.0 0.0 0.0" />
+      <geometry>
+        <sphere radius="0.009249611" />
+      </geometry>
+    </collision>
+  </link>
+  <link name="capture_hand__1-tip_Link" />
+  <link name="capture_hand__2-tip_Link" />
+  <link name="capture_hand__3-tip_Link" />
+  <link name="capture_hand__4-tip_Link" />
+  <link name="capture_hand__5-tip_Link" />
+  <joint name="Thumb_CMC" type="revolute">
+    <origin xyz="-0.052098 -0.000861 0.0088" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1" />
+    <child link="capture_hand__mmhand_thumb_1_thumb_base_1" />
+    <axis xyz="0.0 0.0 -1.0" />
+    <limit upper="1.343904" lower="0.0" effort="100" velocity="100" />
+  </joint>
+  <joint name="Ring_MCP_FE" type="revolute">
+    <origin xyz="0.010207 0.007601 -0.0114" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1_abduction_adduction_link_3" />
+    <child link="capture_hand__finger_3_proximal_phalanx_1" />
+    <axis xyz="-0.587785 0.809017 0.0" />
+    <limit upper="1.570796" lower="-0.261799" effort="100" velocity="100" />
+  </joint>
+  <joint name="Little_MCP_FE" type="revolute">
+    <origin xyz="0.010207 0.007601 -0.0114" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1_abduction_adduction_link_4" />
+    <child link="capture_hand__finger_4_proximal_phalanx_1" />
+    <axis xyz="-0.587785 0.809017 0.0" />
+    <limit upper="1.570796" lower="-0.261799" effort="100" velocity="100" />
+  </joint>
+  <joint name="Index_MCP_FE" type="revolute">
+    <origin xyz="0.011655 0.00511 -0.0114" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1_abduction_adduction_link_1" />
+    <child link="capture_hand__finger_1_proximal_phalanx_1" />
+    <axis xyz="-0.390731 0.920505 -0.0" />
+    <limit upper="1.570796" lower="-0.244346" effort="100" velocity="100" />
+  </joint>
+  <joint name="Middle_MCP_FE" type="revolute">
+    <origin xyz="0.01083 0.006683 -0.0114" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1_abduction_adduction_link_2" />
+    <child link="capture_hand__finger_2_proximal_phalanx_1" />
+    <axis xyz="-0.515038 0.857167 -0.0" />
+    <limit upper="1.570796" lower="-0.244346" effort="100" velocity="100" />
+  </joint>
+  <joint name="Ring_MCP_AA" type="revolute">
+    <origin xyz="0.098962 -0.040332 -0.023497" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1_finger_base_3" />
+    <child link="capture_hand__palm_1_abduction_adduction_link_3" />
+    <axis xyz="-0.0 -0.0 -1.0" />
+    <limit upper="1.064651" lower="0.0" effort="100" velocity="100" />
+  </joint>
+  <joint name="Middle_MCP_AA" type="revolute">
+    <origin xyz="0.098962 -0.040332 -0.023497" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1_finger_base_2" />
+    <child link="capture_hand__palm_1_abduction_adduction_link_2" />
+    <axis xyz="-0.0 0.0 -1.0" />
+    <limit upper="1.029744" lower="0.0" effort="100" velocity="100" />
+  </joint>
+  <joint name="Index_MCP_AA" type="revolute">
+    <origin xyz="0.098962 -0.040332 -0.023497" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1_finger_base_1" />
+    <child link="capture_hand__palm_1_abduction_adduction_link_1" />
+    <axis xyz="-0.0 0.0 -1.0" />
+    <limit upper="1.012291" lower="0.0" effort="100" velocity="100" />
+  </joint>
+  <joint name="Little_MCP_AA" type="revolute">
+    <origin xyz="0.098962 -0.040332 -0.023497" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1_finger_base_4" />
+    <child link="capture_hand__palm_1_abduction_adduction_link_4" />
+    <axis xyz="-0.0 -0.0 -1.0" />
+    <limit upper="0.942478" lower="0.0" effort="100" velocity="100" />
+  </joint>
+  <joint name="mmhand_thumb_1_finger_7_fingertip_1_DIP_Joint" type="revolute">
+    <origin xyz="0.010549 -0.006561 -0.026553" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__mmhand_thumb_1_finger_7_distal_phalanx_1" />
+    <child link="capture_hand__mmhand_thumb_1_finger_7_fingertip_1" />
+    <axis xyz="0.862725 0.240955 0.444574" />
+    <limit upper="1.762783" lower="-0.226893" effort="100" velocity="100" />
+  </joint>
+  <joint name="mmhand_thumb_1_finger_7_distal_phalanx_1_PIP_Joint" type="revolute">
+    <origin xyz="0.019099 -0.007442 -0.033335" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__mmhand_thumb_1_finger_7_proximal_phalanx_1" />
+    <child link="capture_hand__mmhand_thumb_1_finger_7_distal_phalanx_1" />
+    <axis xyz="0.862725 0.240955 0.444574" />
+    <limit upper="1.553343" lower="-0.15708" effort="100" velocity="100" />
+  </joint>
+  <joint name="Thumb_MCP_AA" type="revolute">
+    <origin xyz="0.000906 -0.012002 -0.045452" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__mmhand_thumb_1_thumb_base_1" />
+    <child link="capture_hand__mmhand_thumb_1_thumb_abduction_adduction_link_1" />
+    <axis xyz="-0.070801 0.928071 -0.365612" />
+    <limit upper="0.994838" lower="0.0" effort="100" velocity="100" />
+  </joint>
+  <joint name="Thumb_MCP_FE" type="revolute">
+    <origin xyz="0.005694 0.007003 -0.014507" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__mmhand_thumb_1_thumb_abduction_adduction_link_1" />
+    <child link="capture_hand__mmhand_thumb_1_finger_7_proximal_phalanx_1" />
+    <axis xyz="0.862725 0.240955 0.444574" />
+    <limit upper="1.570796" lower="-0.331613" effort="100" velocity="100" />
+  </joint>
+  <joint name="finger_1_fingertip_1_DIP_Joint" type="revolute">
+    <origin xyz="0.028369 0.007387 -5e-06" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__finger_1_distal_phalanx_1" />
+    <child link="capture_hand__finger_1_fingertip_1" />
+    <axis xyz="-0.390731 0.920505 -0.0" />
+    <limit upper="1.762783" lower="-0.226893" effort="100" velocity="100" />
+  </joint>
+  <joint name="finger_1_distal_phalanx_1_PIP_Joint" type="revolute">
+    <origin xyz="0.036074 0.015166 -6e-05" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__finger_1_proximal_phalanx_1" />
+    <child link="capture_hand__finger_1_distal_phalanx_1" />
+    <axis xyz="-0.390731 0.920505 -0.0" />
+    <limit upper="1.553343" lower="-0.15708" effort="100" velocity="100" />
+  </joint>
+  <joint name="finger_2_fingertip_1_DIP_Joint" type="revolute">
+    <origin xyz="0.027065 0.011263 -5e-06" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__finger_2_distal_phalanx_1" />
+    <child link="capture_hand__finger_2_fingertip_1" />
+    <axis xyz="-0.515038 0.857167 -0.0" />
+    <limit upper="1.762783" lower="-0.226893" effort="100" velocity="100" />
+  </joint>
+  <joint name="finger_2_distal_phalanx_1_PIP_Joint" type="revolute">
+    <origin xyz="0.033613 0.020039 -6e-05" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__finger_2_proximal_phalanx_1" />
+    <child link="capture_hand__finger_2_distal_phalanx_1" />
+    <axis xyz="-0.515038 0.857167 -0.0" />
+    <limit upper="1.553343" lower="-0.15708" effort="100" velocity="100" />
+  </joint>
+  <joint name="finger_3_fingertip_1_DIP_Joint" type="revolute">
+    <origin xyz="0.02598 0.013579 -5e-06" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__finger_3_distal_phalanx_1" />
+    <child link="capture_hand__finger_3_fingertip_1" />
+    <axis xyz="-0.587785 0.809017 -0.0" />
+    <limit upper="1.762783" lower="-0.226893" effort="100" velocity="100" />
+  </joint>
+  <joint name="finger_3_distal_phalanx_1_PIP_Joint" type="revolute">
+    <origin xyz="0.031738 0.022892 -6e-05" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__finger_3_proximal_phalanx_1" />
+    <child link="capture_hand__finger_3_distal_phalanx_1" />
+    <axis xyz="-0.587785 0.809017 0.0" />
+    <limit upper="1.553343" lower="-0.15708" effort="100" velocity="100" />
+  </joint>
+  <joint name="finger_4_fingertip_1_DIP_Joint" type="revolute">
+    <origin xyz="0.02598 0.013579 -5e-06" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__finger_4_distal_phalanx_1" />
+    <child link="capture_hand__finger_4_fingertip_1" />
+    <axis xyz="-0.587785 0.809017 -0.0" />
+    <limit upper="1.762783" lower="-0.226893" effort="100" velocity="100" />
+  </joint>
+  <joint name="finger_4_distal_phalanx_1_PIP_Joint" type="revolute">
+    <origin xyz="0.031738 0.022892 -6e-05" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__finger_4_proximal_phalanx_1" />
+    <child link="capture_hand__finger_4_distal_phalanx_1" />
+    <axis xyz="-0.587785 0.809017 0.0" />
+    <limit upper="1.553343" lower="-0.15708" effort="100" velocity="100" />
+  </joint>
+  <joint name="capture_hand__palm_1_fixed_joint" type="fixed">
+    <origin xyz="0.099 -0.040324 -0.033543" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__base_link" />
+    <child link="capture_hand__palm_1" />
+  </joint>
+  <joint name="capture_hand__palm_1_finger_base_1_fixed_joint" type="fixed">
+    <origin xyz="-0.1039 0.040332 0.023697" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1" />
+    <child link="capture_hand__palm_1_finger_base_1" />
+  </joint>
+  <joint name="capture_hand__palm_1_finger_base_2_fixed_joint" type="fixed">
+    <origin xyz="-0.1036 0.064332 0.023697" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1" />
+    <child link="capture_hand__palm_1_finger_base_2" />
+  </joint>
+  <joint name="capture_hand__palm_1_finger_base_3_fixed_joint" type="fixed">
+    <origin xyz="-0.1039 0.088332 0.023697" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1" />
+    <child link="capture_hand__palm_1_finger_base_3" />
+  </joint>
+  <joint name="capture_hand__palm_1_finger_base_4_fixed_joint" type="fixed">
+    <origin xyz="-0.119644 0.112222 0.023665" rpy="0.0 -0.0 0.0" />
+    <parent link="capture_hand__palm_1" />
+    <child link="capture_hand__palm_1_finger_base_4" />
+  </joint>
+  <joint name="capture_hand__1-tip" type="fixed">
+    <origin xyz="0.023001459 0.010424364 -0.004367931" rpy="0 0 0" />
+    <parent link="capture_hand__finger_1_fingertip_1" />
+    <child link="capture_hand__1-tip_Link" />
+  </joint>
+  <joint name="capture_hand__2-tip" type="fixed">
+    <origin xyz="0.021343147 0.013505685 -0.004311705" rpy="0 0 0" />
+    <parent link="capture_hand__finger_2_fingertip_1" />
+    <child link="capture_hand__2-tip_Link" />
+  </joint>
+  <joint name="capture_hand__3-tip" type="fixed">
+    <origin xyz="0.020106421 0.015325961 -0.004336191" rpy="0 0 0" />
+    <parent link="capture_hand__finger_3_fingertip_1" />
+    <child link="capture_hand__3-tip_Link" />
+  </joint>
+  <joint name="capture_hand__4-tip" type="fixed">
+    <origin xyz="0.020105907 0.015325727 -0.004336522" rpy="0 0 0" />
+    <parent link="capture_hand__finger_4_fingertip_1" />
+    <child link="capture_hand__4-tip_Link" />
+  </joint>
+  <joint name="capture_hand__5-tip" type="fixed">
+    <origin xyz="0.012366569 -0.000590601 -0.022397383" rpy="0 0 0" />
+    <parent link="capture_hand__mmhand_thumb_1_finger_7_fingertip_1" />
+    <child link="capture_hand__5-tip_Link" />
+  </joint>
+  <joint name="nero_capture_mmhand_mount" type="fixed">
+    <parent link="gripper_flange" />
+    <child link="capture_hand__base_link" />
+    <origin xyz="0 0 0.00600000005" rpy="0 -1.57079621 -3.14159265" />
+  </joint>
+  <mujoco>
+    <compiler fusestatic="false" discardvisual="false" balanceinertia="true" />
+  </mujoco>
+</robot>

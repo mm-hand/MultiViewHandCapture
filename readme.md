@@ -29,7 +29,41 @@ git clone https://github.com/mm-hand/MultiViewHandCapture.git
 cd MultiViewHandCapture
 ```
 
-首次创建 `mmhand` Conda 环境：
+### 当前低存储 `.venv`（不含 ROS）
+
+当前 checkout 已按无 ROS 方案配置好 `.venv`，使用 Python 3.10，并继续复用
+当前 Python 路径已有的 NumPy 1.26.4 和 OpenCV 4.5.4。捕捉和在线仿真
+都只通过项目内的 `.venv/bin/python` 运行，不需要 Conda 或相邻仓库。加入
+SAPIEN 后当前 `.venv` 约 `521 MB`，直接激活即可：
+
+```bash
+source .venv/bin/activate
+export PYTHONNOUSERSITE=1
+export MPLCONFIGDIR=/tmp/mvhc-matplotlib
+```
+
+捕捉侧需要 `numpy、cv2、scipy、viser、yourdfpy、mediapipe` 和
+`pyrealsense2`；纯 SAPIEN 仿真固定使用 `sapien==3.0.3`。当前环境的 NumPy
+应保持为 `1.26.4`，mesh 物体使用 `trimesh==4.12.2`。不要在安装 SAPIEN 时
+顺带下载第二份 NumPy/OpenCV。先检查：
+
+```bash
+.venv/bin/python -c \
+  "import numpy, sapien; print('numpy', numpy.__version__, 'sapien', sapien.__version__)"
+```
+
+只有 `.venv` 缺少 SAPIEN 时才使用 `--no-deps` 安装下面这组已固定版本的最小
+依赖；其前提是当前项目 `.venv` 已能导入 NumPy/OpenCV：
+
+```bash
+.venv/bin/python -m pip install --no-cache-dir --no-deps \
+  -r teleop_maniskill/requirements-sapien-minimal.txt
+```
+
+### 完整 Conda/ROS 环境（可选）
+
+只有需要 ROS 2 输出时才需要按 `environment.yml` 创建完整环境。首次创建
+`mmhand` Conda 环境：
 
 ```bash
 mamba env create -f environment.yml
@@ -202,6 +236,116 @@ python track.py --mode retarget --ros
 页面状态从 `CALIBRATION` 变为 `GESTURE TRACKING` 后，retarget 和机器人 ROS
 输出才会开始。
 
+### NERO + MMHand 在线仿真遥操作
+
+独立的环境重建、完整参数、按键、物体资产和排错手册见
+[`teleop_maniskill/README.md`](teleop_maniskill/README.md)。
+
+该模式不依赖 ROS，也不导入 ManiSkill、Torch、相邻仓库的 Python 代码或资产。
+尽管目录名保留为 `teleop_maniskill/`，运行时只有纯 SAPIEN、NumPy 和本项目
+文件。默认机器人是项目内的高精度
+`teleop_maniskill/assets/robot/nero_capture_mmhand.urdf`：NERO 使用真实 DAE
+visual 与 STL collision，MMHand 使用捕捉端 `assets/mmhand/urdf/hand.urdf` 的
+同一套 J00–J20 运动学和 27 个 STL visual。这样既保留原 NERO 的黑/银/红 CAD
+材质与真实外形，也彻底消除了两套 MMHand URDF 顺序、零位和关节轴不一致的
+问题。机器人运行资产约 `94 MB`，全部 URI 都是本项目内的相对路径。
+
+场景默认使用原 pick-and-place 的本地 bowl mesh，并对齐桌面、目标区、物体
+随机 XY/yaw、质量/阻尼、任务阈值与三个相机位置。项目还内置本地 OBJ
+`cup`、`can`、`box`，以及 `cube`、`cylinder`、`sphere` 三个快速 primitive
+case。渲染固定使用可靠的 SAPIEN default raster shader、
+MSAA 4、2048 阴影图、40° FOV；同时创建 front、left-rear、right-rear 三路
+`512×512` RGB/position/segmentation 相机。不会在不支持的显卡上自动尝试 RT。
+
+默认一键启动：
+
+```bash
+.venv/bin/python teleop_maniskill/run_sim_teleop.py
+```
+
+启动器会同时运行 `track.py --mode retarget` 和纯 SAPIEN Viewer。捕捉网页仍在
+`http://localhost:8080`；完成约 10 秒初始标定并进入 `GESTURE TRACKING` 后，
+左手关节目标才会通过 `127.0.0.1:5557` 发送到仿真。右手、stale 帧、标定阶段、
+求解失败或 UDP 断流会令仿真保持最后一个有效手姿并显示 `HOLD`。关闭 Viewer
+或在启动器终端按 `Ctrl-C` 会清理两个子进程。
+
+也可以在两个终端分开调试：
+
+```bash
+# 终端 1：捕捉与 UDP 发布
+.venv/bin/python track.py --mode retarget --udp 127.0.0.1:5557
+```
+
+```bash
+# 终端 2：纯 SAPIEN 仿真
+.venv/bin/python teleop_maniskill/sim_pick_place.py \
+  --listen 127.0.0.1:5557 --object-case bowl
+```
+
+仿真以 100 Hz 物理、20 Hz 控制运行。NERO 腕姿固定，只接受世界 XYZ 增量；
+默认 `0.12 m/s` 即每步 `6 mm`，单步上限 `2 cm`。MMHand 使用 21 维绝对关节
+目标和 `3 rad/s` 变化率限制。捕捉和仿真现在使用完全相同的 J00–J20 顺序、
+符号、零位、关节轴和限位，UDP 目标只做有限值检查与同索引限位裁剪，不再使用
+0616 URDF 所需的重排、取负和角度偏移。张手/reset 使用捕捉模型的机械中位角
+`36/29/31/23/28°`。终端以 5 Hz 显示 UDP age、TCP XYZ 和
+contact/grasp/lift/in-place/success；断流或跟踪无效时显示 `HOLD`。
+
+仿真控制：
+
+| 按键 | 功能 |
+|---|---|
+| `Up` / `Down` | NERO 末端沿世界 X 正/负方向移动 |
+| `Left` / `Right` | NERO 末端沿世界 Y 正/负方向移动 |
+| `U` / `J` | NERO 末端沿世界 Z 正/负方向移动 |
+| `1` / `2` / `3` | 切换 front、left-rear、right-rear 视角 |
+| `4` / `5` / `6` / `7` | 切换 bowl、cup、can、box OBJ 并重置场景 |
+| `8` / `9` / `0` | 切换 cube、cylinder、sphere primitive 并重置场景 |
+| `Space` | 暂停或恢复控制 |
+| `N` | MMHand 回到张开姿态；下一有效捕捉帧恢复跟随 |
+| `R` | 重置机器人和当前物体 |
+| `H` | 在终端重新打印按键帮助 |
+| `Q` / `Esc` | 退出仿真 |
+
+高精度组合 URDF、mesh manifest、来源与许可证都已随项目保存；启动时只做本地
+结构/路径校验，不会读取或修改 UltraDexGrasp。可以单独检查：
+
+```bash
+.venv/bin/python teleop_maniskill/prepare_full_fidelity_urdf.py validate
+```
+
+要换目标物体，最简单是使用
+`--object-case bowl|cup|can|box|cube|cylinder|sphere`。也可以把自己的 OBJ 放进
+本项目（例如 `teleop_maniskill/assets/objects/my_object.obj`），然后覆盖任意一个
+OBJ case 的 mesh：
+
+```bash
+.venv/bin/python teleop_maniskill/run_sim_teleop.py \
+  --object-case bowl \
+  --object-mesh-path teleop_maniskill/assets/objects/my_object.obj \
+  --object-scale 0.001
+```
+
+`--object-mesh-path` 需要搭配 `bowl/cup/can/box` 中任意一个 OBJ case，并且只接受
+本项目内的 OBJ，确保复制整个文件夹后仍可独立运行；也可传入包含
+`mesh/simplified.obj` 的 object root。`--object-scale` 是统一缩放，
+应按源 OBJ 单位调整。默认 reset 会在原任务范围内随机 XY/yaw；复现实验时加
+`--seed 0 --fixed-object`。其他参数运行
+`.venv/bin/python teleop_maniskill/run_sim_teleop.py --help` 查看。GUI 需要宿主机
+可用的 DISPLAY/Vulkan；不打开窗口、只检查场景创建和控制链路时运行：
+
+```bash
+.venv/bin/python teleop_maniskill/sim_pick_place.py \
+  --headless --max-steps 20 --object-case bowl --fixed-object
+```
+
+若 D435 报 `VIDIOC_S_FMT ... Device or resource busy`，请先在原终端用 `Ctrl-C`
+关闭已经运行的 `track.py`，再执行一键启动器。
+
+场景会显示 contact/grasp/lift/in-place/success 状态。视觉、相机和任务状态已与
+原 pick-and-place 环境对齐；稳定抓起和放置仍会受到真实接触参数、手臂轨迹和
+操作者动作影响，需要后续物理调参。随附 NERO/MMHand CAD 适合当前本地研究；
+若要对外重新发布这些 OEM mesh，请先确认模型供应方的再分发授权。
+
 ## 代码文件结构
 
 ```text
@@ -216,6 +360,31 @@ retarget.py
 
 track.py
     程序入口、实时循环、Web 页面、Viser 和 ROS 发布
+
+teleop_maniskill/
+    README.md
+        独立环境配置、运行、按键、物体与排错手册
+    assets/robot/nero_capture_mmhand.urdf、meshes/、MANIFEST.json
+        高精度 7-DoF NERO + 捕捉端 21-DoF MMHand 本地组合模型
+    assets/objects/{bowl,cup,can,box}/
+        默认 bowl 与本地生成的杯、圆柱罐、方块 OBJ
+    assets/objects/generate_builtin_objects.py
+        可复现生成 cup、can、box OBJ
+    prepare_full_fidelity_urdf.py
+        校验组合 URDF、相对 mesh 路径和 28-DoF 关节契约
+    prepare_standalone_urdf.py、assets/standalone_nero_mmhand.urdf
+        保留的 primitive physics/debug 备用模型；默认仿真不再使用
+    requirements-sapien-minimal.txt
+        低存储安装所需的 SAPIEN 与四个小型兼容依赖版本
+    teleop_protocol.py
+        版本化 UDP 协议、最新包接收、关节限位和变化率限制
+    sim_pick_place.py
+        纯 SAPIEN 场景、键盘控制、内置物体和状态显示
+    run_sim_teleop.py
+        用项目内 .venv 启动并清理捕捉/仿真两个进程
+    test_full_fidelity_urdf.py、test_object_assets.py、test_teleop_protocol.py、
+    test_sim_pick_place.py
+        高精度资产、本地 OBJ、协议和 headless SAPIEN 回归测试
 
 calibrate.py
     普通拼接双目的棋盘标定工具
@@ -375,5 +544,15 @@ ros2 topic echo /raw_ik_target
 ## 测试
 
 ```bash
-python -m unittest -v test_hand_capture.py
+.venv/bin/python -m unittest -v test_hand_capture.py
+.venv/bin/python -m unittest -v \
+  teleop_maniskill.test_full_fidelity_urdf \
+  teleop_maniskill.test_object_assets \
+  teleop_maniskill.test_standalone_urdf \
+  teleop_maniskill.test_teleop_protocol \
+  teleop_maniskill.test_sim_pick_place
 ```
+
+当前 checkout 的旧 `test_hand_capture.py` 仍引用已经不存在的
+`config.ROBOT_TO_CONTRACT`，会在收集阶段失败；这是本功能之前已有的基线接口
+失配。本次新增测试彼此独立，不修改该旧接口。

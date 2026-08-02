@@ -12,6 +12,7 @@ from config import (
     KEYPOINT_LAYOUT,
     KEYPOINT_TOPIC,
     ROBOT_LAYOUT,
+    ROBOT_JOINT_NAMES,
     ROBOT_TOPIC,
     SKELETON_EDGES,
     URDF_PATH,
@@ -21,6 +22,20 @@ from config import (
 )
 from hand_core import Camera, RealSenseCamera, StereoProcessor
 from retarget import Retargeter
+from teleop_maniskill.teleop_protocol import UdpRetargetSender
+
+
+def _udp_quality(quality):
+    reprojection = quality.get("reprojection_error")
+    if reprojection is not None:
+        reprojection = float(reprojection)
+        if not np.isfinite(reprojection):
+            reprojection = None
+    reason = quality.get("rejected_reason")
+    return {
+        "reprojection_error": reprojection,
+        "rejected_reason": None if reason is None else str(reason),
+    }
 
 
 def _overlay(image, points):
@@ -205,9 +220,18 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=("points", "retarget"), default="points")
     parser.add_argument("--ros", action="store_true")
+    parser.add_argument("--udp", metavar="HOST:PORT")
     args = parser.parse_args()
+    if args.udp is not None and args.mode != "retarget":
+        parser.error("--udp is only available with --mode retarget")
 
     retargeter = Retargeter() if args.mode == "retarget" else None
+    try:
+        udp = UdpRetargetSender(args.udp) if args.udp is not None else None
+    except (TypeError, ValueError, OSError) as exc:
+        parser.error(f"invalid --udp endpoint: {exc}")
+    if udp is not None:
+        print(f"UDP retarget: publishing to {args.udp}")
     if CAMERA_TYPE == "d435":
         camera = RealSenseCamera(CAMERA_INDEX)
         processor = StereoProcessor(camera.params)
@@ -218,6 +242,9 @@ def main():
     viewer = Viewer(None if retargeter is None else retargeter.model)
     ros = RosOutput(args.mode) if args.ros else None
     last_timestamp = None
+    # Keep sequence numbers increasing when only the capture process is
+    # restarted while the simulator/receiver remains alive.
+    sequence = time.monotonic_ns()
     try:
         while True:
             ok, left, right, timestamp = camera.read()
@@ -225,6 +252,7 @@ def main():
                 time.sleep(0.002)
                 continue
             last_timestamp = timestamp
+            sequence += 1
             result = processor.process(left, right, timestamp)
             valid = result["found"] and not result["stale"] and result["keypoint_relative"] is not None
             robot = None
@@ -237,6 +265,23 @@ def main():
                     retargeter.pause()
             elif ros is not None and valid:
                 ros.points(result["keypoint_relative"], result["handedness"])
+            if udp is not None:
+                udp_valid = (
+                    robot is not None
+                    and valid
+                    and result["handedness"] == "Left"
+                    and result["phase"].startswith("GESTURE")
+                )
+                udp.send(
+                    sequence,
+                    time.monotonic(),
+                    udp_valid,
+                    result["phase"],
+                    result["handedness"],
+                    ROBOT_JOINT_NAMES,
+                    robot.copy() if udp_valid else None,
+                    _udp_quality(result["quality"]),
+                )
             viewer.update(result, robot)
     except KeyboardInterrupt:
         pass
@@ -246,6 +291,8 @@ def main():
         viewer.close()
         if ros is not None:
             ros.close()
+        if udp is not None:
+            udp.close()
 
 
 if __name__ == "__main__":
