@@ -13,6 +13,10 @@ AA = np.array((0, 4, 8, 12))
 FINGER_TIPS = tuple(f"{finger}-tip_Link" for finger in (1, 2, 3, 4))
 THUMB_TIP = "5-tip_Link"
 THUMB_PAD_LINK = "mmhand_thumb_1_finger_7_fingertip_1"
+PAD_SPECS = ((THUMB_TIP, THUMB_PAD_LINK, C.THUMB_PAD_AXIS),) + tuple(
+    (f"{finger}-tip_Link", f"finger_{finger}_fingertip_1", axis)
+    for finger, axis in enumerate(C.FINGER_PAD_AXES, 1)
+)
 
 
 def _values(text, default):
@@ -38,6 +42,22 @@ def _origin(node):
     return transform
 
 
+def _aa_neutral(model):
+    values = np.radians(np.asarray(C.MCP_AA_NEUTRAL_DEG, float))
+    if values.shape != (len(AA),) or not np.isfinite(values).all():
+        raise ValueError(f"MCP_AA_NEUTRAL_DEG must contain {len(AA)} finite values")
+    invalid = (values < model.lower[AA]) | (values > model.upper[AA])
+    if np.any(invalid):
+        position = int(np.flatnonzero(invalid)[0])
+        index, value = AA[position], values[position]
+        lower, upper = model.lower[index], model.upper[index]
+        raise ValueError(
+            f"MCP_AA_NEUTRAL_DEG for {model.names[index]} is {np.degrees(value):.6g} deg, "
+            f"outside URDF limits [{np.degrees(lower):.6g}, {np.degrees(upper):.6g}] deg"
+        )
+    return values
+
+
 class RobotModel:
     def __init__(self, urdf_path=C.URDF_PATH):
         self.joints, self.children = {}, defaultdict(list)
@@ -60,8 +80,9 @@ class RobotModel:
             raise ValueError(f"Unexpected MMHand joints: {self.names}")
         self.index = {name: index for index, name in enumerate(self.names)}
         self.lower, self.upper = np.asarray([limits[name] for name in self.names]).T
-        q = np.zeros(21)
-        q[AA] = np.radians(C.MCP_AA_NEUTRAL_DEG)
+        self.aa_neutral = _aa_neutral(self)
+        q = np.zeros(len(self.names))
+        q[AA] = self.aa_neutral
         transforms = self.fk(q)
         mcp = np.asarray([transforms[f"finger_{i}_proximal_phalanx_1"][:3, 3] for i in range(1, 5)])
         pip = np.asarray([transforms[f"finger_{i}_distal_phalanx_1"][:3, 3] for i in range(1, 5)])
@@ -95,6 +116,17 @@ class RobotModel:
         normal = (transforms[THUMB_PAD_LINK][:3, :3] @ np.asarray(C.THUMB_PAD_AXIS)) @ self.palm_frame
         return tip, _unit(normal), fingers
 
+    def fingertip_pads(self, q):
+        transforms = self.fk(q)
+        tips = np.asarray([transforms[tip][:3, 3] for tip, _, _ in PAD_SPECS])
+        directions = np.asarray(
+            [
+                _unit(transforms[link][:3, :3] @ np.asarray(axis))
+                for _, link, axis in PAD_SPECS
+            ]
+        )
+        return tips, directions
+
 
 class Retargeter:
     def __init__(self, model=None):
@@ -102,14 +134,12 @@ class Retargeter:
         self.palm_origin = np.asarray(C.MMHAND_PALM_ORIGIN)
         self.tip_scale = C.THUMB_TIP_SCALE
         self.tip_weight = np.sqrt(C.THUMB_TIP_WEIGHT)
-        self.neutral = np.zeros(21)
-        self.neutral[AA] = np.radians(C.MCP_AA_NEUTRAL_DEG)
-        self.neutral[16] = np.radians(C.THUMB_MCP_AA_NEUTRAL_DEG)
-        self.model.lower[17:20] = np.maximum(self.model.lower[17:20], 0)
-        self.q = np.clip(self.neutral, self.model.lower, self.model.upper)
+        self.thumb_seed = np.clip(
+            np.zeros(len(THUMB)), self.model.lower[THUMB], self.model.upper[THUMB]
+        )
+        self.thumb_q = self.thumb_seed.copy()
 
-    @staticmethod
-    def _finger_q(points, handedness):
+    def _finger_q(self, points, handedness):
         points = np.asarray(points, float)
         forward = _unit(points[9] - points[0])
         side = _unit(points[5] - points[17])
@@ -121,22 +151,28 @@ class Retargeter:
             for mcp in (5, 9, 13, 17)
         ]
         flex = np.maximum(np.radians(extract_angles(points, handedness)), 0)
-        q = np.zeros(21)
-        q[AA] = np.radians(C.MCP_AA_NEUTRAL_DEG) + np.asarray(aa)[::-1]
+        q = np.zeros(len(self.model.names))
+        q[AA] = self.model.aa_neutral + np.asarray(aa)[::-1]
         for source, target in zip((11, 8, 5, 2), (0, 4, 8, 12)):
             q[target + 1:target + 4] = flex[source:source + 3]
         return q
 
     def _task(self, points):
         vectors = points[[8, 12, 16, 20]] - points[4]
-        return points[4] * self.tip_scale, vectors, np.argsort(np.linalg.norm(vectors, axis=1))[:2]
+        return points[4] * self.tip_scale, vectors
 
-    def _residual(self, thumb, q, target, vectors, nearest):
+    @staticmethod
+    def _pad_direction(tip, fingers):
+        distances = np.linalg.norm(fingers - tip, axis=1)
+        weights = np.maximum(distances, EPS) ** -2
+        return _unit(np.average(fingers, axis=0, weights=weights) - tip)
+
+    def _residual(self, thumb, q, target, vectors):
         q[THUMB] = thumb
         tip, normal, fingers = self.model.thumb(q)
         tip_error = self.tip_weight * (tip - self.palm_origin - target) / C.STANDARD_PALM_SIZE
         vector_error = (fingers - tip - vectors) / C.STANDARD_PALM_SIZE
-        toward = _unit(fingers[nearest].mean(0) - tip)
+        toward = self._pad_direction(tip, fingers)
         pad_error = np.sqrt(C.THUMB_PAD_WEIGHT) * (normal - toward)
         return np.r_[tip_error, vector_error.ravel(), pad_error]
 
@@ -147,20 +183,21 @@ class Retargeter:
         try:
             q = self._finger_q(points, handedness)
             q[:16] = np.clip(q[:16], self.model.lower[:16], self.model.upper[:16])
-            target, vectors, nearest = self._task(points)
+            target, vectors = self._task(points)
             result = least_squares(
-                self._residual, self.q[THUMB], bounds=(self.model.lower[THUMB], self.model.upper[THUMB]),
-                args=(q, target, vectors, nearest),
+                self._residual, self.thumb_q,
+                bounds=(self.model.lower[THUMB], self.model.upper[THUMB]),
+                args=(q, target, vectors),
                 ftol=C.THUMB_FTOL, xtol=C.THUMB_FTOL, gtol=C.THUMB_FTOL,
                 max_nfev=C.THUMB_MAX_EVAL,
             )
             q[THUMB] = result.x
-        except (np.linalg.LinAlgError, ValueError):
+        except np.linalg.LinAlgError:
             return None
         if not np.isfinite(q).all():
             return None
-        self.q = q
+        self.thumb_q = result.x.copy()
         return q.copy()
 
     def pause(self):
-        self.q = self.neutral.copy()
+        self.thumb_q = self.thumb_seed.copy()
