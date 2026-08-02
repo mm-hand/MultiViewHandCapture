@@ -3,9 +3,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 PARAMS_PATH = ROOT / "stereo_params.json"
 URDF_PATH = ROOT / "assets/mmhand/urdf/hand.urdf"
+HAND_LANDMARKER_PATH = ROOT / "assets/mediapipe/hand_landmarker.task"
 
 # Camera: "d435" uses factory-calibrated stereo IR; "stereo" uses stereo_params.json.
-CAMERA_TYPE = "d435"
+CAMERA_TYPE = "stereo"
 CAMERA_INDEX = 0
 D435_WIDTH, D435_HEIGHT, D435_FPS = 1280, 720, 30
 
@@ -18,8 +19,11 @@ CALIBRATION_FRAMES, CALIBRATION_HZ = 100, 10
 BONE_TOLERANCE = 0.20
 POINT_FILTER = (1.0, 0.01, 1.0)
 ANGLE_FILTER = (1.0, 0.02, 1.0)
+MP_DETECTION_CONFIDENCE = 0.5
+MP_PRESENCE_CONFIDENCE = 0.6
+MP_TRACKING_CONFIDENCE = 0.6
 MAX_REPROJECTION_ERROR = 30.0
-Z_RANGE_MM = (100.0, 1500.0)
+MAX_DEPTH_MM = 1500.0
 MAX_HAND_RADIUS = 300.0
 STALE_FRAMES, HAND_SWITCH_FRAMES = 3, 5
 STANDARD_PALM_SIZE = 0.086
@@ -47,6 +51,13 @@ MMHAND_PALM_ORIGIN = (-0.083953, -0.037473, -0.047264)
 THUMB_TIP_SCALE = 0.614962
 THUMB_TIP_WEIGHT = 7.871241
 THUMB_PAD_AXIS = (-0.200671, 0.970119, -0.136380)
+# Fingertip-link local pad normals; order is Index, Middle, Ring, Little.
+FINGER_PAD_AXES = (
+    (-0.131523, 0.099710, -0.986286),
+    (-0.160095, 0.116825, -0.980164),
+    (-0.180981, 0.121096, -0.976003),
+    (-0.180981, 0.121096, -0.976003),
+)
 THUMB_PAD_WEIGHT = 1.286285
 THUMB_MAX_EVAL = 40
 THUMB_FTOL = 1e-5

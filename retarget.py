@@ -13,6 +13,10 @@ AA = np.array((0, 4, 8, 12))
 FINGER_TIPS = tuple(f"{finger}-tip_Link" for finger in (1, 2, 3, 4))
 THUMB_TIP = "5-tip_Link"
 THUMB_PAD_LINK = "mmhand_thumb_1_finger_7_fingertip_1"
+PAD_SPECS = ((THUMB_TIP, THUMB_PAD_LINK, C.THUMB_PAD_AXIS),) + tuple(
+    (f"{finger}-tip_Link", f"finger_{finger}_fingertip_1", axis)
+    for finger, axis in enumerate(C.FINGER_PAD_AXES, 1)
+)
 
 
 def _values(text, default):
@@ -94,6 +98,17 @@ class RobotModel:
         fingers = (fingers - self.palm_position) @ self.palm_frame
         normal = (transforms[THUMB_PAD_LINK][:3, :3] @ np.asarray(C.THUMB_PAD_AXIS)) @ self.palm_frame
         return tip, _unit(normal), fingers
+
+    def fingertip_pads(self, q):
+        transforms = self.fk(q)
+        tips = np.asarray([transforms[tip][:3, 3] for tip, _, _ in PAD_SPECS])
+        directions = np.asarray(
+            [
+                _unit(transforms[link][:3, :3] @ np.asarray(axis))
+                for _, link, axis in PAD_SPECS
+            ]
+        )
+        return tips, directions
 
 
 class Retargeter:

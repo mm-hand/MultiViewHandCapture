@@ -13,6 +13,7 @@ MultiView Hand Capture 从同步双目图像恢复 MediaPipe 21 个手部三维�
 - 对左右图像分别运行 MediaPipe，并通过普通双目三角化恢复三维点。
 - 对三维点和手指屈伸角分别执行 One Euro 滤波。
 - 通过骨长和非负屈伸角约束抑制关键点飞行与手指反弯。
+- 在 MMHand 指尖显示由预设局部法向计算的指腹方向箭头。
 - 将标准化左手 retarget 到 MMHand URDF。
 - 在一个网页中显示左右图像、标准人手和 MMHand。
 - 可选发布 ROS 2 关键点或机器人关节角。
@@ -43,15 +44,17 @@ mamba env update -n mmhand -f environment.yml --prune
 conda activate mmhand
 ```
 
-`environment.yml` 会通过清华 PyPI 镜像安装 D435 所需的 `pyrealsense2`。MediaPipe
-单独安装，以避免安装未使用的 JAX/JAXlib 或覆盖 Conda 中的 OpenCV：
+`environment.yml` 会通过清华 PyPI 镜像安装 D435 所需的 `pyrealsense2` 和不锁定
+版本的最新 MediaPipe。MediaPipe 使用 `--no-deps`，避免覆盖 Conda 中的 OpenCV；
+它需要的运行依赖已直接列在环境文件中。已有环境也可以单独升级 MediaPipe：
 
 ```bash
 python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
-  "protobuf>=4.25.3,<5" absl-py attrs flatbuffers sounddevice sentencepiece
-python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
-  --no-deps mediapipe==0.10.21
+  --upgrade --no-deps mediapipe
 ```
+
+代码使用 MediaPipe Tasks `HandLandmarker`，官方 full float16 模型已包含在
+`assets/mediapipe/hand_landmarker.task`，运行时不需要下载模型。
 
 ## Config
 
@@ -88,8 +91,11 @@ D435_WIDTH, D435_HEIGHT, D435_FPS = 1280, 720, 30
 | `BONE_TOLERANCE` | 0.20 | 每根骨允许偏离标定长度的比例 |
 | `POINT_FILTER` | `(1.0, 0.01, 1.0)` | 三维点 One Euro 参数 |
 | `ANGLE_FILTER` | `(1.0, 0.02, 1.0)` | 屈伸角 One Euro 参数 |
+| `MP_DETECTION_CONFIDENCE` | 0.5 | 掌检测最低置信度 |
+| `MP_PRESENCE_CONFIDENCE` | 0.6 | 手存在最低置信度，低于它会重新检测手掌 |
+| `MP_TRACKING_CONFIDENCE` | 0.6 | 跟踪框最低 IoU，低于它会重新检测手掌 |
 | `MAX_REPROJECTION_ERROR` | 30 px | 最大平均重投影误差 |
-| `Z_RANGE_MM` | 100–1500 mm | 三角化点允许的相机 Z 范围 |
+| `MAX_DEPTH_MM` | 1500 mm | 三角化点允许的相机 Z 上限；不设置下限 |
 | `MAX_HAND_RADIUS` | 300 mm | 关键点距腕部的最大距离 |
 | `STALE_FRAMES` | 3 | 坏帧时短暂保留上一结果的帧数 |
 | `HAND_SWITCH_FRAMES` | 5 | 手性切换所需的连续确认帧数 |
@@ -125,6 +131,7 @@ THUMB_MCP_AA_NEUTRAL_DEG = 28
 | `THUMB_TIP_SCALE` | 人手腕到拇指尖向量的缩放 |
 | `THUMB_TIP_WEIGHT` | 拇指尖位置目标权重 |
 | `THUMB_PAD_AXIS` | 拇指指腹 link 局部坐标中的指腹法向 |
+| `FINGER_PAD_AXES` | Index、Middle、Ring、Little 指尖 link 的预设指腹法向 |
 | `THUMB_PAD_WEIGHT` | 指腹朝向目标权重 |
 | `THUMB_MAX_EVAL` | 每帧最多残差计算次数 |
 | `THUMB_FTOL` | least-squares 停止容差 |
@@ -265,15 +272,19 @@ stereo
 
 ```text
 左右图像
-→ 左右 MediaPipe 21 点
+→ 左右 MediaPipe Tasks HandLandmarker 21 点
 → 像素坐标去畸变
 → cv2.triangulatePoints
 → 21×3 毫米制相机坐标
-→ reprojection、Z 范围和手尺寸检查
+→ reprojection、Z 上限和手尺寸检查
 ```
 
-MediaPipe 的手性标签按镜像自拍图定义，而输入图像未镜像，因此检测器会交换
-`Left/Right`。手性需要连续多帧确认后才会切换。
+两路 HandLandmarker 使用同步 VIDEO 模式和同一帧时间戳，配置为 detection 0.5、
+presence 0.6、tracking 0.6。任何三角化点大于 1500 mm 时整帧标记为 `depth`；没有
+近距离下限。非有限值、平均重投影误差和手尺寸检查仍然在所有滤波之前执行。
+
+MediaPipe Tasks 的手性标签直接用于当前未镜像输入；手性需要连续多帧确认后才会
+切换。
 
 三角化使用：
 
@@ -335,6 +346,10 @@ retarget 或 ROS。手丢失、检测到右手、初始骨长估计未完成或�
 新的机器人目标。
 
 `Viewer` 将左右图像编码为 JPEG，并用两个 Viser 服务显示标准人手和 MMHand。
+MMHand 的五个指尖显示固定长度的橙色指腹方向箭头，箭头由各 fingertip link 的
+预设局部法向经 FK 转换得到；标准人手不计算或显示指尖朝向。两个三维窗口的初始
+相机均从掌心侧正视手掌；在掌基座校平视角的基础上，相机视角统一顺时针旋转 15°。
+这些视角设置不会改变计算坐标、retarget 或 ROS 输出。
 `RosOutput` 只在传入 `--ros` 时创建。
 
 ## ROS 2 输出

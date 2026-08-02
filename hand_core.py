@@ -17,17 +17,21 @@ from config import (
     D435_WIDTH,
     FINGER_CHAINS,
     FULL_WIDTH,
+    HAND_LANDMARKER_PATH,
     HAND_SWITCH_FRAMES,
     HEIGHT,
+    MAX_DEPTH_MM,
     MAX_HAND_RADIUS,
     MAX_REPROJECTION_ERROR,
+    MP_DETECTION_CONFIDENCE,
+    MP_PRESENCE_CONFIDENCE,
+    MP_TRACKING_CONFIDENCE,
     PARAMS_PATH,
     POINT_FILTER,
     ROTATE_LEFT,
     ROTATE_RIGHT,
     STANDARD_PALM_SIZE,
     STALE_FRAMES,
-    Z_RANGE_MM,
 )
 
 EPS = 1e-8
@@ -221,15 +225,11 @@ def _signed_angle(start, end, axis):
     )
 
 
-def _palm_normal(points, handedness):
+def _finger_frames(points, handedness):
     forward = _unit(points[9] - points[0], (0, 1, 0))
     thumbward = _unit(points[5] - points[17], (1, 0, 0))
     normal = _unit(np.cross(thumbward, forward), (0, 0, 1))
-    return -normal if handedness == "Left" else normal
-
-
-def _finger_frames(points, handedness):
-    normal = _palm_normal(points, handedness)
+    normal = -normal if handedness == "Left" else normal
     parent = _unit(points[2] - points[1])
     palmward = points[9] - points[2]
     palmward -= parent * np.dot(palmward, parent)
@@ -297,7 +297,8 @@ def relative_points(points):
 
 class Kinematics:
     def __init__(self, calibration_frames=CALIBRATION_FRAMES, calibration_hz=CALIBRATION_HZ):
-        self.points_filter, self.angle_filter = OneEuro(*POINT_FILTER), OneEuro(*ANGLE_FILTER)
+        self.points_filter = OneEuro(*POINT_FILTER)
+        self.angle_filter = OneEuro(*ANGLE_FILTER)
         self.calibration_frames = calibration_frames
         self.calibration_period = 1 / calibration_hz
         self.samples = {edge: [] for chain in FINGER_CHAINS for edge in zip(chain[:-1], chain[1:])}
@@ -324,10 +325,6 @@ class Kinematics:
         self.angle_filter.reset()
 
 
-def swap_handedness(label):
-    return "Right" if label == "Left" else "Left"
-
-
 class StableHandedness:
     def __init__(self, switch_frames=HAND_SWITCH_FRAMES):
         self.switch_frames = switch_frames
@@ -350,19 +347,30 @@ class StableHandedness:
 
 
 class HandDetector:
-    def __init__(self):
-        self.detector = mp.solutions.hands.Hands(
-            max_num_hands=1, min_detection_confidence=0.4, min_tracking_confidence=0.4
+    def __init__(self, model_path=HAND_LANDMARKER_PATH):
+        if not model_path.is_file():
+            raise FileNotFoundError(f"MediaPipe hand model not found: {model_path}")
+        options = mp.tasks.vision.HandLandmarkerOptions(
+            base_options=mp.tasks.BaseOptions(model_asset_path=str(model_path)),
+            running_mode=mp.tasks.vision.RunningMode.VIDEO,
+            num_hands=1,
+            min_hand_detection_confidence=MP_DETECTION_CONFIDENCE,
+            min_hand_presence_confidence=MP_PRESENCE_CONFIDENCE,
+            min_tracking_confidence=MP_TRACKING_CONFIDENCE,
         )
+        self.detector = mp.tasks.vision.HandLandmarker.create_from_options(options)
+        self.last_timestamp_ms = -1
 
-    def detect(self, rgb):
-        result = self.detector.process(rgb)
-        if not result.multi_hand_landmarks:
+    def detect(self, rgb, timestamp):
+        timestamp_ms = max(int(round(timestamp * 1000)), self.last_timestamp_ms + 1)
+        self.last_timestamp_ms = timestamp_ms
+        image = mp.Image(image_format=mp.ImageFormat.SRGB, data=np.ascontiguousarray(rgb))
+        result = self.detector.detect_for_video(image, timestamp_ms)
+        if not result.hand_landmarks or not result.handedness:
             return None, None
-        points = np.array([[p.x, p.y] for p in result.multi_hand_landmarks[0].landmark])
-        category = result.multi_handedness[0].classification[0]
-        # MediaPipe labels assume a mirrored selfie image; these camera frames are not mirrored.
-        return points, swap_handedness(category.label)
+        points = np.array([[point.x, point.y] for point in result.hand_landmarks[0]])
+        category = result.handedness[0][0]
+        return points, category.category_name
 
     def close(self):
         self.detector.close()
@@ -373,7 +381,7 @@ def geometry_error(points, reprojection_error):
         return "non-finite"
     if reprojection_error > MAX_REPROJECTION_ERROR:
         return "reprojection"
-    if np.any((points[:, 2] < Z_RANGE_MM[0]) | (points[:, 2] > Z_RANGE_MM[1])):
+    if np.any(points[:, 2] > MAX_DEPTH_MM):
         return "depth"
     if np.max(np.linalg.norm(points - points[0], axis=1)) > MAX_HAND_RADIUS:
         return "hand-size"
@@ -428,8 +436,8 @@ class StereoProcessor:
         conversion = cv2.COLOR_GRAY2RGB if left.ndim == 2 else cv2.COLOR_BGR2RGB
         left_rgb, right_rgb = cv2.cvtColor(left, conversion), cv2.cvtColor(right, conversion)
         output["image_left"], output["image_right"] = left_rgb, right_rgb
-        left_norm, label = self.left_detector.detect(left_rgb)
-        right_norm, _ = self.right_detector.detect(right_rgb)
+        left_norm, label = self.left_detector.detect(left_rgb, timestamp)
+        right_norm, _ = self.right_detector.detect(right_rgb, timestamp)
         if left_norm is None or right_norm is None:
             return self._reject(output, "detection")
 

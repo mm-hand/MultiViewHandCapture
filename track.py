@@ -22,6 +22,39 @@ from config import (
 from hand_core import Camera, RealSenseCamera, StereoProcessor
 from retarget import Retargeter
 
+ROBOT_PAD_ARROW_LENGTH = 0.025
+ROBOT_CAMERA_DISTANCE = 0.42
+
+
+def _human_view_wxyz(handedness, points):
+    """Face the palm toward -X and level the Index-to-Little MCP line."""
+    right = handedness == "Right"
+    points = np.asarray(points, float)
+    side = points[5] - points[17]
+    if right:
+        side = side * (-1, -1, 1)
+    roll = -np.arctan2(side[2], side[1])
+    roll = (roll + np.pi / 2) % np.pi - np.pi / 2
+    cosine, sine = np.cos(roll / 2), np.sin(roll / 2)
+    return (0.0, 0.0, -sine, cosine) if right else (cosine, sine, 0.0, 0.0)
+
+
+def _robot_camera_pose(model):
+    zero = np.zeros(21)
+    tips, _ = model.fingertip_pads(zero)
+    look_at = np.vstack((model.palm_position, tips)).mean(0)
+    palm_normal = model.palm_frame[:, 0]
+    transforms = model.fk(zero)
+    base = (
+        transforms["finger_1_proximal_phalanx_1"][:3, 3]
+        - transforms["finger_4_proximal_phalanx_1"][:3, 3]
+    )
+    normal = palm_normal - base * np.dot(palm_normal, base) / np.dot(base, base)
+    normal /= np.linalg.norm(normal)
+    return look_at - ROBOT_CAMERA_DISTANCE * normal, look_at, (
+        0.9993984744, -0.0346479515, -0.0014862239
+    )
+
 
 def _overlay(image, points):
     image = image.copy()
@@ -40,13 +73,39 @@ class Viewer:
 
         self.servers = [viser.ViserServer(port=port) for port in VIEW_PORTS]
         normalized, robot_server = self.servers
-        self._camera(normalized, (0.24, 0, 0.05), (0, 0, 0.05), (0, 0, 1), 42)
-        self._camera(robot_server, (0.28, -0.32, 0.22), (0, 0, 0.06), (0, 0, 1), 42)
-        self.handles = {"normalized": self._skeleton(normalized, (60, 170, 255), 0.004)}
-        self.urdf = self.urdf_names = None
+        self.model = model
+        self._camera(
+            normalized,
+            (-0.26, 0, 0.06),
+            (0, 0, 0.06),
+            (0, 0.2588190451, 0.9659258263),
+            42,
+        )
+        robot_camera = (
+            _robot_camera_pose(model)
+            if model is not None
+            else ((0.28, -0.32, 0.22), (0, 0, 0.06), (0, 0, 1))
+        )
+        self._camera(robot_server, *robot_camera, 42)
+        self.human_frame = normalized.scene.add_frame("/hand", show_axes=False)
+        empty_hand = np.zeros((21, 3), np.float32)
+        self.human_cloud = normalized.scene.add_point_cloud(
+            "/hand/points", empty_hand, (60, 170, 255),
+            point_size=0.004, point_shape="circle", visible=False,
+        )
+        self.human_bones = normalized.scene.add_line_segments(
+            "/hand/bones", empty_hand[np.asarray(SKELETON_EDGES)],
+            (60, 170, 255), line_width=4, visible=False,
+        )
+        self.urdf = self.urdf_names = self.robot_pad_arrows = None
         if model is not None:
             robot_server.scene.add_frame("/robot", show_axes=False)
             self.urdf = ViserUrdf(robot_server, URDF_PATH, root_node_name="/robot")
+            self.robot_pad_arrows = robot_server.scene.add_arrows(
+                "/robot/pad_directions", np.zeros((5, 2, 3), np.float32),
+                (255, 145, 45), shaft_radius=0.0012, head_radius=0.003,
+                head_length=0.006, visible=False,
+            )
             self.urdf_names = self.urdf.get_actuated_joint_names()
             self.robot_index = model.index
             self.urdf.update_cfg(np.zeros(len(self.urdf_names)))
@@ -57,23 +116,12 @@ class Viewer:
 
     @staticmethod
     def _camera(server, position, look_at, up, fov):
-        server.scene.set_up_direction("+z")
+        server.scene.set_up_direction(up)
         server.gui.configure_theme(show_logo=False, show_share_button=False)
         server.initial_camera.position = position
         server.initial_camera.look_at = look_at
         server.initial_camera.up = up
         server.initial_camera.fov = np.radians(fov)
-
-    @staticmethod
-    def _skeleton(server, color, point_size):
-        points = np.zeros((21, 3), np.float32)
-        cloud = server.scene.add_point_cloud(
-            "/points", points, color, point_size=point_size, point_shape="circle", visible=False
-        )
-        lines = server.scene.add_line_segments(
-            "/bones", points[np.asarray(SKELETON_EDGES)], color, line_width=4, visible=False
-        )
-        return cloud, lines
 
     def _start_dashboard(self):
         owner = self
@@ -126,15 +174,6 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
         self.http_thread = threading.Thread(target=self.http.serve_forever, daemon=True)
         self.http_thread.start()
 
-    def _update_skeleton(self, name, points):
-        cloud, lines = self.handles[name]
-        visible = points is not None
-        cloud.visible = lines.visible = visible
-        if visible:
-            points = np.asarray(points, np.float32)
-            cloud.points = points
-            lines.points = points[np.asarray(SKELETON_EDGES)]
-
     def update(self, result, robot=None):
         now = time.monotonic()
         if now - self.last_update < 1 / WEB_FPS:
@@ -155,9 +194,23 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
         ok, encoded = cv2.imencode(".jpg", np.hstack(views), (cv2.IMWRITE_JPEG_QUALITY, 82))
         if ok:
             self.stereo = encoded.tobytes()
-        self._update_skeleton("normalized", result["keypoint_relative"])
+        points = result["keypoint_relative"]
+        if points is not None and result["handedness"] in ("Left", "Right"):
+            self.human_frame.wxyz = _human_view_wxyz(result["handedness"], points)
+        visible = points is not None
+        self.human_cloud.visible = self.human_bones.visible = visible
+        if visible:
+            points = np.asarray(points, np.float32)
+            self.human_cloud.points = points
+            self.human_bones.points = points[np.asarray(SKELETON_EDGES)]
         if robot is not None and self.urdf is not None:
             self.urdf.update_cfg(np.asarray([robot[self.robot_index[name]] for name in self.urdf_names]))
+            tips, directions = self.model.fingertip_pads(robot)
+            tips, directions = np.asarray(tips, np.float32), np.asarray(directions, np.float32)
+            self.robot_pad_arrows.points = np.stack(
+                (tips, tips + ROBOT_PAD_ARROW_LENGTH * directions), axis=1
+            )
+            self.robot_pad_arrows.visible = True
 
     def close(self):
         self.http.shutdown()
@@ -183,7 +236,13 @@ class RosOutput:
 
         dimensions, stride = [], int(np.prod(shape))
         for name, size in zip(("keypoint", "xyz") if len(shape) == 2 else ("joint",), shape):
-            dimensions.append(MultiArrayDimension(label=label if not dimensions else name, size=size, stride=stride))
+            dimensions.append(
+                MultiArrayDimension(
+                    label=label if not dimensions else name,
+                    size=size,
+                    stride=stride,
+                )
+            )
             stride //= size
         message = self.message()
         message.layout = MultiArrayLayout(dim=dimensions, data_offset=0)
