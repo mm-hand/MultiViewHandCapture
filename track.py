@@ -11,6 +11,8 @@ from config import (
     CAMERA_INDEX,
     KEYPOINT_LAYOUT,
     KEYPOINT_TOPIC,
+    PAD_DIRECTION_LAYOUT,
+    PAD_DIRECTION_TOPIC,
     ROBOT_LAYOUT,
     ROBOT_TOPIC,
     SKELETON_EDGES,
@@ -22,8 +24,9 @@ from config import (
 from hand_core import Camera, RealSenseCamera, StereoProcessor
 from retarget import Retargeter
 
-ROBOT_PAD_ARROW_LENGTH = 0.025
+PAD_ARROW_LENGTH = 0.025
 ROBOT_CAMERA_DISTANCE = 0.42
+PAD_TIPS = np.array((4, 8, 12, 16, 20))
 
 
 def _human_view_wxyz(handedness, points):
@@ -66,6 +69,18 @@ def _overlay(image, points):
     return cv2.resize(image, (640, 360))
 
 
+def _arrow_points(tips, directions):
+    tips, directions = np.asarray(tips, np.float32), np.asarray(directions, np.float32)
+    return np.stack((tips, tips + PAD_ARROW_LENGTH * directions), axis=1)
+
+
+def _pad_arrows(server, name):
+    return server.scene.add_arrows(
+        name, np.zeros((5, 2, 3), np.float32), (255, 145, 45),
+        shaft_radius=0.0012, head_radius=0.003, head_length=0.006, visible=False,
+    )
+
+
 class Viewer:
     def __init__(self, model=None):
         import viser
@@ -97,15 +112,12 @@ class Viewer:
             "/hand/bones", empty_hand[np.asarray(SKELETON_EDGES)],
             (60, 170, 255), line_width=4, visible=False,
         )
+        self.human_pad_arrows = _pad_arrows(normalized, "/hand/pad_directions")
         self.urdf = self.urdf_names = self.robot_pad_arrows = None
         if model is not None:
             robot_server.scene.add_frame("/robot", show_axes=False)
             self.urdf = ViserUrdf(robot_server, URDF_PATH, root_node_name="/robot")
-            self.robot_pad_arrows = robot_server.scene.add_arrows(
-                "/robot/pad_directions", np.zeros((5, 2, 3), np.float32),
-                (255, 145, 45), shaft_radius=0.0012, head_radius=0.003,
-                head_length=0.006, visible=False,
-            )
+            self.robot_pad_arrows = _pad_arrows(robot_server, "/robot/pad_directions")
             self.urdf_names = self.urdf.get_actuated_joint_names()
             self.robot_index = model.index
             self.urdf.update_cfg(np.zeros(len(self.urdf_names)))
@@ -203,13 +215,15 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
             points = np.asarray(points, np.float32)
             self.human_cloud.points = points
             self.human_bones.points = points[np.asarray(SKELETON_EDGES)]
+        directions = result["fingertip_directions"]
+        show_pads = visible and directions is not None
+        self.human_pad_arrows.visible = show_pads
+        if show_pads:
+            self.human_pad_arrows.points = _arrow_points(points[PAD_TIPS], directions)
         if robot is not None and self.urdf is not None:
             self.urdf.update_cfg(np.asarray([robot[self.robot_index[name]] for name in self.urdf_names]))
             tips, directions = self.model.fingertip_pads(robot)
-            tips, directions = np.asarray(tips, np.float32), np.asarray(directions, np.float32)
-            self.robot_pad_arrows.points = np.stack(
-                (tips, tips + ROBOT_PAD_ARROW_LENGTH * directions), axis=1
-            )
+            self.robot_pad_arrows.points = _arrow_points(tips, directions)
             self.robot_pad_arrows.visible = True
 
     def close(self):
@@ -229,9 +243,10 @@ class RosOutput:
         self.node = rclpy.create_node("multiview_hand_capture")
         topic = KEYPOINT_TOPIC if mode == "points" else ROBOT_TOPIC
         self.publisher = self.node.create_publisher(Float32MultiArray, topic, 1)
-        print(f"ROS 2: publishing {topic}")
+        self.pad_publisher = self.node.create_publisher(Float32MultiArray, PAD_DIRECTION_TOPIC, 1)
+        print(f"ROS 2: publishing {topic}, {PAD_DIRECTION_TOPIC}")
 
-    def publish(self, values, label, shape):
+    def publish(self, publisher, values, label, shape):
         from std_msgs.msg import MultiArrayDimension, MultiArrayLayout
 
         dimensions, stride = [], int(np.prod(shape))
@@ -247,13 +262,18 @@ class RosOutput:
         message = self.message()
         message.layout = MultiArrayLayout(dim=dimensions, data_offset=0)
         message.data = np.asarray(values, np.float32).ravel().tolist()
-        self.publisher.publish(message)
+        publisher.publish(message)
 
     def points(self, points, handedness):
-        self.publish(points, f"{KEYPOINT_LAYOUT}:hand={handedness}", (21, 3))
+        self.publish(self.publisher, points, f"{KEYPOINT_LAYOUT}:hand={handedness}", (21, 3))
 
     def joints(self, degrees):
-        self.publish(degrees, ROBOT_LAYOUT, (21,))
+        self.publish(self.publisher, degrees, ROBOT_LAYOUT, (21,))
+
+    def directions(self, directions, handedness):
+        self.publish(
+            self.pad_publisher, directions, f"{PAD_DIRECTION_LAYOUT}:hand={handedness}", (5, 3)
+        )
 
     def close(self):
         self.node.destroy_node()
@@ -286,6 +306,8 @@ def main():
             last_timestamp = timestamp
             result = processor.process(left, right, timestamp)
             valid = result["found"] and not result["stale"] and result["keypoint_relative"] is not None
+            if ros is not None and valid and result["fingertip_directions"] is not None:
+                ros.directions(result["fingertip_directions"], result["handedness"])
             robot = None
             if retargeter is not None:
                 if valid and result["handedness"] == "Left" and result["phase"].startswith("GESTURE"):

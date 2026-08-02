@@ -8,6 +8,7 @@ from config import (
     BOARD_SIZE,
     CAMERA_INDEX,
     CAMERA_TYPE,
+    MIN_CALIBRATION_PAIRS,
     PARAMS_PATH,
     SQUARE_SIZE,
 )
@@ -98,8 +99,8 @@ def main():
     if CAMERA_TYPE != "stereo":
         raise RuntimeError("Set CAMERA_TYPE='stereo' in config.py before calibration")
     objects, lefts, rights, size = collect()
-    if len(objects) < 10:
-        raise RuntimeError("至少需要 10 对有效棋盘格图像")
+    if len(objects) < MIN_CALIBRATION_PAIRS:
+        raise RuntimeError(f"至少需要 {MIN_CALIBRATION_PAIRS} 对有效棋盘格图像")
     PARAMS_PATH.write_text(json.dumps(solve(objects, lefts, rights, size), indent=2))
     print(f"已保存到 {PARAMS_PATH}")
 

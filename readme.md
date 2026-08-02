@@ -13,6 +13,7 @@ MultiView Hand Capture 从同步双目图像恢复 MediaPipe 21 个手部三维�
 - 对左右图像分别运行 MediaPipe，并通过普通双目三角化恢复三维点。
 - 对三维点和手指屈伸角分别执行 One Euro 滤波。
 - 通过骨长和非负屈伸角约束抑制关键点飞行与手指反弯。
+- 从 MediaPipe 关键点估计人手五个指尖的功能性指腹方向。
 - 在 MMHand 指尖显示由预设局部法向计算的指腹方向箭头。
 - 将标准化左手 retarget 到 MMHand URDF。
 - 在一个网页中显示左右图像、标准人手和 MMHand。
@@ -86,6 +87,7 @@ D435_WIDTH, D435_HEIGHT, D435_FPS = 1280, 720, 30
 
 | 参数 | 默认值 | 含义 |
 |---|---:|---|
+| `MIN_CALIBRATION_PAIRS` | 10 | 普通双目标定要求的最少有效图像对数 |
 | `CALIBRATION_FRAMES` | 100 | 初始骨长估计使用的有效样本数 |
 | `CALIBRATION_HZ` | 10 Hz | 骨长样本的最大采样频率 |
 | `BONE_TOLERANCE` | 0.20 | 每根骨允许偏离标定长度的比例 |
@@ -100,6 +102,8 @@ D435_WIDTH, D435_HEIGHT, D435_FPS = 1280, 720, 30
 | `STALE_FRAMES` | 3 | 坏帧时短暂保留上一结果的帧数 |
 | `HAND_SWITCH_FRAMES` | 5 | 手性切换所需的连续确认帧数 |
 | `STANDARD_PALM_SIZE` | 0.086 m | 标准人手掌尺寸 |
+| `FINGER_PERPENDICULAR_COSINE` | 0.9 | 四指长轴接近掌法向时沿用上一方向的余弦门限 |
+| `THUMB_EXTENSION_THRESHOLDS` | `(0.97, 0.98)` | 拇指掌内、掌外的骨链伸展度门限 |
 
 `POINT_FILTER` 和 `ANGLE_FILTER` 的三个值依次是 One Euro 的
 `min_cutoff、beta、derivative_cutoff`。
@@ -144,6 +148,7 @@ VIEW_PORTS = (8081, 8082)
 WEB_FPS = 15
 
 KEYPOINT_TOPIC = "/hand/keypoints"
+PAD_DIRECTION_TOPIC = "/hand/fingertip_directions"
 ROBOT_TOPIC = "/raw_ik_target"
 ```
 
@@ -183,7 +188,7 @@ python calibrate.py
 
 - `C`：保存当前有效左右图像对。
 - `Q`：结束采样并计算参数。
-- 至少采集 10 对图像。
+- 至少采集 `MIN_CALIBRATION_PAIRS` 对图像，默认 10 对。
 - 结果写入 `stereo_params.json`。
 
 ### 运行模式
@@ -317,6 +322,31 @@ P2 = K2 [R | T]
 - 建立掌局部坐标系。
 - 缩放到 `STANDARD_PALM_SIZE=0.086 m`。
 
+指腹方向在这组滤波、约束后的掌局部关键点上计算，不另加方向滤波。先以
+`p5-p17` 建立小指到拇指侧的掌横轴，将 `p9-p0` 正交化为腕到中指方向，再按手性
+确定从手背指向掌心侧的掌法向。四指使用较长的 `MCP-Tip` 轴，把掌法向投影到
+垂直于该轴的平面并归一化：
+
+```text
+q = unit(n_p - dot(n_p, f) f)
+```
+
+Index、Middle、Ring、Little 在 `q` 与 `-q` 中选择投影后朝向掌心中心的一侧。
+当某根四指的 `MCP-Tip` 轴接近垂直于手掌，即与掌法向的点积绝对值不小于 `0.9`
+（夹角不超过约 25.8°）时，沿用该手指上一有效帧的方向，避免归一化接近零的
+投影；没有历史方向时该帧不输出整组方向。四指历史按左右手分别保存，连续坏帧
+超过 `STALE_FRAMES` 后清空。
+Thumb 使用 `IP-Tip` 末节轴，并以 CMC、MCP、IP、Tip 骨链的伸展度判断掌内外：
+
+```text
+E = |p4-p1| / (|p2-p1| + |p3-p2| + |p4-p3|)
+```
+
+`E <= 0.97` 判为掌内，`E >= 0.98` 判为掌外，中间沿用上一状态；首次位于中间区
+时以 `0.975` 为分界。掌外直接采用 `q`，掌内在 `q` 与 `-q` 中选择朝向 Index MCP
+的一侧。该判断不使用任何 Y 坐标或掌宽条件。
+若掌轴、末节轴或投影退化，则该帧不输出整组方向。
+
 ### 4. MMHand retarget
 
 Retarget 只处理完成骨长估计、非 stale 的稳定左手。
@@ -346,8 +376,9 @@ retarget 或 ROS。手丢失、检测到右手、初始骨长估计未完成或�
 新的机器人目标。
 
 `Viewer` 将左右图像编码为 JPEG，并用两个 Viser 服务显示标准人手和 MMHand。
-MMHand 的五个指尖显示固定长度的橙色指腹方向箭头，箭头由各 fingertip link 的
-预设局部法向经 FK 转换得到；标准人手不计算或显示指尖朝向。两个三维窗口的初始
+标准人手和 MMHand 的五个指尖都显示 `0.025 m` 长的橙色指腹方向箭头。人手箭头
+使用上述估计；MMHand 箭头由各 fingertip link 的预设局部法向经 FK 转换得到。
+两个三维窗口的初始
 相机均从掌心侧正视手掌；在掌基座校平视角的基础上，相机视角统一顺时针旋转 15°。
 这些视角设置不会改变计算坐标、retarget 或 ROS 输出。
 `RosOutput` 只在传入 `--ros` 时创建。
@@ -380,10 +411,23 @@ MMHand 的五个指尖显示固定长度的橙色指腹方向箭头，箭头由�
 | 顺序 | Little、Ring、Middle、Index、Thumb |
 | layout | `mmhand:J00-J20:urdf_deg` |
 
+### `/hand/fingertip_directions`
+
+在 `points` 和 `retarget` 两种模式下，只要当前帧有效且非 stale 就独立发布：
+
+| 字段 | 内容 |
+|---|---|
+| data | 15 个 float，五个单位方向向量 |
+| shape | `5×3` |
+| 顺序 | Thumb、Index、Middle、Ring、Little |
+| 坐标系 | 与 `/hand/keypoints` 相同的掌局部坐标 |
+| layout | `mvhc:fingertip_directions:v1:palm_local_unit:order=Thumb,Index,Middle,Ring,Little:hand=Left/Right` |
+
 检查 topic：
 
 ```bash
 ros2 topic echo /hand/keypoints
+ros2 topic echo /hand/fingertip_directions
 ros2 topic echo /raw_ik_target
 ```
 
