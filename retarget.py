@@ -144,14 +144,20 @@ class Retargeter:
 
     def _task(self, points):
         vectors = points[[8, 12, 16, 20]] - points[4]
-        return points[4] * self.tip_scale, vectors, np.argsort(np.linalg.norm(vectors, axis=1))[:2]
+        return points[4] * self.tip_scale, vectors
 
-    def _residual(self, thumb, q, target, vectors, nearest):
+    @staticmethod
+    def _pad_direction(tip, fingers):
+        distances = np.linalg.norm(fingers - tip, axis=1)
+        weights = np.maximum(distances, EPS) ** -2
+        return _unit(np.average(fingers, axis=0, weights=weights) - tip)
+
+    def _residual(self, thumb, q, target, vectors):
         q[THUMB] = thumb
         tip, normal, fingers = self.model.thumb(q)
         tip_error = self.tip_weight * (tip - self.palm_origin - target) / C.STANDARD_PALM_SIZE
         vector_error = (fingers - tip - vectors) / C.STANDARD_PALM_SIZE
-        toward = _unit(fingers[nearest].mean(0) - tip)
+        toward = self._pad_direction(tip, fingers)
         pad_error = np.sqrt(C.THUMB_PAD_WEIGHT) * (normal - toward)
         return np.r_[tip_error, vector_error.ravel(), pad_error]
 
@@ -162,10 +168,10 @@ class Retargeter:
         try:
             q = self._finger_q(points, handedness)
             q[:16] = np.clip(q[:16], self.model.lower[:16], self.model.upper[:16])
-            target, vectors, nearest = self._task(points)
+            target, vectors = self._task(points)
             result = least_squares(
                 self._residual, self.q[THUMB], bounds=(self.model.lower[THUMB], self.model.upper[THUMB]),
-                args=(q, target, vectors, nearest),
+                args=(q, target, vectors),
                 ftol=C.THUMB_FTOL, xtol=C.THUMB_FTOL, gtol=C.THUMB_FTOL,
                 max_nfev=C.THUMB_MAX_EVAL,
             )

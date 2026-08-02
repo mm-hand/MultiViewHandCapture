@@ -16,7 +16,6 @@ from hand_core import (
     apply_angles,
     enforce_lengths,
     extract_angles,
-    fingertip_pad_directions,
     geometry_error,
     relative_points,
     split_stereo,
@@ -24,7 +23,6 @@ from hand_core import (
 from config import (
     ANGLE_FILTER,
     BONE_TOLERANCE,
-    FINGER_PERPENDICULAR_COSINE,
     FINGER_PAD_AXES,
     HAND_LANDMARKER_PATH,
     MAX_DEPTH_MM,
@@ -34,23 +32,12 @@ from config import (
     MP_DETECTION_CONFIDENCE,
     MP_PRESENCE_CONFIDENCE,
     MP_TRACKING_CONFIDENCE,
-    PAD_DIRECTION_LAYOUT,
-    PAD_DIRECTION_TOPIC,
     POINT_FILTER,
     ROBOT_JOINT_NAMES,
-    THUMB_EXTENSION_THRESHOLDS,
     THUMB_TIP_SCALE,
 )
 from retarget import Retargeter, RobotModel
-from track import (
-    PAD_ARROW_LENGTH,
-    PAD_TIPS,
-    ROBOT_CAMERA_DISTANCE,
-    RosOutput,
-    _arrow_points,
-    _human_view_wxyz,
-    _robot_camera_pose,
-)
+from track import ROBOT_CAMERA_DISTANCE, _human_view_wxyz, _robot_camera_pose
 
 
 def straight_hand(handedness):
@@ -73,10 +60,7 @@ def _unit(vector):
 
 
 class CoreTests(unittest.TestCase):
-    def test_user_threshold_configuration(self):
-        self.assertEqual(FINGER_PERPENDICULAR_COSINE, 0.9)
-        low, high = THUMB_EXTENSION_THRESHOLDS
-        self.assertTrue(0 < low < high <= 1)
+    def test_calibration_pair_configuration(self):
         self.assertEqual(MIN_CALIBRATION_PAIRS, 10)
         samples = [None] * (MIN_CALIBRATION_PAIRS - 1)
         with patch.object(calibrate, "CAMERA_TYPE", "stereo"), patch.object(
@@ -84,89 +68,6 @@ class CoreTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(RuntimeError, str(MIN_CALIBRATION_PAIRS)):
                 calibrate.main()
-
-    def test_human_fingertip_pad_directions(self):
-        for handedness in ("Left", "Right"):
-            points = relative_points(straight_hand(handedness))
-            directions, inside = fingertip_pad_directions(points, handedness)
-            self.assertFalse(inside)
-            self.assertEqual(directions.shape, (5, 3))
-            np.testing.assert_allclose(np.linalg.norm(directions, axis=1), 1)
-            center = points[[0, 5, 9, 13, 17]].mean(0)
-            for direction, mcp, tip in zip(
-                directions[1:], (5, 9, 13, 17), (8, 12, 16, 20)
-            ):
-                axis = _unit(points[tip] - points[mcp])
-                self.assertAlmostEqual(np.dot(direction, axis), 0)
-                inward = center - points[tip]
-                inward -= axis * np.dot(inward, axis)
-                self.assertGreaterEqual(np.dot(direction, inward), 0)
-
-    def test_perpendicular_finger_uses_previous_direction(self):
-        points = relative_points(straight_hand("Left"))
-        previous = fingertip_pad_directions(points, "Left")[0][1:]
-        ey = _unit(points[5] - points[17])
-        forward = points[9] - points[0]
-        ex = _unit(forward - ey * np.dot(forward, ey))
-        normal = _unit(np.cross(ex, ey))
-        points[8] = points[5] + 0.04 * normal
-
-        self.assertGreaterEqual(
-            abs(np.dot(_unit(points[8] - points[5]), normal)), FINGER_PERPENDICULAR_COSINE
-        )
-        self.assertIsNone(fingertip_pad_directions(points, "Left")[0])
-        directions, _ = fingertip_pad_directions(points, "Left", False, previous)
-        np.testing.assert_allclose(directions[1], previous[0])
-
-    def test_thumb_extension_hysteresis_and_degenerate_geometry(self):
-        points = relative_points(straight_hand("Left"))
-
-        def thumb(extension, shift=0):
-            moved = points.copy()
-            cosine = (3 * extension - 1) / 2
-            sine = np.sqrt(1 - cosine**2)
-            segments = 0.02 * np.array(((sine, cosine, 0), (0, 1, 0), (-sine, cosine, 0)))
-            moved[1] += (0, shift, 0)
-            moved[2:5] = moved[1] + np.cumsum(segments, axis=0)
-            return moved
-
-        def estimate(extension, state=None, shift=0):
-            return fingertip_pad_directions(thumb(extension, shift), "Left", state)[1]
-
-        low, high = THUMB_EXTENSION_THRESHOLDS
-        middle = (low + high) / 2
-        self.assertTrue(estimate(low))
-        self.assertFalse(estimate(high))
-        self.assertTrue(estimate((low + middle) / 2))
-        self.assertFalse(estimate((middle + high) / 2))
-        self.assertFalse(estimate(middle, False))
-        self.assertTrue(estimate(middle, True))
-        self.assertEqual(estimate(low), estimate(low, shift=0.2))
-
-        degenerate = thumb(low)
-        degenerate[2] = degenerate[1]
-        self.assertIsNone(fingertip_pad_directions(degenerate, "Left")[0])
-
-    def test_pad_arrow_geometry_and_ros_message(self):
-        tips, directions = np.zeros((5, 3)), np.eye(3)[np.arange(5) % 3]
-        arrows = _arrow_points(tips, directions)
-        self.assertEqual(arrows.shape, (5, 2, 3))
-        np.testing.assert_allclose(np.linalg.norm(arrows[:, 1] - arrows[:, 0], axis=1), PAD_ARROW_LENGTH)
-        np.testing.assert_array_equal(PAD_TIPS, (4, 8, 12, 16, 20))
-        self.assertEqual(PAD_DIRECTION_TOPIC, "/hand/fingertip_directions")
-
-        from std_msgs.msg import Float32MultiArray
-
-        class Publisher:
-            def publish(self, message):
-                self.message = message
-
-        ros, publisher = object.__new__(RosOutput), Publisher()
-        ros.message, ros.pad_publisher = Float32MultiArray, publisher
-        ros.directions(directions, "Left")
-        self.assertEqual([dim.size for dim in publisher.message.layout.dim], [5, 3])
-        self.assertEqual(publisher.message.layout.dim[0].label, f"{PAD_DIRECTION_LAYOUT}:hand=Left")
-        np.testing.assert_array_equal(np.asarray(publisher.message.data).reshape(5, 3), directions)
 
     def test_initial_palm_facing_camera_poses(self):
         camera = _unit(np.array((-0.26, 0, 0.06)) - np.array((0, 0, 0.06)))
@@ -306,23 +207,17 @@ class CoreTests(unittest.TestCase):
         processor = object.__new__(StereoProcessor)
         processor.bad_frames = 0
         processor.kinematics = Kinematics(1)
-        processor.thumb_modes = {"Right": True}
-        processor.finger_directions = {"Right": np.ones((4, 3))}
         processor.last = {
             "handedness": "Right",
             "keypoint_absolute": np.zeros((21, 3)),
             "keypoint_relative": np.zeros((21, 3)),
-            "fingertip_directions": np.ones((5, 3)),
         }
         for _ in range(3):
             result = processor._reject(processor._empty(), "detection")
             self.assertTrue(result["found"] and result["stale"])
-            np.testing.assert_array_equal(result["fingertip_directions"], 1)
         result = processor._reject(processor._empty(), "detection")
         self.assertFalse(result["found"])
         self.assertIsNone(processor.last)
-        self.assertFalse(processor.thumb_modes)
-        self.assertFalse(processor.finger_directions)
 
 
 class RetargetTests(unittest.TestCase):
@@ -382,10 +277,27 @@ class RetargetTests(unittest.TestCase):
     def test_thumb_targets(self):
         points = relative_points(straight_hand("Left"))
         retargeter = Retargeter(self.model)
-        tip, vectors, nearest = retargeter._task(points)
+        tip, vectors = retargeter._task(points)
         np.testing.assert_allclose(tip, points[4] * THUMB_TIP_SCALE)
         np.testing.assert_allclose(vectors, points[[8, 12, 16, 20]] - points[4])
-        np.testing.assert_array_equal(nearest, np.argsort(np.linalg.norm(vectors, axis=1))[:2])
+
+    def test_thumb_pad_uses_all_four_distance_weights(self):
+        tip = np.zeros(3)
+        fingers = np.array(((1, 0, 0), (0, 2, 0), (-3, 0, 0), (0, -4, 0)), float)
+        distances = np.linalg.norm(fingers - tip, axis=1)
+        weights = distances**-2
+        expected = _unit(np.average(fingers, axis=0, weights=weights) - tip)
+        direction = Retargeter._pad_direction(tip, fingers)
+        np.testing.assert_allclose(direction, expected)
+        self.assertTrue(np.all(weights[:-1] * distances[:-1] > weights[1:] * distances[1:]))
+        for index in range(4):
+            moved = fingers.copy()
+            moved[index, 2] += 0.1
+            self.assertGreater(np.linalg.norm(Retargeter._pad_direction(tip, moved) - direction), 0)
+
+        coincident = fingers.copy()
+        coincident[0] = tip
+        self.assertTrue(np.isfinite(Retargeter._pad_direction(tip, coincident)).all())
 
 
 class VideoRegressionTests(unittest.TestCase):

@@ -16,7 +16,6 @@ from config import (
     D435_HEIGHT,
     D435_WIDTH,
     FINGER_CHAINS,
-    FINGER_PERPENDICULAR_COSINE,
     FULL_WIDTH,
     HAND_LANDMARKER_PATH,
     HAND_SWITCH_FRAMES,
@@ -33,7 +32,6 @@ from config import (
     ROTATE_RIGHT,
     STANDARD_PALM_SIZE,
     STALE_FRAMES,
-    THUMB_EXTENSION_THRESHOLDS,
 )
 
 EPS = 1e-8
@@ -207,11 +205,6 @@ def _unit(vector, fallback=(1.0, 0.0, 0.0)):
     return fallback / max(np.linalg.norm(fallback), EPS)
 
 
-def _safe_unit(vector):
-    norm = np.linalg.norm(vector)
-    return vector / norm if norm > EPS else None
-
-
 def _rotate(vector, axis, degrees):
     angle, axis = np.radians(degrees), _unit(axis)
     return (
@@ -300,69 +293,6 @@ def relative_points(points):
     x_axis = _unit(np.cross(points[5] - points[17], z_axis))
     y_axis = _unit(np.cross(z_axis, x_axis))
     return points @ np.column_stack((x_axis, y_axis, z_axis))
-
-
-def fingertip_pad_directions(points, handedness, thumb_inside=None, previous_fingers=None):
-    """Return Thumb-to-Little unit pad directions and the thumb hysteresis state."""
-    points = np.asarray(points, float)
-    if points.shape != (21, 3) or not np.isfinite(points).all() or handedness not in ("Left", "Right"):
-        return None, thumb_inside
-
-    ey = _safe_unit(points[5] - points[17])
-    if ey is None:
-        return None, thumb_inside
-    ex = _safe_unit(points[9] - points[0] - ey * np.dot(points[9] - points[0], ey))
-    normal = None if ex is None else _safe_unit(np.cross(ex, ey))
-    if normal is None:
-        return None, thumb_inside
-    normal *= 1 if handedness == "Left" else -1
-    center = points[[0, 5, 9, 13, 17]].mean(axis=0)
-    previous = None if previous_fingers is None else np.asarray(previous_fingers, float)
-    if previous is not None and (previous.shape != (4, 3) or not np.isfinite(previous).all()):
-        previous = None
-
-    def candidate(start, tip):
-        axis = _safe_unit(points[tip] - points[start])
-        if axis is None:
-            return None, None
-        direction = _safe_unit(normal - axis * np.dot(normal, axis))
-        return axis, direction
-
-    thumb_axis, thumb = candidate(3, 4)
-    if thumb is None:
-        return None, thumb_inside
-    lengths = np.linalg.norm(points[2:5] - points[1:4], axis=1)
-    if np.any(lengths <= EPS):
-        return None, thumb_inside
-    extension = np.linalg.norm(points[4] - points[1]) / lengths.sum()
-    low, high = THUMB_EXTENSION_THRESHOLDS
-    inside = extension < (low + high) / 2 if thumb_inside is None else thumb_inside
-    if extension <= low:
-        inside = True
-    elif extension >= high:
-        inside = False
-    if inside:
-        inward = points[5] - points[4]
-        inward -= thumb_axis * np.dot(inward, thumb_axis)
-        if np.dot(thumb, inward) < 0:
-            thumb = -thumb
-
-    directions = [thumb]
-    for index, (mcp, tip) in enumerate(((5, 8), (9, 12), (13, 16), (17, 20))):
-        axis = _safe_unit(points[tip] - points[mcp])
-        if axis is not None and abs(np.dot(axis, normal)) >= FINGER_PERPENDICULAR_COSINE:
-            direction = None if previous is None else _safe_unit(previous[index])
-            if direction is None:
-                return None, thumb_inside
-            directions.append(direction)
-            continue
-        axis, direction = candidate(mcp, tip)
-        if direction is None:
-            return None, thumb_inside
-        inward = center - points[tip]
-        inward -= axis * np.dot(inward, axis)
-        directions.append(direction if np.dot(direction, inward) >= 0 else -direction)
-    return np.asarray(directions), inside
 
 
 class Kinematics:
@@ -468,7 +398,6 @@ class StereoProcessor:
         self.P2 = self.K2 @ np.c_[rotation, translation]
         self.left_detector, self.right_detector = HandDetector(), HandDetector()
         self.handedness, self.kinematics = StableHandedness(), Kinematics()
-        self.thumb_modes, self.finger_directions = {}, {}
         self.last, self.bad_frames = None, 0
 
     @staticmethod
@@ -479,7 +408,6 @@ class StereoProcessor:
             "handedness": None,
             "keypoint_absolute": None,
             "keypoint_relative": None,
-            "fingertip_directions": None,
             "image_left": None,
             "image_right": None,
             "px_left": None,
@@ -492,13 +420,11 @@ class StereoProcessor:
         self.bad_frames += 1
         output["quality"] = {"reprojection_error": reprojection, "rejected_reason": reason}
         if self.last is not None and self.bad_frames <= STALE_FRAMES:
-            for key in ("handedness", "keypoint_absolute", "keypoint_relative", "fingertip_directions"):
+            for key in ("handedness", "keypoint_absolute", "keypoint_relative"):
                 output[key] = self.last[key]
             output.update(found=True, stale=True, phase=f"STALE ({self.bad_frames}/{STALE_FRAMES})")
         elif self.bad_frames > STALE_FRAMES:
             self.last = None
-            self.thumb_modes.clear()
-            self.finger_directions.clear()
             self.kinematics.reset_filters()
         return output
 
@@ -536,21 +462,11 @@ class StereoProcessor:
             return self._reject(output, reason, reprojection)
 
         points, phase = self.kinematics.update(points, label, timestamp)
-        relative = relative_points(points)
-        directions = None
-        if relative is not None:
-            directions, thumb_inside = fingertip_pad_directions(
-                relative, label, self.thumb_modes.get(label), self.finger_directions.get(label)
-            )
-            if directions is not None:
-                self.thumb_modes[label] = thumb_inside
-                self.finger_directions[label] = directions[1:].copy()
         output.update(
             found=True,
             handedness=label,
             keypoint_absolute=points,
-            keypoint_relative=relative,
-            fingertip_directions=directions,
+            keypoint_relative=relative_points(points),
             phase=f"{phase} - {label} Hand",
             quality={"reprojection_error": reprojection, "rejected_reason": None},
         )

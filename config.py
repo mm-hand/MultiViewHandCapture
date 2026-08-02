@@ -28,8 +28,6 @@ MAX_DEPTH_MM = 1500.0
 MAX_HAND_RADIUS = 300.0
 STALE_FRAMES, HAND_SWITCH_FRAMES = 3, 5
 STANDARD_PALM_SIZE = 0.086
-FINGER_PERPENDICULAR_COSINE = 0.9
-THUMB_EXTENSION_THRESHOLDS = (0.97, 0.98)
 
 # MMHand J00...J20 order.
 ROBOT_JOINT_NAMES = (
@@ -68,8 +66,6 @@ THUMB_FTOL = 1e-5
 # Runtime output and viewer.
 KEYPOINT_TOPIC = "/hand/keypoints"
 KEYPOINT_LAYOUT = "mvhc:keypoints:v1:palm_local_m:size=0.086"
-PAD_DIRECTION_TOPIC = "/hand/fingertip_directions"
-PAD_DIRECTION_LAYOUT = "mvhc:fingertip_directions:v1:palm_local_unit:order=Thumb,Index,Middle,Ring,Little"
 ROBOT_TOPIC = "/raw_ik_target"
 ROBOT_LAYOUT = "mmhand:J00-J20:urdf_deg"
 WEB_PORT, VIEW_PORTS, WEB_FPS = 8080, (8081, 8082), 15
