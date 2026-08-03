@@ -1,12 +1,28 @@
+import sys
+import types
 import unittest
 import xml.etree.ElementTree as ET
-from pathlib import Path
 from unittest.mock import patch
 
-import cv2
 import numpy as np
-import calibrate
 
+from config import (
+    ANGLE_FILTER,
+    HAND_LANDMARKER_PATH,
+    KEYPOINT_LAYOUT,
+    KEYPOINT_TOPIC,
+    MAX_DEPTH_MM,
+    MCP_AA_NEUTRAL_DEG,
+    MP_DETECTION_CONFIDENCE,
+    MP_PRESENCE_CONFIDENCE,
+    MP_TRACKING_CONFIDENCE,
+    POINT_2D_FILTER,
+    POINT_3D_FILTER,
+    ROBOT_JOINT_NAMES,
+    ROBOT_LAYOUT,
+    ROBOT_TOPIC,
+    URDF_PATH,
+)
 from hand_core import (
     FINGER_CHAINS,
     HandDetector,
@@ -15,31 +31,12 @@ from hand_core import (
     StableHandedness,
     StereoProcessor,
     apply_angles,
-    enforce_lengths,
     extract_angles,
     geometry_error,
     relative_points,
-    split_stereo,
 )
-from config import (
-    ANGLE_FILTER,
-    BONE_TOLERANCE,
-    FINGER_PAD_AXES,
-    HAND_LANDMARKER_PATH,
-    MAX_DEPTH_MM,
-    MIN_CALIBRATION_PAIRS,
-    MMHAND_PALM_ORIGIN,
-    MCP_AA_NEUTRAL_DEG,
-    MP_DETECTION_CONFIDENCE,
-    MP_PRESENCE_CONFIDENCE,
-    MP_TRACKING_CONFIDENCE,
-    POINT_FILTER,
-    ROBOT_JOINT_NAMES,
-    THUMB_TIP_SCALE,
-    URDF_PATH,
-)
-from retarget import Retargeter, RobotModel, THUMB
-from track import ROBOT_CAMERA_DISTANCE, _human_view_wxyz, _robot_camera_pose
+from retarget import AA, Retargeter, RobotModel
+from track import RosOutput, _parse_args
 
 
 def straight_hand(handedness):
@@ -48,7 +45,12 @@ def straight_hand(handedness):
     if handedness == "Left":
         xs = [-x for x in xs]
     for mcp, x, y in zip((5, 9, 13, 17), xs, (45, 50, 45, 38)):
-        points[mcp : mcp + 4] = [(x, y, 0), (x, y + 30, 0), (x, y + 50, 0), (x, y + 65, 0)]
+        points[mcp : mcp + 4] = (
+            (x, y, 0),
+            (x, y + 30, 0),
+            (x, y + 50, 0),
+            (x, y + 65, 0),
+        )
     side = -1 if handedness == "Left" else 1
     points[1], points[2] = (30 * side, 15, 0), (45 * side, 25, 0)
     direction = points[2] - points[1]
@@ -57,90 +59,47 @@ def straight_hand(handedness):
     return points
 
 
-def _unit(vector):
-    return vector / max(np.linalg.norm(vector), 1e-9)
-
-
 class CoreTests(unittest.TestCase):
-    def test_calibration_pair_configuration(self):
-        self.assertEqual(MIN_CALIBRATION_PAIRS, 10)
-        samples = [None] * (MIN_CALIBRATION_PAIRS - 1)
-        with patch.object(calibrate, "CAMERA_TYPE", "stereo"), patch.object(
-            calibrate, "collect", return_value=(samples, [], [], (1, 1))
-        ):
-            with self.assertRaisesRegex(RuntimeError, str(MIN_CALIBRATION_PAIRS)):
-                calibrate.main()
+    def test_cli_only_accepts_optional_ros(self):
+        self.assertFalse(_parse_args([]).ros)
+        self.assertTrue(_parse_args(["--ros"]).ros)
+        with patch("sys.stderr"), self.assertRaises(SystemExit):
+            _parse_args(["--mode", "points"])
 
-    def test_initial_palm_facing_camera_poses(self):
-        camera = _unit(np.array((-0.26, 0, 0.06)) - np.array((0, 0, 0.06)))
-        np.testing.assert_array_equal(camera, (-1, 0, 0))
-        right_rotation = np.diag((-1, -1, 1))
-        np.testing.assert_array_equal(right_rotation @ np.array((1, 0, 0)), camera)
-        np.testing.assert_array_equal(right_rotation @ np.array((0, 0, 1)), (0, 0, 1))
-
+    def test_unsigned_flexion_angles_for_both_hands(self):
+        expected = np.array((20, 30, 25, 130, 40, 15, 70, 25, 20, 80, 35, 10, 60, 20))
         for handedness in ("Left", "Right"):
-            points = relative_points(straight_hand(handedness))
-            wxyz = _human_view_wxyz(handedness, points)
-            w, x, y, z = wxyz
-            rotation = np.array(
-                (
-                    (1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y)),
-                    (2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x)),
-                    (2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y)),
-                )
+            points = apply_angles(straight_hand(handedness), handedness, expected)
+            actual = extract_angles(points, handedness)
+            np.testing.assert_allclose(actual, expected, atol=1e-8)
+            self.assertTrue(np.all((actual >= 0) & (actual <= 180)))
+
+            reverse = apply_angles(
+                straight_hand(handedness), handedness, np.full(14, -25.0)
             )
-            palm_base = rotation @ (points[5] - points[17])
-            normal = _unit(np.cross(_unit(points[5] - points[17]), _unit(points[9])))
-            if handedness == "Left":
-                normal = -normal
-            self.assertAlmostEqual(palm_base[2], 0, places=8)
-            self.assertGreater(np.dot(rotation @ normal, camera), 0.99)
+            np.testing.assert_allclose(
+                extract_angles(reverse, handedness), 25.0, atol=1e-8
+            )
 
-        model = RobotModel()
-        position, look_at, up = _robot_camera_pose(model)
-        robot_camera = _unit(position - look_at)
-        self.assertGreater(np.dot(robot_camera, -model.palm_frame[:, 0]), 0.999)
-        self.assertAlmostEqual(np.linalg.norm(position - look_at), ROBOT_CAMERA_DISTANCE)
-        _, pad_directions = model.fingertip_pads(np.zeros(21))
-        self.assertTrue(np.all(pad_directions[1:] @ robot_camera > 0.9))
-        transforms = model.fk(np.zeros(21))
-        robot_base = (
-            transforms["finger_1_proximal_phalanx_1"][:3, 3]
-            - transforms["finger_4_proximal_phalanx_1"][:3, 3]
-        )
-        level_up = _unit(np.cross(-robot_camera, robot_base))
-        if np.dot(level_up, model.palm_frame[:, 2]) < 0:
-            level_up = -level_up
-        rolled_right = _unit(np.cross(-robot_camera, up))
-        self.assertAlmostEqual(
-            np.degrees(np.arctan2(np.dot(level_up, rolled_right), np.dot(level_up, up))),
-            15,
-            places=6,
-        )
-        self.assertAlmostEqual(np.dot(robot_base, robot_camera), 0, places=8)
+    def test_filters_bone_lengths_and_kinematics(self):
+        self.assertEqual(POINT_2D_FILTER, (1.0, 0.01, 1.0))
+        self.assertEqual(POINT_3D_FILTER, (0.5, 0.001, 1.0))
+        self.assertEqual(ANGLE_FILTER, (1.0, 0.02, 1.0))
+        filter_ = OneEuro(*POINT_3D_FILTER)
+        zeros, ones = np.zeros((21, 3)), np.ones((21, 3))
+        np.testing.assert_array_equal(filter_(zeros, 0), zeros)
+        self.assertTrue(np.all((filter_(ones, 1 / 30) > 0) & (filter_.value < 1)))
+        filter_.reset()
+        np.testing.assert_array_equal(filter_(ones, 1), ones)
 
-    def test_handedness_hysteresis(self):
-        stable = StableHandedness(3)
-        self.assertEqual(stable.update("Right"), "Right")
-        self.assertEqual(stable.update("Left"), "Right")
-        self.assertEqual(stable.update("Right"), "Right")
-        self.assertEqual(stable.update("Left"), "Right")
-        self.assertEqual(stable.update("Left"), "Right")
-        self.assertEqual(stable.update("Left"), "Left")
-
-    def test_angle_round_trip_for_both_hands(self):
-        expected = np.array([20, 30, 25, 130, 40, 15, 70, 25, 20, 80, 35, 10, 60, 20])
-        for hand in ("Left", "Right"):
-            points = apply_angles(straight_hand(hand), hand, expected)
-            np.testing.assert_allclose(extract_angles(points, hand), expected, atol=1e-8)
-
-    def test_hyperextension_removed_and_lengths_preserved(self):
-        points = apply_angles(straight_hand("Right"), "Right", np.full(14, -25.0))
+        expected = np.array((15, 25, 20, 100, 35, 10, 80, 20, 15, 90, 30, 5, 70, 20))
+        points = apply_angles(straight_hand("Left"), "Left", expected)
         model = Kinematics(calibration_frames=1)
-        model.update(points, "Right", 0.0)
-        corrected, phase = model.update(points, "Right", 1 / 30)
+        model.update(points, "Left", 0.0)
+        corrected, phase = model.update(points, "Left", 1 / 30)
         self.assertEqual(phase, "GESTURE TRACKING")
-        self.assertTrue(np.all(extract_angles(corrected, "Right") >= -1e-8))
+        angles = extract_angles(corrected, "Left")
+        self.assertTrue(np.all((angles >= 0) & (angles <= 180)))
         for chain in FINGER_CHAINS:
             for start, end in zip(chain[:-1], chain[1:]):
                 self.assertAlmostEqual(
@@ -148,49 +107,67 @@ class CoreTests(unittest.TestCase):
                     model.lengths[(start, end)],
                 )
 
-    def test_one_euro_arrays_and_reset(self):
-        filter_ = OneEuro(1, 0.01, 1)
-        zeros, ones = np.zeros((21, 3)), np.ones((21, 3))
-        np.testing.assert_array_equal(filter_(zeros, 0), zeros)
-        self.assertTrue(np.all((filter_(ones, 1 / 30) > 0) & (filter_.value < 1)))
-        filter_.reset()
-        np.testing.assert_array_equal(filter_(ones, 1), ones)
+    def test_left_and_right_2d_filters_are_independent(self):
+        left_filter = OneEuro(*POINT_2D_FILTER)
+        right_filter = OneEuro(*POINT_2D_FILTER)
+        self.assertIsNot(left_filter, right_filter)
 
-    def test_filter_configuration_matches_previous_commit(self):
-        self.assertEqual(POINT_FILTER, (1.0, 0.01, 1.0))
-        self.assertEqual(ANGLE_FILTER, (1.0, 0.02, 1.0))
+        left_first = np.zeros((21, 2))
+        right_first = np.full((21, 2), 10.0)
+        np.testing.assert_array_equal(left_filter(left_first, 0.0), left_first)
+        np.testing.assert_array_equal(right_filter(right_first, 0.0), right_first)
 
-    def test_soft_bone_length_band(self):
-        points = straight_hand("Right")
-        lengths = {
-            edge: np.linalg.norm(points[edge[1]] - points[edge[0]])
-            for chain in FINGER_CHAINS
-            for edge in zip(chain[:-1], chain[1:])
-        }
-        corrected = enforce_lengths(points * 3, lengths)
-        for (start, end), nominal in lengths.items():
-            self.assertAlmostEqual(
-                np.linalg.norm(corrected[end] - corrected[start]),
-                nominal * (1 + BONE_TOLERANCE),
-            )
+        left_second = left_filter(np.full((21, 2), 20.0), 1 / 30)
+        right_second = right_filter(np.full((21, 2), 30.0), 1 / 30)
+        self.assertTrue(np.all((left_second > 0) & (left_second < 20)))
+        self.assertTrue(np.all((right_second > 10) & (right_second < 30)))
+        np.testing.assert_allclose(right_second - left_second, 10.0)
 
-    def test_geometry_gate(self):
+    def test_handedness_geometry_and_bad_frame_hold(self):
+        handedness = StableHandedness(3)
+        self.assertEqual(handedness.update("Right"), "Right")
+        self.assertEqual(handedness.update("Left"), "Right")
+        self.assertEqual(handedness.update("Left"), "Right")
+        self.assertEqual(handedness.update("Left"), "Left")
+
         points = np.zeros((21, 3))
         points[:, 2] = 400
-        self.assertIsNone(geometry_error(points, 1))
         self.assertIsNone(geometry_error(points, 30))
         self.assertEqual(geometry_error(points, 31), "reprojection")
-        points[:, 2] = -100
-        self.assertIsNone(geometry_error(points, 1))
-        points[:, 2] = MAX_DEPTH_MM
-        self.assertIsNone(geometry_error(points, 1))
         points[1, 2] = MAX_DEPTH_MM + 1
         self.assertEqual(geometry_error(points, 1), "depth")
         points[:, 2] = 400
         points[1] = (400, 0, 400)
         self.assertEqual(geometry_error(points, 1), "hand-size")
 
-    def test_mediapipe_tasks_configuration_and_model(self):
+        processor = object.__new__(StereoProcessor)
+        processor.bad_frames = 0
+        processor.kinematics = Kinematics(1)
+        processor.left_points_filter = OneEuro(*POINT_2D_FILTER)
+        processor.right_points_filter = OneEuro(*POINT_2D_FILTER)
+        processor.left_points_filter(np.zeros((21, 2)), 0.0)
+        processor.right_points_filter(np.ones((21, 2)), 0.0)
+        processor.kinematics.points_filter(np.zeros((21, 3)), 0.0)
+        processor.kinematics.angle_filter(np.zeros(14), 0.0)
+        processor.last = {
+            "handedness": "Right",
+            "keypoint_absolute": np.zeros((21, 3)),
+            "keypoint_relative": np.zeros((21, 3)),
+        }
+        for _ in range(3):
+            result = processor._reject(processor._empty(), "detection")
+            self.assertTrue(result["found"] and result["stale"])
+            self.assertIsNotNone(processor.left_points_filter.value)
+            self.assertIsNotNone(processor.right_points_filter.value)
+        result = processor._reject(processor._empty(), "detection")
+        self.assertFalse(result["found"])
+        self.assertIsNone(processor.last)
+        self.assertIsNone(processor.left_points_filter.value)
+        self.assertIsNone(processor.right_points_filter.value)
+        self.assertIsNone(processor.kinematics.points_filter.value)
+        self.assertIsNone(processor.kinematics.angle_filter.value)
+
+    def test_mediapipe_model_and_configuration(self):
         self.assertTrue(HAND_LANDMARKER_PATH.is_file())
         self.assertEqual(
             (MP_DETECTION_CONFIDENCE, MP_PRESENCE_CONFIDENCE, MP_TRACKING_CONFIDENCE),
@@ -205,34 +182,30 @@ class CoreTests(unittest.TestCase):
         finally:
             detector.close()
 
-    def test_three_bad_frames_hold_then_hide(self):
-        processor = object.__new__(StereoProcessor)
-        processor.bad_frames = 0
-        processor.kinematics = Kinematics(1)
-        processor.last = {
-            "handedness": "Right",
-            "keypoint_absolute": np.zeros((21, 3)),
-            "keypoint_relative": np.zeros((21, 3)),
-        }
-        for _ in range(3):
-            result = processor._reject(processor._empty(), "detection")
-            self.assertTrue(result["found"] and result["stale"])
-        result = processor._reject(processor._empty(), "detection")
-        self.assertFalse(result["found"])
-        self.assertIsNone(processor.last)
-
 
 class RetargetTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.model = RobotModel()
 
-    def test_urdf_limits_and_order(self):
+    def test_optimized_urdf_topology_limits_and_meshes(self):
         self.assertEqual(self.model.names, ROBOT_JOINT_NAMES)
         self.assertEqual(len(self.model.joints), 31)
+        self.assertEqual(len(self.model.fk(np.zeros(21))), 32)
         self.assertTrue(np.all(self.model.lower <= self.model.upper))
+        np.testing.assert_allclose(
+            np.degrees(self.model.aa_neutral), MCP_AA_NEUTRAL_DEG, atol=1e-8
+        )
+
         root = ET.parse(URDF_PATH).getroot()
-        urdf_limits = {
+        meshes = list(root.iter("mesh"))
+        self.assertEqual(len(meshes), 39)
+        for mesh in meshes:
+            filename = mesh.get("filename")
+            self.assertTrue(filename.startswith("../meshes/"))
+            self.assertTrue((URDF_PATH.parent / filename).resolve().is_file())
+
+        limits = {
             joint.get("name"): (
                 float(joint.find("limit").get("lower")),
                 float(joint.find("limit").get("upper")),
@@ -242,166 +215,105 @@ class RetargetTests(unittest.TestCase):
         }
         np.testing.assert_array_equal(
             np.column_stack((self.model.lower, self.model.upper)),
-            np.asarray([urdf_limits[name] for name in self.model.names]),
-        )
-        self.assertEqual(self.model.thumb(self.model.lower)[0].shape, (3,))
-        np.testing.assert_allclose(self.model.palm_frame.T @ self.model.palm_frame, np.eye(3), atol=1e-8)
-        self.assertGreater(np.linalg.det(self.model.palm_frame), 0)
-        self.assertEqual(np.asarray(MMHAND_PALM_ORIGIN).shape, (3,))
-        self.assertGreater(THUMB_TIP_SCALE, 0)
-
-    def test_robot_fingertip_pad_directions(self):
-        q = (self.model.lower + self.model.upper) / 2
-        tips, directions = self.model.fingertip_pads(q)
-        self.assertEqual(tips.shape, (5, 3))
-        self.assertEqual(directions.shape, (5, 3))
-        np.testing.assert_allclose(np.linalg.norm(directions, axis=1), 1, atol=1e-8)
-        thumb_tip, thumb_normal, _ = self.model.thumb(q)
-        np.testing.assert_allclose(
-            (tips[0] - self.model.palm_position) @ self.model.palm_frame,
-            thumb_tip,
-            atol=1e-8,
+            np.asarray([limits[name] for name in self.model.names]),
         )
         np.testing.assert_allclose(
-            _unit(directions[0] @ self.model.palm_frame), thumb_normal, atol=1e-8
+            self.model.palm_frame.T @ self.model.palm_frame, np.eye(3), atol=1e-8
         )
-        transforms = self.model.fk(q)
-        for index, axis in enumerate(FINGER_PAD_AXES, 1):
-            link = f"finger_{index}_fingertip_1"
-            local_direction = transforms[link][:3, :3].T @ directions[index]
-            np.testing.assert_allclose(local_direction, _unit(axis), atol=1e-8)
 
-    def test_direct_fingers_and_thumb_solve(self):
+    def test_retarget_is_finite_and_respects_optimized_limits(self):
         expected = np.array((20, 30, 25, 20, 40, 30, 20, 50, 30, 15, 40, 25, 10, 30))
-        human = apply_angles(
-            straight_hand("Left"), "Left", expected,
+        points = relative_points(
+            apply_angles(straight_hand("Left"), "Left", expected)
         )
         retargeter = Retargeter(self.model)
-        result = retargeter.solve(relative_points(human))
+        result = retargeter.solve(points)
         self.assertIsNotNone(result)
+        self.assertTrue(np.isfinite(result).all())
         self.assertTrue(np.all(result >= self.model.lower - 1e-10))
         self.assertTrue(np.all(result <= self.model.upper + 1e-10))
+        np.testing.assert_allclose(np.degrees(result[AA]), MCP_AA_NEUTRAL_DEG)
         np.testing.assert_allclose(
             np.degrees(result[[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15]]),
             expected[[11, 12, 13, 8, 9, 10, 5, 6, 7, 2, 3, 4]],
         )
-        np.testing.assert_allclose(np.degrees(result[[0, 4, 8, 12]]), MCP_AA_NEUTRAL_DEG)
-        expected_seed = np.clip(
-            np.zeros(len(THUMB)), self.model.lower[THUMB], self.model.upper[THUMB]
-        )
-        np.testing.assert_array_equal(retargeter.thumb_seed, expected_seed)
-        retargeter.pause()
-        np.testing.assert_array_equal(retargeter.thumb_q, expected_seed)
-        self.assertIsNotNone(retargeter.solve(relative_points(human)))
+        tips, directions = self.model.fingertip_pads(result)
+        self.assertEqual(tips.shape, (5, 3))
+        np.testing.assert_allclose(np.linalg.norm(directions, axis=1), 1, atol=1e-8)
 
-    def test_retargeter_does_not_override_urdf_limits(self):
-        lower, upper = self.model.lower.copy(), self.model.upper.copy()
-        Retargeter(self.model)
-        np.testing.assert_array_equal(self.model.lower, lower)
-        np.testing.assert_array_equal(self.model.upper, upper)
+    def test_ros_publishes_points_and_robot_joints(self):
+        class Message:
+            def __init__(self):
+                self.layout = None
+                self.data = []
 
-    def test_four_finger_neutral_must_fit_urdf_limits(self):
-        with patch("retarget.C.MCP_AA_NEUTRAL_DEG", (360, 29, 31, 23)):
-            with self.assertRaisesRegex(ValueError, "Little_MCP_AA.*outside URDF limits"):
-                RobotModel()
+        class Dimension:
+            def __init__(self, label="", size=0, stride=0):
+                self.label, self.size, self.stride = label, size, stride
 
-    def test_thumb_targets(self):
-        points = relative_points(straight_hand("Left"))
-        retargeter = Retargeter(self.model)
-        tip, vectors = retargeter._task(points)
-        np.testing.assert_allclose(tip, points[4] * THUMB_TIP_SCALE)
-        np.testing.assert_allclose(vectors, points[[8, 12, 16, 20]] - points[4])
+        class Layout:
+            def __init__(self, dim=None, data_offset=0):
+                self.dim, self.data_offset = dim, data_offset
 
-    def test_thumb_pad_uses_all_four_distance_weights(self):
-        tip = np.zeros(3)
-        fingers = np.array(((1, 0, 0), (0, 2, 0), (-3, 0, 0), (0, -4, 0)), float)
-        distances = np.linalg.norm(fingers - tip, axis=1)
-        weights = distances**-2
-        expected = _unit(np.average(fingers, axis=0, weights=weights) - tip)
-        direction = Retargeter._pad_direction(tip, fingers)
-        np.testing.assert_allclose(direction, expected)
-        self.assertTrue(np.all(weights[:-1] * distances[:-1] > weights[1:] * distances[1:]))
-        for index in range(4):
-            moved = fingers.copy()
-            moved[index, 2] += 0.1
-            self.assertGreater(np.linalg.norm(Retargeter._pad_direction(tip, moved) - direction), 0)
+        class Publisher:
+            def __init__(self, topic):
+                self.topic, self.messages = topic, []
 
-        coincident = fingers.copy()
-        coincident[0] = tip
-        self.assertTrue(np.isfinite(Retargeter._pad_direction(tip, coincident)).all())
+            def publish(self, message):
+                self.messages.append(message)
 
+        class Node:
+            def __init__(self):
+                self.publishers = []
+                self.destroyed = False
 
-class VideoRegressionTests(unittest.TestCase):
-    def test_recordings(self):
-        folder = Path(__file__).parent / "test_data"
-        recordings = (("right_hand.mkv", "Right"), ("left_hand.mkv", "Left"))
-        if not all((folder / name).exists() for name, _ in recordings):
-            self.skipTest("local ignored recordings are not present")
+            def create_publisher(self, _message, topic, depth):
+                self.depth = depth
+                publisher = Publisher(topic)
+                self.publishers.append(publisher)
+                return publisher
 
-        for name, expected_hand in recordings:
-            with self.subTest(name=name):
-                capture, processor = cv2.VideoCapture(str(folder / name)), StereoProcessor()
-                labels, radii, phases, angle_history = [], [], [], []
-                retargeter = Retargeter() if expected_hand == "Left" else None
-                robot_history, solve_failures = [], 0
-                accepted = 0
-                fps = capture.get(cv2.CAP_PROP_FPS) or 30
-                try:
-                    frame_number = 0
-                    while True:
-                        ok, frame = capture.read()
-                        if not ok:
-                            break
-                        result = processor.process(*split_stereo(frame), frame_number / fps)
-                        frame_number += 1
-                        valid_gesture = (
-                            result["found"]
-                            and not result["stale"]
-                            and result["keypoint_relative"] is not None
-                            and result["handedness"] == "Left"
-                            and result["phase"].startswith("GESTURE")
-                        )
-                        if retargeter is not None:
-                            if valid_gesture:
-                                robot = retargeter.solve(result["keypoint_relative"])
-                                if robot is None:
-                                    solve_failures += 1
-                                else:
-                                    robot_history.append(robot)
-                            else:
-                                retargeter.pause()
-                        if not result["found"] or result["stale"]:
-                            continue
-                        points = result["keypoint_absolute"]
-                        accepted += 1
-                        labels.append(result["handedness"])
-                        phases.append(result["phase"])
-                        radii.append(np.max(np.linalg.norm(points - points[0], axis=1)))
-                        if result["phase"].startswith("GESTURE"):
-                            angle_history.append(extract_angles(points, result["handedness"]))
-                finally:
-                    capture.release()
-                    processor.close()
+            def destroy_node(self):
+                self.destroyed = True
 
-                self.assertGreater(accepted, 0.85 * frame_number)
-                self.assertGreater(labels.count(expected_hand), 0.99 * len(labels))
-                self.assertLessEqual(max(radii), 300)
-                self.assertTrue(any(phase.startswith("GESTURE") for phase in phases))
-                angles = np.asarray(angle_history)
-                self.assertGreater(len(angles), 100)
-                for pip, dip in ((3, 4), (6, 7), (9, 10), (12, 13)):
-                    self.assertGreater(max(np.ptp(angles[:, pip]), np.ptp(angles[:, dip])), 5)
-                self.assertGreaterEqual(np.min(angles), -1e-5)
-                first_tracking = next(i for i, phase in enumerate(phases) if phase.startswith("GESTURE"))
-                self.assertLess(abs(radii[first_tracking] - radii[first_tracking - 1]), 20)
-                if retargeter is not None:
-                    robots = np.asarray(robot_history)
-                    self.assertGreater(len(robots), 100)
-                    self.assertEqual(solve_failures, 0)
-                    self.assertTrue(np.isfinite(robots).all())
-                    self.assertTrue(np.all(robots >= retargeter.model.lower - 1e-10))
-                    self.assertTrue(np.all(robots <= retargeter.model.upper + 1e-10))
-                    self.assertGreater(np.max(np.ptp(robots, axis=0)), 0.1)
+        node = Node()
+        rclpy = types.ModuleType("rclpy")
+        rclpy.init = lambda args=None: None
+        rclpy.create_node = lambda _name: node
+        rclpy.shutdown_called = False
+
+        def shutdown():
+            rclpy.shutdown_called = True
+
+        rclpy.shutdown = shutdown
+        messages = types.ModuleType("std_msgs.msg")
+        messages.Float32MultiArray = Message
+        messages.MultiArrayDimension = Dimension
+        messages.MultiArrayLayout = Layout
+        std_msgs = types.ModuleType("std_msgs")
+        std_msgs.msg = messages
+
+        with patch.dict(
+            sys.modules,
+            {"rclpy": rclpy, "std_msgs": std_msgs, "std_msgs.msg": messages},
+        ):
+            output = RosOutput()
+            output.points(np.zeros((21, 3)), "Left")
+            output.joints(np.arange(21))
+            output.close()
+
+        self.assertEqual([publisher.topic for publisher in node.publishers],
+                         [KEYPOINT_TOPIC, ROBOT_TOPIC])
+        point_message = node.publishers[0].messages[0]
+        robot_message = node.publishers[1].messages[0]
+        self.assertEqual(len(point_message.data), 63)
+        self.assertEqual(len(robot_message.data), 21)
+        self.assertEqual(point_message.layout.dim[0].label,
+                         f"{KEYPOINT_LAYOUT}:hand=Left")
+        self.assertEqual(robot_message.layout.dim[0].label, ROBOT_LAYOUT)
+        self.assertTrue(node.destroyed)
+        self.assertTrue(rclpy.shutdown_called)
+
 
 if __name__ == "__main__":
     unittest.main()

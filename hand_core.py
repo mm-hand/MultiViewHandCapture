@@ -1,6 +1,3 @@
-import json
-import os
-import threading
 import time
 
 import cv2
@@ -16,20 +13,16 @@ from config import (
     D435_HEIGHT,
     D435_WIDTH,
     FINGER_CHAINS,
-    FULL_WIDTH,
     HAND_LANDMARKER_PATH,
     HAND_SWITCH_FRAMES,
-    HEIGHT,
     MAX_DEPTH_MM,
     MAX_HAND_RADIUS,
     MAX_REPROJECTION_ERROR,
     MP_DETECTION_CONFIDENCE,
     MP_PRESENCE_CONFIDENCE,
     MP_TRACKING_CONFIDENCE,
-    PARAMS_PATH,
-    POINT_FILTER,
-    ROTATE_LEFT,
-    ROTATE_RIGHT,
+    POINT_2D_FILTER,
+    POINT_3D_FILTER,
     STANDARD_PALM_SIZE,
     STALE_FRAMES,
 )
@@ -37,74 +30,12 @@ from config import (
 EPS = 1e-8
 
 
-def rotate_image(image, angle):
-    if angle == 0:
-        return image
-    if angle in (90, -270):
-        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
-    if angle in (-90, 270):
-        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
-    if abs(angle) == 180:
-        return cv2.rotate(image, cv2.ROTATE_180)
-    height, width = image.shape[:2]
-    matrix = cv2.getRotationMatrix2D((width / 2, height / 2), -angle, 1)
-    cosine, sine = abs(matrix[0, 0]), abs(matrix[0, 1])
-    size = (int(height * sine + width * cosine), int(height * cosine + width * sine))
-    matrix[:, 2] += (size[0] / 2 - width / 2, size[1] / 2 - height / 2)
-    return cv2.warpAffine(image, matrix, size)
-
-
-def split_stereo(frame):
-    if frame is None or frame.shape[1] != FULL_WIDTH:
-        return None, None
-    middle = FULL_WIDTH // 2
-    return rotate_image(frame[:, :middle], ROTATE_LEFT), rotate_image(frame[:, middle:], ROTATE_RIGHT)
-
-
-class Camera:
-    def __init__(self, index, width=FULL_WIDTH, height=HEIGHT):
-        backend = cv2.CAP_V4L2 if os.name == "posix" else cv2.CAP_ANY
-        self.capture = cv2.VideoCapture(index, backend)
-        self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-        self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        if not self.capture.isOpened():
-            raise RuntimeError(f"Unable to open camera {index}")
-        self.ok, self.frame = self.capture.read()
-        self.timestamp = time.monotonic()
-        self.lock, self.running = threading.Lock(), True
-        self.thread = threading.Thread(target=self._read, daemon=True)
-        self.thread.start()
-
-    def _read(self):
-        while self.running:
-            ok, frame = self.capture.read()
-            if ok and frame is not None:
-                with self.lock:
-                    self.ok, self.frame, self.timestamp = ok, frame, time.monotonic()
-            else:
-                time.sleep(0.005)
-
-    def read(self):
-        with self.lock:
-            if not self.ok or self.frame is None:
-                return False, None, None, None
-            left, right = split_stereo(self.frame.copy())
-            return left is not None, left, right, self.timestamp
-
-    def close(self):
-        self.running = False
-        self.thread.join(timeout=1)
-        self.capture.release()
-
-
 class RealSenseCamera:
     def __init__(self, index, width=D435_WIDTH, height=D435_HEIGHT, fps=D435_FPS):
         try:
             import pyrealsense2 as rs
         except ImportError as error:
-            raise RuntimeError("Install pyrealsense2 to use CAMERA_TYPE='d435'") from error
+            raise RuntimeError("Install pyrealsense2 to use Intel RealSense D435") from error
 
         devices = rs.context().query_devices()
         if not 0 <= index < len(devices):
@@ -225,6 +156,11 @@ def _signed_angle(start, end, axis):
     )
 
 
+def _unsigned_angle(start, end, axis):
+    start, end = _project(start, axis, start), _project(end, axis, start)
+    return np.degrees(np.arccos(np.clip(np.dot(start, end), -1, 1)))
+
+
 def _finger_frames(points, handedness):
     forward = _unit(points[9] - points[0], (0, 1, 0))
     thumbward = _unit(points[5] - points[17], (1, 0, 0))
@@ -248,7 +184,7 @@ def extract_angles(points, handedness):
     for chain, direction, axis in _finger_frames(points, handedness):
         for start, end in zip(chain[:-1], chain[1:]):
             measured = _project(points[end] - points[start], axis, direction)
-            angles.append(_signed_angle(direction, measured, axis))
+            angles.append(_unsigned_angle(direction, measured, axis))
             direction = measured
     return np.asarray(angles)
 
@@ -297,7 +233,7 @@ def relative_points(points):
 
 class Kinematics:
     def __init__(self, calibration_frames=CALIBRATION_FRAMES, calibration_hz=CALIBRATION_HZ):
-        self.points_filter = OneEuro(*POINT_FILTER)
+        self.points_filter = OneEuro(*POINT_3D_FILTER)
         self.angle_filter = OneEuro(*ANGLE_FILTER)
         self.calibration_frames = calibration_frames
         self.calibration_period = 1 / calibration_hz
@@ -316,7 +252,7 @@ class Kinematics:
                     self.lengths = {edge: float(np.median(values)) for edge, values in self.samples.items()}
             return points, f"CALIBRATION ({self.count}/{self.calibration_frames})"
         points = enforce_lengths(points, self.lengths)
-        angles = self.angle_filter(np.maximum(extract_angles(points, handedness), 0), timestamp)
+        angles = self.angle_filter(extract_angles(points, handedness), timestamp)
         points = apply_angles(points, handedness, angles)
         return points, "GESTURE TRACKING"
 
@@ -389,14 +325,15 @@ def geometry_error(points, reprojection_error):
 
 
 class StereoProcessor:
-    def __init__(self, params=None):
-        params = json.loads(PARAMS_PATH.read_text()) if params is None else params
+    def __init__(self, params):
         self.K1, self.D1 = np.asarray(params["K1"]), np.asarray(params["D1"])
         self.K2, self.D2 = np.asarray(params["K2"]), np.asarray(params["D2"])
         rotation, translation = np.asarray(params["R"]), np.asarray(params["T"])
         self.P1 = self.K1 @ np.c_[np.eye(3), np.zeros(3)]
         self.P2 = self.K2 @ np.c_[rotation, translation]
         self.left_detector, self.right_detector = HandDetector(), HandDetector()
+        self.left_points_filter = OneEuro(*POINT_2D_FILTER)
+        self.right_points_filter = OneEuro(*POINT_2D_FILTER)
         self.handedness, self.kinematics = StableHandedness(), Kinematics()
         self.last, self.bad_frames = None, 0
 
@@ -425,8 +362,13 @@ class StereoProcessor:
             output.update(found=True, stale=True, phase=f"STALE ({self.bad_frames}/{STALE_FRAMES})")
         elif self.bad_frames > STALE_FRAMES:
             self.last = None
-            self.kinematics.reset_filters()
+            self.reset_filters()
         return output
+
+    def reset_filters(self):
+        self.left_points_filter.reset()
+        self.right_points_filter.reset()
+        self.kinematics.reset_filters()
 
     def process(self, left, right, timestamp=None):
         output = self._empty()
@@ -442,8 +384,12 @@ class StereoProcessor:
             return self._reject(output, "detection")
 
         label = self.handedness.update(label)
-        left_points = left_norm * (left.shape[1], left.shape[0])
-        right_points = right_norm * (right.shape[1], right.shape[0])
+        left_points = self.left_points_filter(
+            left_norm * (left.shape[1], left.shape[0]), timestamp
+        )
+        right_points = self.right_points_filter(
+            right_norm * (right.shape[1], right.shape[0]), timestamp
+        )
         output["px_left"], output["px_right"] = left_points, right_points
         left_ud = cv2.undistortPoints(left_points[:, None], self.K1, self.D1, P=self.K1).reshape(-1, 2)
         right_ud = cv2.undistortPoints(right_points[:, None], self.K2, self.D2, P=self.K2).reshape(-1, 2)

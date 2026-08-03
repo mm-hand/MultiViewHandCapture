@@ -150,7 +150,7 @@ class Retargeter:
                        np.dot(_unit(points[mcp + 1] - points[mcp]), forward))
             for mcp in (5, 9, 13, 17)
         ]
-        flex = np.maximum(np.radians(extract_angles(points, handedness)), 0)
+        flex = np.radians(extract_angles(points, handedness))
         q = np.zeros(len(self.model.names))
         q[AA] = self.model.aa_neutral + np.asarray(aa)[::-1]
         for source, target in zip((11, 8, 5, 2), (0, 4, 8, 12)):

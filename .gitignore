@@ -1,4 +1,3 @@
-/stereo_params.json
 /test_data/*.mkv
 __pycache__/
 *.egg-info/

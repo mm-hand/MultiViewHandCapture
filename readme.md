@@ -9,17 +9,16 @@ MultiView Hand Capture 从同步双目图像恢复 MediaPipe 21 个手部三维�
 主要功能：
 
 - 支持 Intel RealSense D435 双红外图像，直接读取出厂双目标定。
-- 支持单个 `2560×720` MJPEG 设备提供的左右拼接双目图像。
-- 对左右图像分别运行 MediaPipe，并通过普通双目三角化恢复三维点。
+- 对 D435 左右红外图像分别运行 MediaPipe，并通过双目三角化恢复三维点。
 - 对三维点和手指屈伸角分别执行 One Euro 滤波。
-- 通过骨长和非负屈伸角约束抑制关键点飞行与手指反弯。
+- 通过骨长和 `0～180°` 无符号屈伸角约束抑制关键点飞行。
 - 在 MMHand 指尖显示由预设局部法向计算的指腹方向箭头。
 - 将标准化左手 retarget 到 MMHand URDF。
 - 在一个网页中显示左右图像、标准人手和 MMHand。
-- 可选发布 ROS 2 关键点或机器人关节角。
+- 可选同时发布 ROS 2 关键点和机器人关节角。
 
-D435 模式只使用同步左右红外图像，不启用深度流，也不读取深度图。左右相机内参
-和基线由 RealSense SDK 提供，后续三角化、滤波和 retarget 与普通双目完全共用。
+项目默认且仅支持 D435。程序只使用同步左右红外图像，不启用深度流，也不读取
+深度图；活动流内参、畸变参数和左右外参全部由 RealSense SDK 提供，无需棋盘标定。
 
 ## 安装
 
@@ -58,39 +57,31 @@ python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ## Config
 
-运行参数集中在 `config.py`，通常只需要修改相机类型和编号。
+运行参数集中在 `config.py`，通常只需要修改 D435 编号、分辨率和帧率。
 
 ### 相机
 
 ```python
-CAMERA_TYPE = "d435"       # "d435" 或 "stereo"
-CAMERA_INDEX = 0           # 第几个 D435，或普通相机的 OpenCV 编号
-D435_WIDTH, D435_HEIGHT, D435_FPS = 1280, 720, 30
+CAMERA_INDEX = 0
+D435_WIDTH = 1280
+D435_HEIGHT = 720
+D435_FPS = 30
 ```
-
-`CAMERA_TYPE="d435"`：
 
 - 打开 D435 的 `infrared 1` 和 `infrared 2`。
 - 图像格式为 Y8，默认 `1280×720@30`。
 - 使用活动流内参和出厂左右外参。
-- 不需要运行棋盘标定。
-
-`CAMERA_TYPE="stereo"`：
-
-- 打开 `CAMERA_INDEX` 指定的 OpenCV/V4L2 设备。
-- 输入为单个 `2560×720` MJPEG 图像。
-- 左右各占 `1280×720`，并按 `ROTATE_LEFT/ROTATE_RIGHT` 旋转。
-- 标定参数来自 `stereo_params.json`。
+- 不需要也不提供外部棋盘标定流程。
 
 ### 三维重建和滤波
 
 | 参数 | 默认值 | 含义 |
 |---|---:|---|
-| `MIN_CALIBRATION_PAIRS` | 10 | 普通双目标定要求的最少有效图像对数 |
 | `CALIBRATION_FRAMES` | 100 | 初始骨长估计使用的有效样本数 |
 | `CALIBRATION_HZ` | 10 Hz | 骨长样本的最大采样频率 |
 | `BONE_TOLERANCE` | 0.20 | 每根骨允许偏离标定长度的比例 |
-| `POINT_FILTER` | `(1.0, 0.01, 1.0)` | 三维点 One Euro 参数 |
+| `POINT_2D_FILTER` | `(1.0, 0.01, 1.0)` | 去畸变前像素点 One Euro 参数 |
+| `POINT_3D_FILTER` | `(0.5, 0.001, 1.0)` | 三角化后三维毫米点 One Euro 参数 |
 | `ANGLE_FILTER` | `(1.0, 0.02, 1.0)` | 屈伸角 One Euro 参数 |
 | `MP_DETECTION_CONFIDENCE` | 0.5 | 掌检测最低置信度 |
 | `MP_PRESENCE_CONFIDENCE` | 0.6 | 手存在最低置信度，低于它会重新检测手掌 |
@@ -102,8 +93,10 @@ D435_WIDTH, D435_HEIGHT, D435_FPS = 1280, 720, 30
 | `HAND_SWITCH_FRAMES` | 5 | 手性切换所需的连续确认帧数 |
 | `STANDARD_PALM_SIZE` | 0.086 m | 标准人手掌尺寸 |
 
-`POINT_FILTER` 和 `ANGLE_FILTER` 的三个值依次是 One Euro 的
-`min_cutoff、beta、derivative_cutoff`。
+三个滤波元组的元素都依次是 One Euro 的
+`min_cutoff、beta、derivative_cutoff`。二维点单位为 pixel、三维点单位为 mm、
+角度单位为 degree，因此三者的 `beta` 数值不能直接混用。所有参数在对象初始化时
+读取，修改 `config.py` 后需要重启程序。
 
 ### MMHand
 
@@ -120,13 +113,14 @@ Thumb   MCP A-A, MCP F-E, PIP, DIP, CMC
 四指 A-A retarget 零位偏置：
 
 ```python
-MCP_AA_NEUTRAL_DEG = (36, 29, 31, 23)  # Little, Ring, Middle, Index
+MCP_AA_NEUTRAL_DEG = (19.9474, 29.0, 26.1463, 23.0)  # Little, Ring, Middle, Index
 ```
 
-该偏置把人手零侧摆映射到 MMHand 四指姿态，不属于 URDF 机械参数。拇指没有
-中位值；首次求解和暂停后的初值是将 URDF 零位裁进其关节上下限。
+该偏置把人手零侧摆映射到优化版 MMHand 四指姿态，并保证位于新 URDF 限位内；
+它不属于 URDF 机械参数。拇指没有中位值；首次求解和暂停后的初值是将 URDF
+零位裁进其关节上下限。
 
-其余拇指数值优化参数属于 retarget 标定或求解配置：
+其余拇指数值优化参数属于 retarget 几何或求解配置：
 
 | 参数 | 含义 |
 |---|---|
@@ -152,55 +146,28 @@ ROBOT_TOPIC = "/raw_ik_target"
 
 ## 运行
 
-### D435
-
-确认 `config.py` 中：
+项目默认且仅使用 D435。确认 `config.py` 中：
 
 ```python
-CAMERA_TYPE = "d435"
 CAMERA_INDEX = 0
 ```
 
 然后直接运行：
 
 ```bash
-python track.py --mode retarget
+python track.py
 ```
 
-### 普通拼接双目
-
-设置：
-
-```python
-CAMERA_TYPE = "stereo"
-CAMERA_INDEX = 0
-```
-
-首次使用、更换相机或改变两个镜头的相对位置后执行标定：
+### 启动参数
 
 ```bash
-python calibrate.py
+python track.py
+python track.py --ros
 ```
 
-棋盘默认是 `9×6` 内角点、格长 `23.5 mm`：
-
-- `C`：保存当前有效左右图像对。
-- `Q`：结束采样并计算参数。
-- 至少采集 `MIN_CALIBRATION_PAIRS` 对图像，默认 10 对。
-- 结果写入 `stereo_params.json`。
-
-### 运行模式
-
-```bash
-python track.py --mode points
-python track.py --mode points --ros
-python track.py --mode retarget
-python track.py --mode retarget --ros
-```
-
-- `points`：输出标准化的 21 个三维关键点。
-- `retarget`：将完成初始骨长估计的稳定左手映射到 MMHand。
-- `--ros`：在显示结果的同时发布 ROS 2 topic。
+程序始终估计和显示标准化的 21 个三维关键点，并将完成初始骨长估计的稳定左手
+映射到 MMHand。`--ros` 在相同流程上同时发布关键点和机器人关节两个 ROS 2 topic。
+右手关键点仍会显示和发布，但不会映射到左手机器人模型。
 
 浏览器打开 `http://localhost:8080`：
 
@@ -219,7 +186,7 @@ config.py
     相机、滤波、质量门限、MMHand、Web 和 ROS 配置
 
 hand_core.py
-    D435/普通相机接口、MediaPipe、双目三角化、滤波和标准手归一化
+    D435 双红外接口、MediaPipe、双目三角化、滤波和标准手归一化
 
 retarget.py
     MMHand URDF 解析、前向运动学、四指映射和拇指数值优化
@@ -227,17 +194,15 @@ retarget.py
 track.py
     程序入口、实时循环、Web 页面、Viser 和 ROS 发布
 
-calibrate.py
-    普通拼接双目的棋盘标定工具
-
 test_hand_capture.py
-    几何、滤波、retarget 和本地录像回归测试
+    几何、滤波、MediaPipe、URDF、retarget、CLI 和 ROS 快速核心测试
+
+test/
+    一次性机器人工作空间优化资料，不属于日常测试套件
 
 assets/mmhand/
     MMHand URDF、STL 和第三方许可证
 
-stereo_params.json
-    普通拼接双目的内外参数
 ```
 
 核心代码保持单向依赖：
@@ -254,21 +219,17 @@ track.py
 
 ## 代码逻辑
 
-### 1. 相机和标定参数
+### 1. D435 相机参数
 
-`track.py` 根据 `CAMERA_TYPE` 创建相机：
+`track.py` 直接创建 D435 相机和处理器：
 
 ```text
-d435
-→ RealSenseCamera
+RealSenseCamera
 → 左右 Y8 图像 + SDK 出厂内外参数
-
-stereo
-→ Camera
-→ 拆分 MJPEG 拼接图 + stereo_params.json
+→ StereoProcessor
 ```
 
-两种输入都生成相同的 `left、right、timestamp`，并将相同格式的
+`RealSenseCamera` 输出同步的 `left、right、timestamp`，并将 SDK 提供的
 `K1、D1、K2、D2、R、T` 交给 `StereoProcessor`。
 
 ### 2. MediaPipe 和双目三角化
@@ -276,7 +237,9 @@ stereo
 ```text
 左右图像
 → 左右 MediaPipe Tasks HandLandmarker 21 点
-→ 像素坐标去畸变
+→ 归一化坐标转换为像素坐标
+→ 左右独立的 2D One Euro
+→ 滤波后像素坐标去畸变
 → cv2.triangulatePoints
 → 21×3 毫米制相机坐标
 → reprojection、Z 上限和手尺寸检查
@@ -302,17 +265,28 @@ P2 = K2 [R | T]
 
 ```text
 三角化 21 点
-→ 3D One Euro
+→ 3D One Euro（独立于二维滤波参数）
 → 骨长约束
 → 提取拇指 2 个、四指 12 个屈伸角
-→ 将屈伸角限制为非负
+→ 两个骨向量的点积夹角（0～180°）
 → 角度 One Euro
 → 从骨长和角度恢复 21 点
 ```
 
-初始骨长样本按 `CALIBRATION_HZ` 限速采集，避免不同相机帧率或处理速度改变标定
-时长。100 个有效样本用于计算每根骨长度的中位数。之后每根骨只能在标定长度的
-`1±BONE_TOLERANCE` 范围内变化。非负屈伸角允许手指弯曲，但不允许反弯。
+初始骨长样本按 `CALIBRATION_HZ` 限速采集，避免相机帧率或处理速度改变估计
+时长。100 个有效样本用于计算每根骨长度的中位数。之后每根骨只能在估计长度的
+`1±BONE_TOLERANCE` 范围内变化。
+
+设当前关节前后的单位骨向量为 `u、v`，屈曲角为：
+
+```text
+angle = acos(clamp(u · v, -1, 1))
+```
+
+PIP、DIP 使用相邻两段指骨；拇指使用相邻骨段。四指 MCP 使用近节骨实际方向和
+它在掌平面上的投影，从而将屈曲与侧摆分开。该定义只表达弯曲幅度，伸直为 0°、
+直角为 90°、完全折回为 180°，不产生负角或 `+180°/-180°` 跨界。握拳遮挡可能
+让错误关键点形成接近 180° 的假角，这属于检测/三角化质量问题。
 
 `relative_points()` 再将三维点：
 
@@ -351,15 +325,20 @@ direction = unit(c - t)
 
 因此四指全部参与，距离拇指尖越近的手指对目标方向影响越大。
 
-机器人 FK、关节轴和上下限均从 `assets/mmhand/urdf/hand.urdf` 原样读取，代码
-不会收紧或覆盖 URDF 限位。连续追踪时优化使用上一帧拇指关节角作为初值；首次
-求解和暂停后使用裁进 URDF 上下限的零位。初值本身不进入目标函数。
+机器人 FK、关节轴和上下限均从 `assets/mmhand/urdf/hand.urdf` 读取。该文件是
+工作空间优化后的正式 MMHand URDF，代码不会收紧或覆盖其限位。连续追踪时优化
+使用上一帧拇指关节角作为初值；首次求解和暂停后使用裁进 URDF 上下限的零位。
+初值本身不进入目标函数。
 
 ### 5. 状态、显示和输出
 
 `StereoProcessor` 对短暂坏帧返回 stale 结果用于显示，但 stale 数据不会进入
-retarget 或 ROS。手丢失、检测到右手、初始骨长估计未完成或求解失败时，不发布
-新的机器人目标。
+retarget 或 ROS。有效左右手都会发布关键点；手丢失、检测到右手、初始骨长估计
+未完成或求解失败时，不发布新的机器人目标。
+
+二维滤波只在左右 HandLandmarker 同一帧都检测成功时同步更新，页面覆盖点和双目
+三角化使用同一组滤波后像素坐标。前三个连续坏帧保留上一结果和全部滤波状态；
+第四个连续坏帧会同时重置左右二维、三维和角度滤波器。
 
 `Viewer` 将左右图像编码为 JPEG，并用两个 Viser 服务显示标准人手和 MMHand。
 MMHand 的五个指尖显示 `0.025 m` 长的橙色指腹方向箭头，箭头由各 fingertip
@@ -374,7 +353,7 @@ link 的预设局部法向经 FK 转换得到。两个三维窗口的初始
 
 ### `/hand/keypoints`
 
-由 `python track.py --mode points --ros` 发布：
+由 `python track.py --ros` 发布：
 
 | 字段 | 内容 |
 |---|---|
@@ -386,7 +365,7 @@ link 的预设局部法向经 FK 转换得到。两个三维窗口的初始
 
 ### `/raw_ik_target`
 
-由 `python track.py --mode retarget --ros` 发布：
+同样由 `python track.py --ros` 发布：
 
 | 字段 | 内容 |
 |---|---|
@@ -408,3 +387,6 @@ ros2 topic echo /raw_ik_target
 ```bash
 python -m unittest -v test_hand_capture.py
 ```
+
+这是不依赖本地录像的快速核心测试。`test/` 保存一次性工作空间优化代码和数据，
+日常验证不运行 `unittest discover -s test`，也不会重新执行优化。

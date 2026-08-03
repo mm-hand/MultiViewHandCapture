@@ -7,7 +7,6 @@ import cv2
 import numpy as np
 
 from config import (
-    CAMERA_TYPE,
     CAMERA_INDEX,
     KEYPOINT_LAYOUT,
     KEYPOINT_TOPIC,
@@ -19,7 +18,7 @@ from config import (
     WEB_PORT,
     VIEW_PORTS,
 )
-from hand_core import Camera, RealSenseCamera, StereoProcessor
+from hand_core import RealSenseCamera, StereoProcessor
 from retarget import Retargeter
 
 ROBOT_PAD_ARROW_LENGTH = 0.025
@@ -67,7 +66,7 @@ def _overlay(image, points):
 
 
 class Viewer:
-    def __init__(self, model=None):
+    def __init__(self, model):
         import viser
         from viser.extras import ViserUrdf
 
@@ -81,12 +80,7 @@ class Viewer:
             (0, 0.2588190451, 0.9659258263),
             42,
         )
-        robot_camera = (
-            _robot_camera_pose(model)
-            if model is not None
-            else ((0.28, -0.32, 0.22), (0, 0, 0.06), (0, 0, 1))
-        )
-        self._camera(robot_server, *robot_camera, 42)
+        self._camera(robot_server, *_robot_camera_pose(model), 42)
         self.human_frame = normalized.scene.add_frame("/hand", show_axes=False)
         empty_hand = np.zeros((21, 3), np.float32)
         self.human_cloud = normalized.scene.add_point_cloud(
@@ -97,18 +91,16 @@ class Viewer:
             "/hand/bones", empty_hand[np.asarray(SKELETON_EDGES)],
             (60, 170, 255), line_width=4, visible=False,
         )
-        self.urdf = self.urdf_names = self.robot_pad_arrows = None
-        if model is not None:
-            robot_server.scene.add_frame("/robot", show_axes=False)
-            self.urdf = ViserUrdf(robot_server, URDF_PATH, root_node_name="/robot")
-            self.robot_pad_arrows = robot_server.scene.add_arrows(
-                "/robot/pad_directions", np.zeros((5, 2, 3), np.float32),
-                (255, 145, 45), shaft_radius=0.0012, head_radius=0.003,
-                head_length=0.006, visible=False,
-            )
-            self.urdf_names = self.urdf.get_actuated_joint_names()
-            self.robot_index = model.index
-            self.urdf.update_cfg(np.zeros(len(self.urdf_names)))
+        robot_server.scene.add_frame("/robot", show_axes=False)
+        self.urdf = ViserUrdf(robot_server, URDF_PATH, root_node_name="/robot")
+        self.robot_pad_arrows = robot_server.scene.add_arrows(
+            "/robot/pad_directions", np.zeros((5, 2, 3), np.float32),
+            (255, 145, 45), shaft_radius=0.0012, head_radius=0.003,
+            head_length=0.006, visible=False,
+        )
+        self.urdf_names = self.urdf.get_actuated_joint_names()
+        self.robot_index = model.index
+        self.urdf.update_cfg(np.zeros(len(self.urdf_names)))
         self.last_update, self.status = 0.0, "WAITING"
         self.stereo = cv2.imencode(".jpg", np.zeros((360, 1280, 3), np.uint8))[1].tobytes()
         self._start_dashboard()
@@ -135,7 +127,7 @@ font:15px sans-serif;display:grid;grid-template:40vh 60vh/repeat(2,1fr);gap:6px}
 font-size:15px;background:#101318cc;border-radius:0 0 6px 0}}
 img,iframe{{width:100%;height:100%;display:block;border:0;object-fit:contain}}
 #status{{color:#9bd;margin-left:12px;font-weight:normal}}</style></head><body>
-<section class="panel stereo"><h2>Stereo + MediaPipe <span id="status">WAITING</span></h2>
+<section class="panel stereo"><h2>D435 IR + MediaPipe <span id="status">WAITING</span></h2>
 <img id="stereo"></section>
 <section class="panel"><h2>Normalized hand · wrist frame · 0.086 m</h2><iframe id="normalized"></iframe></section>
 <section class="panel"><h2>Retargeted MMHand</h2><iframe id="robot"></iframe></section>
@@ -203,7 +195,7 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
             points = np.asarray(points, np.float32)
             self.human_cloud.points = points
             self.human_bones.points = points[np.asarray(SKELETON_EDGES)]
-        if robot is not None and self.urdf is not None:
+        if robot is not None:
             self.urdf.update_cfg(np.asarray([robot[self.robot_index[name]] for name in self.urdf_names]))
             tips, directions = self.model.fingertip_pads(robot)
             tips, directions = np.asarray(tips, np.float32), np.asarray(directions, np.float32)
@@ -220,18 +212,18 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
 
 
 class RosOutput:
-    def __init__(self, mode):
+    def __init__(self):
         import rclpy
         from std_msgs.msg import Float32MultiArray
 
         rclpy.init(args=None)
         self.rclpy, self.message = rclpy, Float32MultiArray
         self.node = rclpy.create_node("multiview_hand_capture")
-        topic = KEYPOINT_TOPIC if mode == "points" else ROBOT_TOPIC
-        self.publisher = self.node.create_publisher(Float32MultiArray, topic, 1)
-        print(f"ROS 2: publishing {topic}")
+        self.point_publisher = self.node.create_publisher(Float32MultiArray, KEYPOINT_TOPIC, 1)
+        self.robot_publisher = self.node.create_publisher(Float32MultiArray, ROBOT_TOPIC, 1)
+        print(f"ROS 2: publishing {KEYPOINT_TOPIC} and {ROBOT_TOPIC}")
 
-    def publish(self, values, label, shape):
+    def publish(self, publisher, values, label, shape):
         from std_msgs.msg import MultiArrayDimension, MultiArrayLayout
 
         dimensions, stride = [], int(np.prod(shape))
@@ -247,35 +239,36 @@ class RosOutput:
         message = self.message()
         message.layout = MultiArrayLayout(dim=dimensions, data_offset=0)
         message.data = np.asarray(values, np.float32).ravel().tolist()
-        self.publisher.publish(message)
+        publisher.publish(message)
 
     def points(self, points, handedness):
-        self.publish(points, f"{KEYPOINT_LAYOUT}:hand={handedness}", (21, 3))
+        self.publish(
+            self.point_publisher, points,
+            f"{KEYPOINT_LAYOUT}:hand={handedness}", (21, 3),
+        )
 
     def joints(self, degrees):
-        self.publish(degrees, ROBOT_LAYOUT, (21,))
+        self.publish(self.robot_publisher, degrees, ROBOT_LAYOUT, (21,))
 
     def close(self):
         self.node.destroy_node()
         self.rclpy.shutdown()
 
 
-def main():
+def _parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("points", "retarget"), default="points")
     parser.add_argument("--ros", action="store_true")
-    args = parser.parse_args()
+    return parser.parse_args(argv)
 
-    retargeter = Retargeter() if args.mode == "retarget" else None
-    if CAMERA_TYPE == "d435":
-        camera = RealSenseCamera(CAMERA_INDEX)
-        processor = StereoProcessor(camera.params)
-    elif CAMERA_TYPE == "stereo":
-        camera, processor = Camera(CAMERA_INDEX), StereoProcessor()
-    else:
-        raise ValueError("CAMERA_TYPE must be 'd435' or 'stereo'")
-    viewer = Viewer(None if retargeter is None else retargeter.model)
-    ros = RosOutput(args.mode) if args.ros else None
+
+def main():
+    args = _parse_args()
+
+    retargeter = Retargeter()
+    camera = RealSenseCamera(CAMERA_INDEX)
+    processor = StereoProcessor(camera.params)
+    viewer = Viewer(retargeter.model)
+    ros = RosOutput() if args.ros else None
     last_timestamp = None
     try:
         while True:
@@ -287,15 +280,14 @@ def main():
             result = processor.process(left, right, timestamp)
             valid = result["found"] and not result["stale"] and result["keypoint_relative"] is not None
             robot = None
-            if retargeter is not None:
-                if valid and result["handedness"] == "Left" and result["phase"].startswith("GESTURE"):
-                    robot = retargeter.solve(result["keypoint_relative"])
-                    if ros is not None and robot is not None:
-                        ros.joints(np.degrees(robot))
-                else:
-                    retargeter.pause()
-            elif ros is not None and valid:
+            if valid and ros is not None:
                 ros.points(result["keypoint_relative"], result["handedness"])
+            if valid and result["handedness"] == "Left" and result["phase"].startswith("GESTURE"):
+                robot = retargeter.solve(result["keypoint_relative"])
+                if ros is not None and robot is not None:
+                    ros.joints(np.degrees(robot))
+            else:
+                retargeter.pause()
             viewer.update(result, robot)
     except KeyboardInterrupt:
         pass
