@@ -99,46 +99,26 @@ ROBOT_JOINT_NAMES = (
     "mmhand_thumb_1_finger_7_fingertip_1_DIP_Joint",       # J19：拇指 DIP 屈曲。
     "Thumb_CMC",                                      # J20：拇指 CMC 旋转。
 )
-# 人手四指零侧摆映射到 MMHand MCP A-A 的软件零位，单位 degree。
-MCP_AA_NEUTRAL_DEG = (
-    19.9474,  # 小指 Little MCP A-A 零位。
-    29.0,     # 无名指 Ring MCP A-A 零位。
-    26.1463,  # 中指 Middle MCP A-A 零位。
-    23.0,     # 食指 Index MCP A-A 零位。
-)
+# MMHand two-stage retarget ----------------------------------------------------
 
-
-# MMHand retarget calibration -------------------------------------------------
-
-# 人手腕原点在 MMHand 掌局部坐标系中的偏移 (x, y, z)，单位 m。
-MMHAND_PALM_ORIGIN = (
-    -0.046,  # x：沿机器人掌法向的偏移。
-    -0.020,  # y：沿机器人掌横向的偏移。
-    -0.060,  # z：沿机器人掌前向的偏移。
-)
-# 人手腕到拇指尖目标向量的无量纲缩放系数。
-THUMB_TIP_SCALE = 0.94
-# 拇指尖位置残差的平方权重；求解器内部使用其平方根。
-THUMB_TIP_WEIGHT = 2.8
-# 拇指 fingertip link 局部坐标中的指腹方向 (x, y, z)，无量纲。
-THUMB_PAD_AXIS = (
-    -0.200671,  # 局部 x 分量。
-    0.970119,   # 局部 y 分量。
-    -0.136380,  # 局部 z 分量。
-)
-# 四指 fingertip link 局部指腹方向；每个元素均为 (x, y, z) 无量纲向量。
-FINGER_PAD_AXES = (
-    (-0.131523, 0.099710, -0.986286),  # 第 1 项：食指 Index。
-    (-0.160095, 0.116825, -0.980164),  # 第 2 项：中指 Middle。
-    (-0.180981, 0.121096, -0.976003),  # 第 3 项：无名指 Ring。
-    (-0.180981, 0.121096, -0.976003),  # 第 4 项：小指 Little。
-)
-# 拇指指腹朝向四指目标的平方权重。
-THUMB_PAD_WEIGHT = 0.5
-# 每帧拇指 least_squares 允许的最大残差计算次数。
-THUMB_MAX_EVAL = 40
-# 拇指 least_squares 的 ftol、xtol 和 gtol 共用停止容差。
-THUMB_FTOL = 1e-5
+# 第一阶段掌原点到五指尖的人手向量缩放系数；1.0 表示不缩放。
+RETARGET_PALM_TIPS_SCALE = 1.0
+# 第一阶段拇指尖到另外四指尖的人手向量缩放系数；1.0 表示不缩放。
+RETARGET_THUMB_FINGERTIPS_SCALE = 1.0
+# 第一、二阶段掌原点到五指尖位置误差的损失权重。
+RETARGET_PALM_TIPS_WEIGHT = 1.0
+# 第一、二阶段拇指尖到另外四指尖位置误差的损失权重。
+RETARGET_THUMB_FINGERTIPS_WEIGHT = 1.0
+# 第二阶段拇指三段单位方向误差的损失权重。
+RETARGET_THUMB_SHAPE_WEIGHT = 1.0
+# 第二阶段四指共十二段单位方向误差的损失权重。
+RETARGET_FINGER_SHAPE_WEIGHT = 1.0
+# 第二阶段允许第一阶段损失相对第一阶段结果升高的最大比例；0.05 表示 5%。
+RETARGET_STAGE1_MAX_RELATIVE_INCREASE = 0.05
+# 每个 SLSQP 阶段允许的最大迭代次数。
+RETARGET_MAX_ITERATIONS = 80
+# 两个 SLSQP 阶段共用的目标、步长和约束停止精度。
+RETARGET_FTOL = 1e-7
 
 
 # Runtime output and viewer ----------------------------------------------------

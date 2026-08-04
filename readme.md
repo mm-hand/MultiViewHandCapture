@@ -12,8 +12,7 @@ MultiView Hand Capture 从同步双目图像恢复 MediaPipe 21 个手部三维�
 - 对 D435 左右红外图像分别运行 MediaPipe，并通过双目三角化恢复三维点。
 - 对三维点和手指屈伸角分别执行 One Euro 滤波。
 - 通过骨长和 `0～180°` 无符号屈伸角约束抑制关键点飞行。
-- 在 MMHand 指尖显示由预设局部法向计算的指腹方向箭头。
-- 将标准化左手 retarget 到 MMHand URDF。
+- 通过两阶段约束优化将标准化左手 retarget 到 MMHand URDF。
 - 在一个网页中显示左右图像、标准人手和 MMHand。
 - 可选同时发布 ROS 2 关键点和机器人关节角。
 
@@ -110,28 +109,23 @@ Index   A-A, F-E, PIP, DIP
 Thumb   MCP A-A, MCP F-E, PIP, DIP, CMC
 ```
 
-四指 A-A retarget 零位偏置：
+MMHand 的固定掌坐标轴直接采用 URDF 根 `base_link` 的方向：`+x` 大致沿手腕到
+四指，`+y` 大致从食指侧指向小指侧，`+z` 为掌面法向。机器人尺寸、关节轴、
+父子关系和限位也始终从 URDF 读取。
 
-```python
-MCP_AA_NEUTRAL_DEG = (19.9474, 29.0, 26.1463, 23.0)  # Little, Ring, Middle, Index
-```
+两阶段 retarget 参数：
 
-该偏置把人手零侧摆映射到优化版 MMHand 四指姿态，并保证位于新 URDF 限位内；
-它不属于 URDF 机械参数。拇指没有中位值；首次求解和暂停后的初值是将 URDF
-零位裁进其关节上下限。
-
-其余拇指数值优化参数属于 retarget 几何或求解配置：
-
-| 参数 | 含义 |
-|---|---|
-| `MMHAND_PALM_ORIGIN` | 机器人掌坐标中对应人手腕原点的三维偏移 |
-| `THUMB_TIP_SCALE` | 人手腕到拇指尖向量的缩放 |
-| `THUMB_TIP_WEIGHT` | 拇指尖位置目标权重 |
-| `THUMB_PAD_AXIS` | 拇指指腹 link 局部坐标中的指腹法向 |
-| `FINGER_PAD_AXES` | Index、Middle、Ring、Little 指尖 link 的预设指腹法向 |
-| `THUMB_PAD_WEIGHT` | 指腹朝向目标权重 |
-| `THUMB_MAX_EVAL` | 每帧最多残差计算次数 |
-| `THUMB_FTOL` | least-squares 停止容差 |
+| 参数 | 默认值 | 含义 |
+|---|---:|---|
+| `RETARGET_PALM_TIPS_SCALE` | 1.0 | 人手掌原点到五指尖向量的 scale |
+| `RETARGET_THUMB_FINGERTIPS_SCALE` | 1.0 | 人手拇指尖到四指尖向量的 scale |
+| `RETARGET_PALM_TIPS_WEIGHT` | 1.0 | 掌原点到五指尖位置目标权重 |
+| `RETARGET_THUMB_FINGERTIPS_WEIGHT` | 1.0 | 拇指尖到四指尖位置目标权重 |
+| `RETARGET_THUMB_SHAPE_WEIGHT` | 1.0 | 拇指三段单位方向目标权重 |
+| `RETARGET_FINGER_SHAPE_WEIGHT` | 1.0 | 四指十二段单位方向目标权重 |
+| `RETARGET_STAGE1_MAX_RELATIVE_INCREASE` | 0.05 | 第二阶段允许第一阶段损失升高的比例 |
+| `RETARGET_MAX_ITERATIONS` | 80 | 每个 SLSQP 阶段最大迭代次数 |
+| `RETARGET_FTOL` | 1e-7 | SLSQP 停止精度 |
 
 ### Web 和 ROS
 
@@ -189,7 +183,7 @@ hand_core.py
     D435 双红外接口、MediaPipe、双目三角化、滤波和标准手归一化
 
 retarget.py
-    MMHand URDF 解析、前向运动学、四指映射和拇指数值优化
+    MMHand URDF 运动学、解析 Jacobian 和两阶段约束优化
 
 track.py
     程序入口、实时循环、Web 页面、Viser 和 ROS 发布
@@ -294,41 +288,60 @@ PIP、DIP 使用相邻两段指骨；拇指使用相邻骨段。四指 MCP 使�
 - 建立掌局部坐标系。
 - 缩放到 `STANDARD_PALM_SIZE=0.086 m`。
 
+该公共跟踪坐标和 ROS 输出继续采用原定义：
+
+```text
++z = unit(point9 - point0)
++x = unit((point5 - point17) × +z)
++y = +z × +x
+```
+
 ### 4. MMHand retarget
 
 Retarget 只处理完成骨长估计、非 stale 的稳定左手。
 
-四指不执行数值优化：
+人手公共 `keypoint_relative` 始终保持上述腕点跟踪坐标。仅在构造 retarget 目标时，
+`retarget.py` 临时将点转换到独立的 CMC 掌坐标：
 
 ```text
-人手 MCP A-A + retarget 零位偏置 → MMHand MCP A-A
-人手 MCP F-E            → MMHand MCP F-E
-人手 PIP                → MMHand PIP
-人手 DIP                → MMHand DIP
+origin = point1
++x = unit(point9 - point0)
++y = unit(project_to_plane(point17 - point5, normal=+x))
++z = +x × +y
 ```
 
-拇指优化 5 个关节，残差包括：
+该人手坐标只读取 MediaPipe 关键点，不读取 MMHand 或 URDF；转换结果不会写回
+`keypoint_relative`，也不影响跟踪、手势角度或 ROS。MMHand 掌坐标方向采用 URDF
+`base_link`，原点取 `Thumb_MCP_AA` 关节原点在 `Thumb_CMC` 转轴上的正交投影。
+该原点和方向均不是优化变量。
 
-1. 机器人拇指尖位置匹配缩放后的人手拇指尖位置。
-2. 机器人拇指尖到四指尖的四条向量匹配人手对应向量。
-3. 拇指指腹法向朝向四指指尖的加权位置。
+第一阶段同时优化 21 个 MMHand 关节，目标为：
 
-第三项在每次残差计算时使用当前 MMHand 姿态。设拇指尖为 `t`、四指指尖为
-`f_i`，取反距离平方权重：
+- 掌原点到 Thumb、Index、Middle、Ring、Little 五个指尖的位置向量。
+- 拇指尖到另外四个指尖的位置向量。
+
+位置误差除以 `STANDARD_PALM_SIZE` 形成无量纲损失，人手向量先乘配置中的 scale。
+
+第二阶段从第一阶段关节角开始，保留上述全部目标，并增加：
+
+- 人手 CMC→MCP、MCP→IP、IP→TIP 与 MMHand 掌原点→PIP、PIP→DIP、DIP→TIP
+  三个拇指单位方向的匹配。
+- 四指各自 MCP→PIP、PIP→DIP、DIP→TIP 共十二个单位方向的匹配。
+
+设第一阶段结果为 `q1`，第二阶段结果为 `q2`，第二阶段包含硬约束：
 
 ```text
-d_i = |f_i - t|
-w_i = (1 / max(d_i, EPS)^2) / sum_j(1 / max(d_j, EPS)^2)
-c   = sum_i(w_i * f_i)
-direction = unit(c - t)
+L1(q2) <= (1 + RETARGET_STAGE1_MAX_RELATIVE_INCREASE) * L1(q1)
 ```
 
-因此四指全部参与，距离拇指尖越近的手指对目标方向影响越大。
+默认最多升高 5%。若第二阶段失败则直接采用 `q1`；若求解器数值容差造成轻微
+越界，则沿 `q1→q2` 回退到约束内。
 
 机器人 FK、关节轴和上下限均从 `assets/mmhand/urdf/hand.urdf` 读取。该文件是
-工作空间优化后的正式 MMHand URDF，代码不会收紧或覆盖其限位。连续追踪时优化
-使用上一帧拇指关节角作为初值；首次求解和暂停后使用裁进 URDF 上下限的零位。
-初值本身不进入目标函数。
+工作空间优化后的正式 MMHand URDF，代码不会收紧或覆盖其限位。通用旋转关节
+Jacobian 根据 URDF 的轴、关节原点和祖先关系解析计算；没有 MMHand 尺寸常量。
+连续追踪时第一阶段使用上一帧全部 21 个关节角热启动；首次求解和暂停后使用裁进
+URDF 上下限的零位。
 
 ### 5. 状态、显示和输出
 
@@ -341,9 +354,9 @@ retarget 或 ROS。有效左右手都会发布关键点；手丢失、检测到�
 第四个连续坏帧会同时重置左右二维、三维和角度滤波器。
 
 `Viewer` 将左右图像编码为 JPEG，并用两个 Viser 服务显示标准人手和 MMHand。
-MMHand 的五个指尖显示 `0.025 m` 长的橙色指腹方向箭头，箭头由各 fingertip
-link 的预设局部法向经 FK 转换得到。两个三维窗口的初始
-相机均从掌心侧正视手掌；在掌基座校平视角的基础上，相机视角统一顺时针旋转 15°。
+标准人手仍以公共腕坐标显示，并在 CMC 位置叠加仅供 retarget 使用的动态坐标架；
+MMHand 在投影掌原点显示与 `base_link` 同向的静态坐标架。两个三维窗口的初始相机
+均从掌心侧正视手掌；在掌基座校平视角的基础上，相机视角统一顺时针旋转 15°。
 这些视角设置不会改变计算坐标、retarget 或 ROS 输出。
 `RosOutput` 只在传入 `--ros` 时创建。
 

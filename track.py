@@ -5,6 +5,7 @@ import time
 
 import cv2
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from config import (
     CAMERA_INDEX,
@@ -19,10 +20,12 @@ from config import (
     VIEW_PORTS,
 )
 from hand_core import RealSenseCamera, StereoProcessor
-from retarget import Retargeter
+from retarget import Retargeter, human_palm_frame
 
-ROBOT_PAD_ARROW_LENGTH = 0.025
 ROBOT_CAMERA_DISTANCE = 0.42
+PALM_FRAME_AXIS_LENGTH = 0.04
+PALM_FRAME_AXIS_RADIUS = 0.0015
+PALM_FRAME_ORIGIN_RADIUS = 0.004
 
 
 def _human_view_wxyz(handedness, points):
@@ -38,12 +41,16 @@ def _human_view_wxyz(handedness, points):
     return (0.0, 0.0, -sine, cosine) if right else (cosine, sine, 0.0, 0.0)
 
 
+def _frame_wxyz(frame):
+    quaternion = Rotation.from_matrix(np.asarray(frame, float)).as_quat()
+    return quaternion[[3, 0, 1, 2]]
+
+
 def _robot_camera_pose(model):
-    zero = np.zeros(21)
-    tips, _ = model.fingertip_pads(zero)
+    tips = model.fingertips(model.seed)
     look_at = np.vstack((model.palm_position, tips)).mean(0)
-    palm_normal = model.palm_frame[:, 0]
-    transforms = model.fk(zero)
+    palm_normal = model.palm_frame[:, 2]
+    transforms = model.fk(model.seed)
     base = (
         transforms["finger_1_proximal_phalanx_1"][:3, 3]
         - transforms["finger_4_proximal_phalanx_1"][:3, 3]
@@ -72,7 +79,6 @@ class Viewer:
 
         self.servers = [viser.ViserServer(port=port) for port in VIEW_PORTS]
         normalized, robot_server = self.servers
-        self.model = model
         self._camera(
             normalized,
             (-0.26, 0, 0.06),
@@ -82,6 +88,13 @@ class Viewer:
         )
         self._camera(robot_server, *_robot_camera_pose(model), 42)
         self.human_frame = normalized.scene.add_frame("/hand", show_axes=False)
+        self.human_retarget_frame = normalized.scene.add_frame(
+            "/hand/retarget_frame", show_axes=True,
+            axes_length=PALM_FRAME_AXIS_LENGTH,
+            axes_radius=PALM_FRAME_AXIS_RADIUS,
+            origin_radius=PALM_FRAME_ORIGIN_RADIUS,
+            visible=False,
+        )
         empty_hand = np.zeros((21, 3), np.float32)
         self.human_cloud = normalized.scene.add_point_cloud(
             "/hand/points", empty_hand, (60, 170, 255),
@@ -93,14 +106,19 @@ class Viewer:
         )
         robot_server.scene.add_frame("/robot", show_axes=False)
         self.urdf = ViserUrdf(robot_server, URDF_PATH, root_node_name="/robot")
-        self.robot_pad_arrows = robot_server.scene.add_arrows(
-            "/robot/pad_directions", np.zeros((5, 2, 3), np.float32),
-            (255, 145, 45), shaft_radius=0.0012, head_radius=0.003,
-            head_length=0.006, visible=False,
+        self.robot_palm_frame = robot_server.scene.add_frame(
+            "/robot/palm_frame", show_axes=True,
+            position=model.palm_position,
+            wxyz=_frame_wxyz(model.palm_frame),
+            axes_length=PALM_FRAME_AXIS_LENGTH,
+            axes_radius=PALM_FRAME_AXIS_RADIUS,
+            origin_radius=PALM_FRAME_ORIGIN_RADIUS,
         )
         self.urdf_names = self.urdf.get_actuated_joint_names()
         self.robot_index = model.index
-        self.urdf.update_cfg(np.zeros(len(self.urdf_names)))
+        self.urdf.update_cfg(
+            np.asarray([model.seed[self.robot_index[name]] for name in self.urdf_names])
+        )
         self.last_update, self.status = 0.0, "WAITING"
         self.stereo = cv2.imencode(".jpg", np.zeros((360, 1280, 3), np.uint8))[1].tobytes()
         self._start_dashboard()
@@ -129,7 +147,7 @@ img,iframe{{width:100%;height:100%;display:block;border:0;object-fit:contain}}
 #status{{color:#9bd;margin-left:12px;font-weight:normal}}</style></head><body>
 <section class="panel stereo"><h2>D435 IR + MediaPipe <span id="status">WAITING</span></h2>
 <img id="stereo"></section>
-<section class="panel"><h2>Normalized hand · wrist frame · 0.086 m</h2><iframe id="normalized"></iframe></section>
+<section class="panel"><h2>Normalized hand · wrist tracking frame + CMC retarget axes · 0.086 m</h2><iframe id="normalized"></iframe></section>
 <section class="panel"><h2>Retargeted MMHand</h2><iframe id="robot"></iframe></section>
 <script>
 const host=location.hostname, statusText=document.getElementById("status"),
@@ -191,18 +209,22 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
             self.human_frame.wxyz = _human_view_wxyz(result["handedness"], points)
         visible = points is not None
         self.human_cloud.visible = self.human_bones.visible = visible
-        if visible:
-            points = np.asarray(points, np.float32)
-            self.human_cloud.points = points
-            self.human_bones.points = points[np.asarray(SKELETON_EDGES)]
+        if not visible:
+            self.human_retarget_frame.visible = False
+        else:
+            points = np.asarray(points, float)
+            self.human_cloud.points = points.astype(np.float32)
+            self.human_bones.points = points[np.asarray(SKELETON_EDGES)].astype(np.float32)
+            try:
+                origin, frame = human_palm_frame(points)
+            except ValueError:
+                self.human_retarget_frame.visible = False
+            else:
+                self.human_retarget_frame.position = origin
+                self.human_retarget_frame.wxyz = _frame_wxyz(frame)
+                self.human_retarget_frame.visible = True
         if robot is not None:
             self.urdf.update_cfg(np.asarray([robot[self.robot_index[name]] for name in self.urdf_names]))
-            tips, directions = self.model.fingertip_pads(robot)
-            tips, directions = np.asarray(tips, np.float32), np.asarray(directions, np.float32)
-            self.robot_pad_arrows.points = np.stack(
-                (tips, tips + ROBOT_PAD_ARROW_LENGTH * directions), axis=1
-            )
-            self.robot_pad_arrows.visible = True
 
     def close(self):
         self.http.shutdown()

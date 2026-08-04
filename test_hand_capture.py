@@ -12,12 +12,18 @@ from config import (
     KEYPOINT_LAYOUT,
     KEYPOINT_TOPIC,
     MAX_DEPTH_MM,
-    MCP_AA_NEUTRAL_DEG,
     MP_DETECTION_CONFIDENCE,
     MP_PRESENCE_CONFIDENCE,
     MP_TRACKING_CONFIDENCE,
     POINT_2D_FILTER,
     POINT_3D_FILTER,
+    RETARGET_FINGER_SHAPE_WEIGHT,
+    RETARGET_PALM_TIPS_SCALE,
+    RETARGET_PALM_TIPS_WEIGHT,
+    RETARGET_STAGE1_MAX_RELATIVE_INCREASE,
+    RETARGET_THUMB_FINGERTIPS_SCALE,
+    RETARGET_THUMB_FINGERTIPS_WEIGHT,
+    RETARGET_THUMB_SHAPE_WEIGHT,
     ROBOT_JOINT_NAMES,
     ROBOT_LAYOUT,
     ROBOT_TOPIC,
@@ -35,8 +41,13 @@ from hand_core import (
     geometry_error,
     relative_points,
 )
-from retarget import AA, Retargeter, RobotModel
-from track import RosOutput, _parse_args
+from retarget import (
+    Retargeter,
+    RobotModel,
+    human_palm_frame,
+    human_retarget_points,
+)
+from track import RosOutput, _frame_wxyz, _parse_args
 
 
 def straight_hand(handedness):
@@ -106,6 +117,27 @@ class CoreTests(unittest.TestCase):
                     np.linalg.norm(corrected[end] - corrected[start]),
                     model.lengths[(start, end)],
                 )
+
+    def test_tracking_frame_stays_at_wrist_and_retarget_frame_uses_cmc(self):
+        local_hands = []
+        for handedness in ("Left", "Right"):
+            tracked = relative_points(straight_hand(handedness))
+            original = tracked.copy()
+            origin, frame = human_palm_frame(tracked)
+            local = human_retarget_points(tracked)
+
+            np.testing.assert_allclose(tracked[0], 0, atol=1e-12)
+            np.testing.assert_allclose(origin, tracked[1], atol=1e-12)
+            np.testing.assert_allclose(local[1], 0, atol=1e-12)
+            np.testing.assert_allclose(tracked, original, atol=0)
+            np.testing.assert_allclose(frame.T @ frame, np.eye(3), atol=1e-12)
+            self.assertAlmostEqual(np.linalg.det(frame), 1.0)
+            self.assertGreater(local[9, 0] - local[0, 0], 0)
+            np.testing.assert_allclose(local[9, 1:] - local[0, 1:], 0, atol=1e-12)
+            self.assertGreater(local[17, 1] - local[5, 1], 0)
+            self.assertEqual(tuple(_frame_wxyz(np.eye(3))), (1.0, 0.0, 0.0, 0.0))
+            local_hands.append(local)
+        np.testing.assert_allclose(local_hands[0], local_hands[1], atol=1e-12)
 
     def test_left_and_right_2d_filters_are_independent(self):
         left_filter = OneEuro(*POINT_2D_FILTER)
@@ -193,9 +225,6 @@ class RetargetTests(unittest.TestCase):
         self.assertEqual(len(self.model.joints), 31)
         self.assertEqual(len(self.model.fk(np.zeros(21))), 32)
         self.assertTrue(np.all(self.model.lower <= self.model.upper))
-        np.testing.assert_allclose(
-            np.degrees(self.model.aa_neutral), MCP_AA_NEUTRAL_DEG, atol=1e-8
-        )
 
         root = ET.parse(URDF_PATH).getroot()
         meshes = list(root.iter("mesh"))
@@ -217,29 +246,134 @@ class RetargetTests(unittest.TestCase):
             np.column_stack((self.model.lower, self.model.upper)),
             np.asarray([limits[name] for name in self.model.names]),
         )
-        np.testing.assert_allclose(
-            self.model.palm_frame.T @ self.model.palm_frame, np.eye(3), atol=1e-8
-        )
+        np.testing.assert_allclose(self.model.palm_frame, np.eye(3), atol=1e-12)
 
-    def test_retarget_is_finite_and_respects_optimized_limits(self):
+        reference = self.model.seed.copy()
+        transforms = self.model.fk(reference)
+        np.testing.assert_allclose(
+            self.model.palm_frame, transforms["base_link"][:3, :3], atol=1e-12
+        )
+        cmc = self.model.joints["Thumb_CMC"]
+        cmc_frame = transforms[cmc["parent"]] @ cmc["origin"]
+        cmc_origin = cmc_frame[:3, 3]
+        axis = cmc_frame[:3, :3] @ cmc["axis"]
+        mcp = transforms[self.model.joints["Thumb_MCP_AA"]["child"]][:3, 3]
+        expected = cmc_origin + axis * np.dot(mcp - cmc_origin, axis)
+        np.testing.assert_allclose(self.model.palm_position, expected, atol=1e-10)
+        np.testing.assert_allclose(
+            np.cross(self.model.palm_position - cmc_origin, axis), 0, atol=1e-10
+        )
+        for angle in self.model.lower[20], self.model.upper[20]:
+            reference[20] = angle
+            transforms = self.model.fk(reference)
+            mcp = transforms[self.model.joints["Thumb_MCP_AA"]["child"]][:3, 3]
+            projection = cmc_origin + axis * np.dot(mcp - cmc_origin, axis)
+            np.testing.assert_allclose(projection, self.model.palm_position, atol=1e-10)
+
+    def test_analytic_retarget_jacobians_and_loss_gradients(self):
+        q = (self.model.lower + self.model.upper) / 2
+        values, jacobians = self.model.features(q, True)
+        numeric = [np.empty_like(jacobian) for jacobian in jacobians]
+        step = 1e-6
+        for joint in range(len(q)):
+            plus, minus = q.copy(), q.copy()
+            plus[joint] += step
+            minus[joint] -= step
+            plus_values, minus_values = self.model.features(plus), self.model.features(minus)
+            for group in range(len(values)):
+                numeric[group][..., joint] = (
+                    plus_values[group] - minus_values[group]
+                ) / (2 * step)
+        for actual, expected in zip(jacobians, numeric):
+            np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=1e-5)
+
+        points = relative_points(straight_hand("Left"))
+        retargeter = Retargeter(self.model)
+        targets = retargeter._targets(points)
+        losses = retargeter._losses(q, targets)
+        for loss_index, gradient_index in ((0, 1), (2, 3)):
+            gradient = np.empty(len(q))
+            for joint in range(len(q)):
+                plus, minus = q.copy(), q.copy()
+                plus[joint] += step
+                minus[joint] -= step
+                gradient[joint] = (
+                    retargeter._losses(plus, targets)[loss_index]
+                    - retargeter._losses(minus, targets)[loss_index]
+                ) / (2 * step)
+            np.testing.assert_allclose(
+                losses[gradient_index], gradient, atol=1e-6, rtol=1e-5
+            )
+
+    def test_two_stage_retarget_constraint_and_limits(self):
         expected = np.array((20, 30, 25, 20, 40, 30, 20, 50, 30, 15, 40, 25, 10, 30))
         points = relative_points(
             apply_angles(straight_hand("Left"), "Left", expected)
         )
         retargeter = Retargeter(self.model)
+        targets = retargeter._targets(points)
+        local = human_retarget_points(points)
+        np.testing.assert_allclose(points[0], 0, atol=1e-12)
+        np.testing.assert_allclose(targets[0], local[[4, 8, 12, 16, 20]])
+        self.assertEqual(
+            (
+                RETARGET_PALM_TIPS_SCALE,
+                RETARGET_THUMB_FINGERTIPS_SCALE,
+                RETARGET_PALM_TIPS_WEIGHT,
+                RETARGET_THUMB_FINGERTIPS_WEIGHT,
+                RETARGET_THUMB_SHAPE_WEIGHT,
+                RETARGET_FINGER_SHAPE_WEIGHT,
+            ),
+            (1.0, 1.0, 1.0, 1.0, 1.0, 1.0),
+        )
         result = retargeter.solve(points)
         self.assertIsNotNone(result)
         self.assertTrue(np.isfinite(result).all())
         self.assertTrue(np.all(result >= self.model.lower - 1e-10))
         self.assertTrue(np.all(result <= self.model.upper + 1e-10))
-        np.testing.assert_allclose(np.degrees(result[AA]), MCP_AA_NEUTRAL_DEG)
-        np.testing.assert_allclose(
-            np.degrees(result[[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15]]),
-            expected[[11, 12, 13, 8, 9, 10, 5, 6, 7, 2, 3, 4]],
+        first_stage, final_stage1, _ = retargeter.losses
+        self.assertLessEqual(
+            final_stage1,
+            first_stage * (1 + RETARGET_STAGE1_MAX_RELATIVE_INCREASE),
         )
-        tips, directions = self.model.fingertip_pads(result)
-        self.assertEqual(tips.shape, (5, 3))
-        np.testing.assert_allclose(np.linalg.norm(directions, axis=1), 1, atol=1e-8)
+        for angles in (
+            np.zeros(14),
+            np.array((45, 55, 80, 90, 75, 80, 90, 75, 80, 90, 75, 80, 90, 75)),
+        ):
+            pose = relative_points(
+                apply_angles(straight_hand("Left"), "Left", angles)
+            )
+            candidate = retargeter.solve(pose)
+            self.assertIsNotNone(candidate)
+            self.assertTrue(np.all(candidate >= self.model.lower - 1e-10))
+            self.assertTrue(np.all(candidate <= self.model.upper + 1e-10))
+            first_stage, final_stage1, _ = retargeter.losses
+            self.assertLessEqual(
+                final_stage1,
+                first_stage * (1 + RETARGET_STAGE1_MAX_RELATIVE_INCREASE),
+            )
+        self.assertIsNone(retargeter.solve(np.zeros((20, 3))))
+        degenerate = points.copy()
+        degenerate[9] = degenerate[0]
+        self.assertIsNone(retargeter.solve(degenerate))
+        retargeter.pause()
+        np.testing.assert_array_equal(retargeter.q, self.model.seed)
+        self.assertIsNone(retargeter.losses)
+
+    def test_second_stage_failure_falls_back_to_first_stage(self):
+        points = relative_points(straight_hand("Left"))
+        retargeter = Retargeter(self.model)
+        starts = []
+
+        def fake_minimize(_fun, x0, **_kwargs):
+            starts.append(np.asarray(x0).copy())
+            return types.SimpleNamespace(success=len(starts) == 1, x=np.asarray(x0).copy())
+
+        with patch("retarget.minimize", side_effect=fake_minimize):
+            result = retargeter.solve(points)
+        np.testing.assert_array_equal(result, self.model.seed)
+        np.testing.assert_array_equal(starts[1], starts[0])
+        self.assertEqual(retargeter.losses[0], retargeter.losses[1])
 
     def test_ros_publishes_points_and_robot_joints(self):
         class Message:
