@@ -29,13 +29,8 @@ PALM_FRAME_AXIS_RADIUS = 0.0015
 PALM_FRAME_ORIGIN_RADIUS = 0.004
 LOSS_LABELS = (
     ("thumb_tip", "thumb tip"),
-    ("thumb_fingertips", "thumb to fingers"),
-    ("thumb_pad", "thumb pad"),
-    ("thumb_cmc_mcp", "thumb CMC-MCP"),
     ("thumb_mcp_ip", "thumb MCP-IP"),
     ("thumb_ip_tip", "thumb IP-TIP"),
-    ("temporal", "temporal"),
-    ("midpoint", "midpoint"),
     ("total", "total"),
 )
 

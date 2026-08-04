@@ -126,16 +126,9 @@ Retarget 参数：
 | 参数 | 默认值 | 含义 |
 |---|---:|---|
 | `RETARGET_THUMB_TIP_SCALE` | 1.0 | 人手掌原点到拇指尖向量的 scale |
-| `RETARGET_THUMB_FINGERTIPS_SCALE` | 1.0 | 人手拇指尖到四指尖向量的 scale |
 | `RETARGET_THUMB_TIP_WEIGHT` | 1.0 | 掌原点到拇指尖位置目标权重 |
-| `RETARGET_THUMB_FINGERTIPS_WEIGHT` | 0.0 | 拇指尖到四指尖位置目标权重 |
-| `RETARGET_THUMB_CMC_MCP_WEIGHT` | 0.0 | 人手 CMC→MCP 对应的拇指近节方向权重 |
 | `RETARGET_THUMB_MCP_IP_WEIGHT` | 5.0 | 人手 MCP→IP 对应的拇指中节方向权重 |
 | `RETARGET_THUMB_IP_TIP_WEIGHT` | 1.0 | 人手 IP→TIP 对应的拇指远节方向权重 |
-| `THUMB_PAD_AXIS` | `(-0.200671, 0.970119, -0.136380)` | URDF 拇指 fingertip link 局部指腹方向 |
-| `RETARGET_THUMB_PAD_WEIGHT` | 0.0 | 拇指指腹朝向目标权重 |
-| `RETARGET_TEMPORAL_WEIGHT` | 0.0 | 相邻成功帧拇指关节变化惩罚权重 |
-| `RETARGET_MIDPOINT_WEIGHT` | 0.0 | 拇指关节偏离限位中点惩罚权重 |
 | `RETARGET_ANGLE_FILTER` | `(1.0, 0.02, 1.0)` | 最终 21 个关节角的 One Euro 参数，单位 degree |
 | `RETARGET_MAX_EVALUATIONS` | 30 | 每帧最多计算的不同 SLSQP 拇指候选数 |
 | `RETARGET_FTOL` | 3e-5 | SLSQP 停止精度 |
@@ -356,19 +349,12 @@ Ring 35.80°、Little 35.80°；这些数值不会硬编码。所有直接角度
 一次 SLSQP 只优化 J16～J20 五个拇指关节，总损失包含：
 
 - 掌原点到拇指尖的位置向量。
-- 拇指尖到另外四个指尖的位置向量。
-- 按人手输入选出离拇指最近的两个四指指尖，MMHand 拇指指腹朝向对应两个机器人
-  指尖的中点；一次求解内手指编号固定。
-- 人手 CMC→MCP、MCP→IP、IP→TIP 与 MMHand 掌原点→PIP、PIP→DIP、DIP→TIP
-  三个拇指单位方向的匹配；三段分别使用独立权重。
-- 相对上一次成功结果的拇指关节变化惩罚；首次求解和暂停后的首帧不启用。
-- 拇指关节相对各自 URDF 上下限中点的偏离惩罚。
+- 人手 MCP→IP 与 MMHand PIP→DIP 的单位方向匹配。
+- 人手 IP→TIP 与 MMHand DIP→TIP 的单位方向匹配。
 
 位置误差除以 `STANDARD_PALM_SIZE` 形成无量纲损失，人手向量先乘配置中的 scale。
-相邻帧和限位中点项先除以拇指关节自身的 `upper-lower` 再计算均方误差。所有目标由
-`config.py` 中的权重共同平衡，不再设置分阶段硬优先级。
-三个方向项各保留原三段平均损失中的 `1/3` 归一化，因此三个权重都为 `1.0` 时与拆分前
-的 `RETARGET_THUMB_SHAPE_WEIGHT = 1.0` 完全等价。
+两个方向项保留原三段平均损失中的 `1/3` 归一化，使删除零权重 CMC→MCP 项前后
+数值完全一致。所有目标由 `config.py` 中的权重共同平衡。
 每帧最多评估 `RETARGET_MAX_EVALUATIONS` 个不同关节候选；达到预算时采用其中总损失
 最低的有限候选，不再单独限制 SLSQP 主迭代次数。
 
@@ -379,7 +365,7 @@ Jacobian 根据 URDF 的轴、关节原点和祖先关系解析计算；没有 M
 拇指求解和暂停后使用裁进 URDF 上下限的零位。Retargeter 由单独工作线程独占；主线程只提交最新关键点并读取
 最近完成的结果。线程忙时尚未处理的旧输入会被新输入覆盖，不形成延迟队列。
 最终返回和发布的全部 21 个关节角使用相机时间戳进行 One Euro 滤波；滤波只作用于
-输出，求解器仍保存未滤波解作为下一帧热启动和时间惩罚基准。暂停时滤波状态同步重置。
+输出，求解器仍保存未滤波解作为下一帧热启动。暂停时滤波状态同步重置。
 Web 中的损失会在滤波输出上重新计算，因此对应实际发布的姿态。
 
 ### 5. 状态、显示和输出

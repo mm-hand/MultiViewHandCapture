@@ -10,6 +10,7 @@ from unittest.mock import patch
 import numpy as np
 
 import calibrate
+import config as C
 from config import (
     ANGLE_FILTER,
     BOARD_SIZE,
@@ -30,16 +31,10 @@ from config import (
     RETARGET_FTOL,
     RETARGET_ANGLE_FILTER,
     RETARGET_MAX_EVALUATIONS,
-    RETARGET_MIDPOINT_WEIGHT,
     RETARGET_THUMB_TIP_SCALE,
     RETARGET_THUMB_TIP_WEIGHT,
-    RETARGET_TEMPORAL_WEIGHT,
-    RETARGET_THUMB_FINGERTIPS_SCALE,
-    RETARGET_THUMB_FINGERTIPS_WEIGHT,
-    RETARGET_THUMB_CMC_MCP_WEIGHT,
     RETARGET_THUMB_IP_TIP_WEIGHT,
     RETARGET_THUMB_MCP_IP_WEIGHT,
-    RETARGET_THUMB_PAD_WEIGHT,
     ROBOT_JOINT_NAMES,
     ROBOT_LAYOUT,
     ROBOT_TOPIC,
@@ -47,7 +42,6 @@ from config import (
     ROTATE_RIGHT,
     SINGLE_WIDTH,
     SQUARE_SIZE,
-    THUMB_PAD_AXIS,
     URDF_PATH,
 )
 from hand_core import (
@@ -376,70 +370,53 @@ class RetargetTests(unittest.TestCase):
 
     def test_analytic_retarget_jacobians_and_loss_gradients(self):
         q = (self.model.lower + self.model.upper) / 2
-        values, jacobians = self.model.features(q, True)
+        values, jacobians = self.model.features(q)
         numeric = [np.empty_like(jacobian) for jacobian in jacobians]
         step = 1e-6
-        for joint in range(len(q)):
+        for column, joint in enumerate(self.model.thumb):
             plus, minus = q.copy(), q.copy()
             plus[joint] += step
             minus[joint] -= step
-            plus_values, minus_values = self.model.features(plus), self.model.features(minus)
+            plus_values, minus_values = self.model.features(plus)[0], self.model.features(minus)[0]
             for group in range(len(values)):
-                numeric[group][..., joint] = (
+                numeric[group][..., column] = (
                     plus_values[group] - minus_values[group]
                 ) / (2 * step)
         for actual, expected in zip(jacobians, numeric):
             np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=1e-5)
-        active_values, active_jacobians = self.model.features(q, True, self.model.thumb)
-        for value, active_value, jacobian, active_jacobian in zip(
-            values, active_values, jacobians, active_jacobians
-        ):
-            np.testing.assert_array_equal(active_value, value)
-            np.testing.assert_array_equal(active_jacobian, jacobian[..., self.model.thumb])
 
         points = relative_points(straight_hand("Left"))
         retargeter = Retargeter(self.model)
         targets = retargeter._targets(points)
         losses = retargeter._losses(q, targets)
-        for loss_index, gradient_index in ((0, 1), (2, 3)):
-            gradient = np.empty(len(q))
-            for joint in range(len(q)):
-                plus, minus = q.copy(), q.copy()
-                plus[joint] += step
-                minus[joint] -= step
-                gradient[joint] = (
-                    retargeter._losses(plus, targets)[loss_index]
-                    - retargeter._losses(minus, targets)[loss_index]
-                ) / (2 * step)
-            np.testing.assert_allclose(
-                losses[gradient_index], gradient, atol=1e-6, rtol=1e-5
-            )
+        gradient = np.empty(5)
+        for column, joint in enumerate(self.model.thumb):
+            plus, minus = q.copy(), q.copy()
+            plus[joint] += step
+            minus[joint] -= step
+            gradient[column] = (
+                retargeter._losses(plus, targets)[0]
+                - retargeter._losses(minus, targets)[0]
+            ) / (2 * step)
+        np.testing.assert_allclose(losses[1], gradient, atol=1e-6, rtol=1e-5)
 
-    def test_thumb_pad_target_and_joint_regularizers(self):
+    def test_active_thumb_targets(self):
         retargeter = Retargeter(self.model)
-        targets = retargeter._targets(relative_points(straight_hand("Left")))
-        distances = np.linalg.norm(targets[0][1:] - targets[0][0], axis=1)
-        np.testing.assert_array_equal(
-            targets[3], np.argsort(distances, kind="stable")[:2] + 1
+        points = relative_points(straight_hand("Left"))
+        targets = retargeter._targets(points)
+        local = human_retarget_points(points)
+        vectors = np.diff(local[[2, 3, 4]], axis=0)
+        np.testing.assert_allclose(
+            targets[1], vectors / np.linalg.norm(vectors, axis=1)[:, None]
         )
-        self.assertAlmostEqual(np.linalg.norm(self.model.features(self.model.seed)[2]), 1)
-        midpoint = self.model.midpoint
-        without_previous = retargeter._losses(midpoint, targets)
-        with_previous = retargeter._losses(midpoint, targets, self.model.lower)
-        self.assertEqual(without_previous[0], with_previous[0])
-        np.testing.assert_array_equal(without_previous[1], with_previous[1])
-        self.assertAlmostEqual(
-            with_previous[2] - without_previous[2], RETARGET_TEMPORAL_WEIGHT / 4
-        )
-        midpoint_loss, midpoint_gradient = retargeter._joint_term(
-            midpoint, midpoint, RETARGET_MIDPOINT_WEIGHT
-        )
-        self.assertEqual(midpoint_loss, 0)
-        np.testing.assert_array_equal(midpoint_gradient, np.zeros(21))
-        lower_loss, _ = retargeter._joint_term(
-            self.model.lower, midpoint, RETARGET_MIDPOINT_WEIGHT
-        )
-        self.assertAlmostEqual(lower_loss, RETARGET_MIDPOINT_WEIGHT / 4)
+        self.assertEqual((targets[0].shape, targets[1].shape, targets[2].shape), ((1, 3), (2, 3), (21,)))
+        for name in (
+            "RETARGET_THUMB_FINGERTIPS_SCALE", "RETARGET_THUMB_FINGERTIPS_WEIGHT",
+            "RETARGET_THUMB_CMC_MCP_WEIGHT", "THUMB_PAD_AXIS",
+            "RETARGET_THUMB_PAD_WEIGHT", "RETARGET_TEMPORAL_WEIGHT",
+            "RETARGET_MIDPOINT_WEIGHT",
+        ):
+            self.assertFalse(hasattr(C, name))
 
     def test_direct_four_finger_angles_and_urdf_neutral(self):
         expected = np.array((20, 30, 25, 20, 40, 30, 20, 50, 30, 15, 40, 25, 10, 30))
@@ -453,7 +430,8 @@ class RetargetTests(unittest.TestCase):
             np.testing.assert_allclose(direct[joints[1:]], np.radians(flexion), atol=1e-10)
             self.assertAlmostEqual(direct[joints[0]], self.model.finger_neutral[row])
             self.assertNotAlmostEqual(direct[joints[0]], 0)
-            self.assertNotAlmostEqual(direct[joints[0]], self.model.midpoint[joints[0]])
+            midpoint = (self.model.lower[joints[0]] + self.model.upper[joints[0]]) / 2
+            self.assertNotAlmostEqual(direct[joints[0]], midpoint)
             q = self.model.seed.copy()
             q[joints[0]] = self.model.finger_neutral[row]
             transforms = self.model.fk(q)
@@ -485,36 +463,26 @@ class RetargetTests(unittest.TestCase):
         targets = retargeter._targets(points)
         local = human_retarget_points(points)
         np.testing.assert_allclose(points[0], 0, atol=1e-12)
-        np.testing.assert_allclose(targets[0], local[[4, 8, 12, 16, 20]])
+        np.testing.assert_allclose(targets[0], local[4:5])
         self.assertEqual(
             (
                 RETARGET_THUMB_TIP_SCALE,
-                RETARGET_THUMB_FINGERTIPS_SCALE,
                 RETARGET_THUMB_TIP_WEIGHT,
-                RETARGET_THUMB_FINGERTIPS_WEIGHT,
-                RETARGET_THUMB_CMC_MCP_WEIGHT,
                 RETARGET_THUMB_MCP_IP_WEIGHT,
                 RETARGET_THUMB_IP_TIP_WEIGHT,
-                RETARGET_THUMB_PAD_WEIGHT,
-                RETARGET_TEMPORAL_WEIGHT,
-                RETARGET_MIDPOINT_WEIGHT,
             ),
-            (1.0, 1.0, 1.0, 0.0, 0.0, 5.0, 1.0, 0.0, 0.0, 0.0),
+            (1.0, 1.0, 5.0, 1.0),
         )
-        self.assertEqual(THUMB_PAD_AXIS, (-0.200671, 0.970119, -0.136380))
         self.assertEqual(RETARGET_ANGLE_FILTER, (1.0, 0.02, 1.0))
         self.assertEqual((RETARGET_FTOL, RETARGET_MAX_EVALUATIONS), (3e-5, 30))
         direction_params = (
-            ("RETARGET_THUMB_CMC_MCP_WEIGHT", "thumb_cmc_mcp"),
             ("RETARGET_THUMB_MCP_IP_WEIGHT", "thumb_mcp_ip"),
             ("RETARGET_THUMB_IP_TIP_WEIGHT", "thumb_ip_tip"),
         )
-        baseline = retargeter._losses(self.model.seed, targets, None, self.model.thumb)[4]
+        baseline = retargeter._losses(self.model.seed, targets)[2]
         for parameter, name in direction_params:
             with patch(f"retarget.C.{parameter}", 0.0):
-                changed = retargeter._losses(
-                    self.model.seed, targets, None, self.model.thumb
-                )[4]
+                changed = retargeter._losses(self.model.seed, targets)[2]
             self.assertEqual(changed[name], 0.0)
             for _, other in direction_params:
                 if other != name:
@@ -526,20 +494,15 @@ class RetargetTests(unittest.TestCase):
         self.assertTrue(np.isfinite(result).all())
         self.assertTrue(np.all(result >= self.model.lower - 1e-10))
         self.assertTrue(np.all(result <= self.model.upper + 1e-10))
-        self.assertEqual(len(retargeter.losses), 2)
-        self.assertLessEqual(retargeter.losses[0], retargeter.losses[1])
         self.assertEqual(
             tuple(retargeter.loss_terms),
-            ("thumb_tip", "thumb_fingertips", "thumb_pad", "thumb_cmc_mcp",
-             "thumb_mcp_ip", "thumb_ip_tip", "temporal", "midpoint", "total"),
+            ("thumb_tip", "thumb_mcp_ip", "thumb_ip_tip", "total"),
         )
         self.assertAlmostEqual(
             sum(value for name, value in retargeter.loss_terms.items() if name != "total"),
             retargeter.loss_terms["total"],
         )
         loss_text = _loss_text(retargeter.loss_terms)
-        self.assertIn("thumb to fingers", loss_text)
-        self.assertIn("thumb CMC-MCP", loss_text)
         self.assertIn("thumb MCP-IP", loss_text)
         self.assertIn("thumb IP-TIP", loss_text)
         self.assertIn("100.0%", loss_text)
@@ -562,7 +525,6 @@ class RetargetTests(unittest.TestCase):
         retargeter.pause()
         np.testing.assert_array_equal(retargeter.q, self.model.seed)
         self.assertFalse(retargeter.has_previous)
-        self.assertIsNone(retargeter.losses)
         self.assertIsNone(retargeter.loss_terms)
 
     def test_thumb_ik_calls_slsqp_once_and_keeps_best_candidate(self):
@@ -578,40 +540,39 @@ class RetargetTests(unittest.TestCase):
 
         with patch("retarget.minimize", side_effect=fake_minimize):
             result = retargeter.solve(points)
-        expected = retargeter._targets(points)[4]
+        expected = retargeter._targets(points)[2]
         np.testing.assert_allclose(result, expected, atol=1e-15)
         self.assertEqual(len(calls), 1)
         self.assertEqual(len(calls[0]["bounds"].lb), 5)
         self.assertNotIn("constraints", calls[0])
         self.assertNotIn("maxiter", calls[0]["options"])
-        previous, losses = retargeter.q.copy(), retargeter.losses
+        previous, losses = retargeter.q.copy(), retargeter.loss_terms.copy()
         failure = types.SimpleNamespace(success=False, x=np.full(21, np.nan))
         with patch("retarget.minimize", return_value=failure):
             fallback = retargeter.solve(points)
         np.testing.assert_allclose(fallback, previous, atol=1e-15)
-        self.assertEqual(retargeter.losses, losses)
+        self.assertEqual(retargeter.loss_terms, losses)
 
     def test_retarget_stops_after_evaluation_budget_with_best_candidate(self):
         points = relative_points(straight_hand("Left"))
         retargeter = Retargeter(self.model)
         evaluated = []
 
-        def fake_losses(q, _targets, _previous, _active):
+        def fake_losses(q, _targets):
             evaluated.append(np.asarray(q).copy())
             loss = float(100 - len(evaluated))
             terms = dict.fromkeys(
-                ("thumb_tip", "thumb_fingertips", "thumb_pad", "thumb_cmc_mcp",
-                 "thumb_mcp_ip", "thumb_ip_tip", "temporal", "midpoint"),
+                ("thumb_tip", "thumb_mcp_ip", "thumb_ip_tip"),
                 0.0,
             )
             terms["total"] = loss
-            return loss, np.zeros(5), loss, np.zeros(5), terms
+            return loss, np.zeros(5), terms
 
         def exhaust(fun, _x0, **_kwargs):
             for step in range(1, RETARGET_MAX_EVALUATIONS + 2):
                 fraction = step / (RETARGET_MAX_EVALUATIONS + 2)
                 joints = self.model.thumb
-                fun(self.model.lower[joints] + fraction * self.model.joint_range[joints])
+                fun(self.model.lower[joints] + fraction * (self.model.upper - self.model.lower)[joints])
             self.fail("Evaluation budget was not enforced")
 
         with patch.object(retargeter, "_losses", side_effect=fake_losses), \
@@ -619,10 +580,7 @@ class RetargetTests(unittest.TestCase):
             result = retargeter.solve(points)
         self.assertEqual(len(evaluated), RETARGET_MAX_EVALUATIONS + 1)
         np.testing.assert_array_equal(result, evaluated[-1])
-        self.assertEqual(
-            retargeter.losses,
-            (99.0 - RETARGET_MAX_EVALUATIONS,) * 2,
-        )
+        self.assertEqual(retargeter.loss_terms["total"], 99.0 - RETARGET_MAX_EVALUATIONS)
 
     def test_retarget_output_filter_uses_timestamps_and_resets(self):
         first_pose = relative_points(straight_hand("Left"))
@@ -642,7 +600,7 @@ class RetargetTests(unittest.TestCase):
         self.assertTrue(np.any(np.abs(second[changed] - raw_second[changed]) > 1e-8))
         self.assertEqual(retargeter.output_filter.value.shape, (21,))
         targets = retargeter._targets(second_pose, raw_first)
-        expected = retargeter._losses(second, targets, raw_first, self.model.thumb)[4]
+        expected = retargeter._losses(second, targets)[2]
         for name, value in expected.items():
             self.assertAlmostEqual(retargeter.loss_terms[name], value)
         retargeter.pause()

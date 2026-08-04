@@ -115,26 +115,12 @@ ROBOT_JOINT_NAMES = (
 
 # 掌原点到拇指尖的人手向量缩放系数；1.0 表示不缩放。
 RETARGET_THUMB_TIP_SCALE = 1.0
-# 拇指尖到另外四指尖的人手向量缩放系数；1.0 表示不缩放。
-RETARGET_THUMB_FINGERTIPS_SCALE = 1.0
 # 掌原点到拇指尖位置误差的损失权重。
 RETARGET_THUMB_TIP_WEIGHT = 1.0
-# 拇指尖到另外四指尖位置误差的损失权重。
-RETARGET_THUMB_FINGERTIPS_WEIGHT = 0.0
-# 人手 CMC→MCP 对应 MMHand 拇指近节单位方向误差权重。
-RETARGET_THUMB_CMC_MCP_WEIGHT = 0.0
 # 人手 MCP→IP 对应 MMHand 拇指中节单位方向误差权重。
 RETARGET_THUMB_MCP_IP_WEIGHT = 5.0
 # 人手 IP→TIP 对应 MMHand 拇指远节单位方向误差权重。
 RETARGET_THUMB_IP_TIP_WEIGHT = 1.0
-# 拇指 fingertip link 局部坐标中的指腹方向；运行时会归一化。
-THUMB_PAD_AXIS = (-0.200671, 0.970119, -0.136380)
-# 拇指指腹朝向人手最近两指对应机器人指尖中点的损失权重。
-RETARGET_THUMB_PAD_WEIGHT = 0.0
-# 相邻两次成功 retarget 关节变化的损失权重；首帧不启用。
-RETARGET_TEMPORAL_WEIGHT = 0.0
-# 关节偏离各自 URDF 限位中点的损失权重。
-RETARGET_MIDPOINT_WEIGHT = 0.0
 # 最终 21 个 MMHand 输出角的 One Euro 参数，角度单位 degree。
 RETARGET_ANGLE_FILTER = (1.0, 0.02, 1.0)
 # 每帧最多计算的不同 SLSQP 关节候选数；超限时采用最低损失候选。
