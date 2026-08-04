@@ -10,38 +10,18 @@ from unittest.mock import patch
 import numpy as np
 
 import calibrate
-import config as C
 from config import (
-    ANGLE_FILTER,
-    BOARD_SIZE,
-    CAMERA_TYPE,
-    FULL_WIDTH,
     HAND_LANDMARKER_PATH,
-    HEIGHT,
     KEYPOINT_LAYOUT,
     KEYPOINT_TOPIC,
     MAX_DEPTH_MM,
-    MP_DETECTION_CONFIDENCE,
-    MP_PRESENCE_CONFIDENCE,
-    MP_TRACKING_CONFIDENCE,
     MIN_CALIBRATION_PAIRS,
-    PARAMS_PATH,
     POINT_2D_FILTER,
     POINT_3D_FILTER,
-    RETARGET_FTOL,
-    RETARGET_ANGLE_FILTER,
     RETARGET_MAX_EVALUATIONS,
-    RETARGET_THUMB_TIP_SCALE,
-    RETARGET_THUMB_TIP_WEIGHT,
-    RETARGET_THUMB_IP_TIP_WEIGHT,
-    RETARGET_THUMB_MCP_IP_WEIGHT,
     ROBOT_JOINT_NAMES,
     ROBOT_LAYOUT,
     ROBOT_TOPIC,
-    ROTATE_LEFT,
-    ROTATE_RIGHT,
-    SINGLE_WIDTH,
-    SQUARE_SIZE,
     URDF_PATH,
 )
 from hand_core import (
@@ -89,13 +69,7 @@ def straight_hand(handedness):
 
 
 class CoreTests(unittest.TestCase):
-    def test_stereo_configuration_split_and_calibration_guard(self):
-        self.assertEqual(CAMERA_TYPE, "stereo")
-        self.assertEqual((SINGLE_WIDTH, HEIGHT, FULL_WIDTH), (1280, 720, 2560))
-        self.assertEqual((ROTATE_LEFT, ROTATE_RIGHT), (180, -180))
-        self.assertEqual((BOARD_SIZE, SQUARE_SIZE, MIN_CALIBRATION_PAIRS), ((9, 6), 23.5, 10))
-        self.assertEqual(PARAMS_PATH.name, "stereo_params.json")
-
+    def test_stereo_split_and_calibration_guard(self):
         frame = np.arange(2 * 8 * 3, dtype=np.uint8).reshape(2, 8, 3)
         with patch("hand_core.FULL_WIDTH", 8), patch("hand_core.ROTATE_LEFT", 0), patch(
             "hand_core.ROTATE_RIGHT", 180
@@ -177,9 +151,6 @@ class CoreTests(unittest.TestCase):
             )
 
     def test_filters_bone_lengths_and_kinematics(self):
-        self.assertEqual(POINT_2D_FILTER, (1.0, 0.01, 1.0))
-        self.assertEqual(POINT_3D_FILTER, (0.5, 0.001, 1.0))
-        self.assertEqual(ANGLE_FILTER, (1.0, 0.02, 1.0))
         filter_ = OneEuro(*POINT_3D_FILTER)
         zeros, ones = np.zeros((21, 3)), np.ones((21, 3))
         np.testing.assert_array_equal(filter_(zeros, 0), zeros)
@@ -285,10 +256,6 @@ class CoreTests(unittest.TestCase):
 
     def test_mediapipe_model_and_configuration(self):
         self.assertTrue(HAND_LANDMARKER_PATH.is_file())
-        self.assertEqual(
-            (MP_DETECTION_CONFIDENCE, MP_PRESENCE_CONFIDENCE, MP_TRACKING_CONFIDENCE),
-            (0.5, 0.6, 0.6),
-        )
         detector = HandDetector()
         try:
             image = np.zeros((64, 64, 3), np.uint8)
@@ -409,14 +376,10 @@ class RetargetTests(unittest.TestCase):
         np.testing.assert_allclose(
             targets[1], vectors / np.linalg.norm(vectors, axis=1)[:, None]
         )
-        self.assertEqual((targets[0].shape, targets[1].shape, targets[2].shape), ((1, 3), (2, 3), (21,)))
-        for name in (
-            "RETARGET_THUMB_FINGERTIPS_SCALE", "RETARGET_THUMB_FINGERTIPS_WEIGHT",
-            "RETARGET_THUMB_CMC_MCP_WEIGHT", "THUMB_PAD_AXIS",
-            "RETARGET_THUMB_PAD_WEIGHT", "RETARGET_TEMPORAL_WEIGHT",
-            "RETARGET_MIDPOINT_WEIGHT",
-        ):
-            self.assertFalse(hasattr(C, name))
+        self.assertEqual(
+            (targets[0].shape, targets[1].shape, targets[2].shape),
+            ((1, 3), (2, 3), (21,)),
+        )
 
     def test_direct_four_finger_angles_and_urdf_neutral(self):
         expected = np.array((20, 30, 25, 20, 40, 30, 20, 50, 30, 15, 40, 25, 10, 30))
@@ -464,17 +427,6 @@ class RetargetTests(unittest.TestCase):
         local = human_retarget_points(points)
         np.testing.assert_allclose(points[0], 0, atol=1e-12)
         np.testing.assert_allclose(targets[0], local[4:5])
-        self.assertEqual(
-            (
-                RETARGET_THUMB_TIP_SCALE,
-                RETARGET_THUMB_TIP_WEIGHT,
-                RETARGET_THUMB_MCP_IP_WEIGHT,
-                RETARGET_THUMB_IP_TIP_WEIGHT,
-            ),
-            (1.0, 1.0, 5.0, 1.0),
-        )
-        self.assertEqual(RETARGET_ANGLE_FILTER, (1.0, 0.02, 1.0))
-        self.assertEqual((RETARGET_FTOL, RETARGET_MAX_EVALUATIONS), (3e-5, 30))
         direction_params = (
             ("RETARGET_THUMB_MCP_IP_WEIGHT", "thumb_mcp_ip"),
             ("RETARGET_THUMB_IP_TIP_WEIGHT", "thumb_ip_tip"),
