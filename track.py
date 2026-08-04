@@ -20,7 +20,7 @@ from config import (
     VIEW_PORTS,
 )
 from hand_core import RealSenseCamera, StereoProcessor
-from retarget import Retargeter, human_palm_frame
+from retarget import Retargeter, RetargetWorker, human_palm_frame
 
 ROBOT_CAMERA_DISTANCE = 0.42
 PALM_FRAME_AXIS_LENGTH = 0.04
@@ -291,6 +291,7 @@ def main():
     processor = StereoProcessor(camera.params)
     viewer = Viewer(retargeter.model)
     ros = RosOutput() if args.ros else None
+    worker = RetargetWorker(retargeter)
     last_timestamp = None
     try:
         while True:
@@ -301,19 +302,20 @@ def main():
             last_timestamp = timestamp
             result = processor.process(left, right, timestamp)
             valid = result["found"] and not result["stale"] and result["keypoint_relative"] is not None
-            robot = None
             if valid and ros is not None:
                 ros.points(result["keypoint_relative"], result["handedness"])
             if valid and result["handedness"] == "Left" and result["phase"].startswith("GESTURE"):
-                robot = retargeter.solve(result["keypoint_relative"])
-                if ros is not None and robot is not None:
-                    ros.joints(np.degrees(robot))
+                worker.submit(result["keypoint_relative"])
             else:
-                retargeter.pause()
+                worker.pause()
+            robot = worker.poll()
+            if ros is not None and robot is not None:
+                ros.joints(np.degrees(robot))
             viewer.update(result, robot)
     except KeyboardInterrupt:
         pass
     finally:
+        worker.close()
         camera.close()
         processor.close()
         viewer.close()

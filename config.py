@@ -99,26 +99,32 @@ ROBOT_JOINT_NAMES = (
     "mmhand_thumb_1_finger_7_fingertip_1_DIP_Joint",       # J19：拇指 DIP 屈曲。
     "Thumb_CMC",                                      # J20：拇指 CMC 旋转。
 )
-# MMHand two-stage retarget ----------------------------------------------------
+# MMHand retarget --------------------------------------------------------------
 
-# 第一阶段掌原点到五指尖的人手向量缩放系数；1.0 表示不缩放。
+# 掌原点到五指尖的人手向量缩放系数；1.0 表示不缩放。
 RETARGET_PALM_TIPS_SCALE = 1.0
-# 第一阶段拇指尖到另外四指尖的人手向量缩放系数；1.0 表示不缩放。
+# 拇指尖到另外四指尖的人手向量缩放系数；1.0 表示不缩放。
 RETARGET_THUMB_FINGERTIPS_SCALE = 1.0
-# 第一、二阶段掌原点到五指尖位置误差的损失权重。
+# 掌原点到五指尖位置误差的损失权重。
 RETARGET_PALM_TIPS_WEIGHT = 1.0
-# 第一、二阶段拇指尖到另外四指尖位置误差的损失权重。
+# 拇指尖到另外四指尖位置误差的损失权重。
 RETARGET_THUMB_FINGERTIPS_WEIGHT = 1.0
-# 第二阶段拇指三段单位方向误差的损失权重。
-RETARGET_THUMB_SHAPE_WEIGHT = 1.0
-# 第二阶段四指共十二段单位方向误差的损失权重。
+# 拇指三段单位方向误差的损失权重。
+RETARGET_THUMB_SHAPE_WEIGHT = 200.0
+# 四指共十二段单位方向误差的损失权重。
 RETARGET_FINGER_SHAPE_WEIGHT = 1.0
-# 第二阶段允许第一阶段损失相对第一阶段结果升高的最大比例；0.05 表示 5%。
-RETARGET_STAGE1_MAX_RELATIVE_INCREASE = 0.05
-# 每个 SLSQP 阶段允许的最大迭代次数。
-RETARGET_MAX_ITERATIONS = 80
-# 两个 SLSQP 阶段共用的目标、步长和约束停止精度。
-RETARGET_FTOL = 1e-7
+# 拇指 fingertip link 局部坐标中的指腹方向；运行时会归一化。
+THUMB_PAD_AXIS = (-0.200671, 0.970119, -0.136380)
+# 拇指指腹朝向人手最近两指对应机器人指尖中点的损失权重。
+RETARGET_THUMB_PAD_WEIGHT = 0.5
+# 相邻两次成功 retarget 关节变化的损失权重；首帧不启用。
+RETARGET_TEMPORAL_WEIGHT = 1
+# 关节偏离各自 URDF 限位中点的损失权重。
+RETARGET_MIDPOINT_WEIGHT = 0.01
+# 每帧最多计算的不同 SLSQP 关节候选数；超限时采用最低损失候选。
+RETARGET_MAX_EVALUATIONS = 30
+# SLSQP 的目标和步长停止精度。
+RETARGET_FTOL = 3e-5
 
 
 # Runtime output and viewer ----------------------------------------------------

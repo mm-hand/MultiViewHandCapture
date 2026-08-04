@@ -12,7 +12,7 @@ MultiView Hand Capture 从同步双目图像恢复 MediaPipe 21 个手部三维�
 - 对 D435 左右红外图像分别运行 MediaPipe，并通过双目三角化恢复三维点。
 - 对三维点和手指屈伸角分别执行 One Euro 滤波。
 - 通过骨长和 `0～180°` 无符号屈伸角约束抑制关键点飞行。
-- 通过两阶段约束优化将标准化左手 retarget 到 MMHand URDF。
+- 通过单阶段加权优化将标准化左手 retarget 到 MMHand URDF。
 - 在一个网页中显示左右图像、标准人手和 MMHand。
 - 可选同时发布 ROS 2 关键点和机器人关节角。
 
@@ -113,7 +113,7 @@ MMHand 的固定掌坐标轴直接采用 URDF 根 `base_link` 的方向：`+x` �
 四指，`+y` 大致从食指侧指向小指侧，`+z` 为掌面法向。机器人尺寸、关节轴、
 父子关系和限位也始终从 URDF 读取。
 
-两阶段 retarget 参数：
+Retarget 参数：
 
 | 参数 | 默认值 | 含义 |
 |---|---:|---|
@@ -123,9 +123,12 @@ MMHand 的固定掌坐标轴直接采用 URDF 根 `base_link` 的方向：`+x` �
 | `RETARGET_THUMB_FINGERTIPS_WEIGHT` | 1.0 | 拇指尖到四指尖位置目标权重 |
 | `RETARGET_THUMB_SHAPE_WEIGHT` | 1.0 | 拇指三段单位方向目标权重 |
 | `RETARGET_FINGER_SHAPE_WEIGHT` | 1.0 | 四指十二段单位方向目标权重 |
-| `RETARGET_STAGE1_MAX_RELATIVE_INCREASE` | 0.05 | 第二阶段允许第一阶段损失升高的比例 |
-| `RETARGET_MAX_ITERATIONS` | 80 | 每个 SLSQP 阶段最大迭代次数 |
-| `RETARGET_FTOL` | 1e-7 | SLSQP 停止精度 |
+| `THUMB_PAD_AXIS` | `(-0.200671, 0.970119, -0.136380)` | URDF 拇指 fingertip link 局部指腹方向 |
+| `RETARGET_THUMB_PAD_WEIGHT` | 0.5 | 拇指指腹朝向目标权重 |
+| `RETARGET_TEMPORAL_WEIGHT` | 0.1 | 相邻成功帧关节变化惩罚权重 |
+| `RETARGET_MIDPOINT_WEIGHT` | 0.01 | 关节偏离限位中点惩罚权重 |
+| `RETARGET_MAX_EVALUATIONS` | 20 | 每帧最多计算的不同 SLSQP 关节候选数 |
+| `RETARGET_FTOL` | 3e-5 | SLSQP 停止精度 |
 
 ### Web 和 ROS
 
@@ -183,7 +186,7 @@ hand_core.py
     D435 双红外接口、MediaPipe、双目三角化、滤波和标准手归一化
 
 retarget.py
-    MMHand URDF 运动学、解析 Jacobian 和两阶段约束优化
+    MMHand URDF 运动学、解析 Jacobian 和单阶段加权优化
 
 track.py
     程序入口、实时循环、Web 页面、Viser 和 ROS 发布
@@ -315,33 +318,30 @@ origin = point1
 `base_link`，原点取 `Thumb_MCP_AA` 关节原点在 `Thumb_CMC` 转轴上的正交投影。
 该原点和方向均不是优化变量。
 
-第一阶段同时优化 21 个 MMHand 关节，目标为：
+一次 SLSQP 同时优化 21 个 MMHand 关节，总损失包含：
 
 - 掌原点到 Thumb、Index、Middle、Ring、Little 五个指尖的位置向量。
 - 拇指尖到另外四个指尖的位置向量。
-
-位置误差除以 `STANDARD_PALM_SIZE` 形成无量纲损失，人手向量先乘配置中的 scale。
-
-第二阶段从第一阶段关节角开始，保留上述全部目标，并增加：
-
+- 按人手输入选出离拇指最近的两个四指指尖，MMHand 拇指指腹朝向对应两个机器人
+  指尖的中点；一次求解内手指编号固定。
 - 人手 CMC→MCP、MCP→IP、IP→TIP 与 MMHand 掌原点→PIP、PIP→DIP、DIP→TIP
   三个拇指单位方向的匹配。
 - 四指各自 MCP→PIP、PIP→DIP、DIP→TIP 共十二个单位方向的匹配。
+- 相对上一次成功结果的关节变化惩罚；首次求解和暂停后的首帧不启用。
+- 相对各关节 URDF 上下限中点的偏离惩罚。
 
-设第一阶段结果为 `q1`，第二阶段结果为 `q2`，第二阶段包含硬约束：
+位置误差除以 `STANDARD_PALM_SIZE` 形成无量纲损失，人手向量先乘配置中的 scale。
+相邻帧和限位中点项先除以各关节自身的 `upper-lower` 再计算均方误差。所有目标由
+`config.py` 中的权重共同平衡，不再设置分阶段硬优先级。
+每帧最多评估 `RETARGET_MAX_EVALUATIONS` 个不同关节候选；达到预算时采用其中总损失
+最低的有限候选，不再单独限制 SLSQP 主迭代次数。
 
-```text
-L1(q2) <= (1 + RETARGET_STAGE1_MAX_RELATIVE_INCREASE) * L1(q1)
-```
-
-默认最多升高 5%。若第二阶段失败则直接采用 `q1`；若求解器数值容差造成轻微
-越界，则沿 `q1→q2` 回退到约束内。
-
-机器人 FK、关节轴和上下限均从 `assets/mmhand/urdf/hand.urdf` 读取。该文件是
-工作空间优化后的正式 MMHand URDF，代码不会收紧或覆盖其限位。通用旋转关节
+机器人 FK、关节轴和上下限均从 `assets/mmhand/urdf/hand.urdf` 读取。该文件已恢复为
+仓库历史中的原始、未做工作空间优化的 MMHand URDF，代码不会收紧或覆盖其限位。通用旋转关节
 Jacobian 根据 URDF 的轴、关节原点和祖先关系解析计算；没有 MMHand 尺寸常量。
-连续追踪时第一阶段使用上一帧全部 21 个关节角热启动；首次求解和暂停后使用裁进
-URDF 上下限的零位。
+连续追踪时优化使用上一帧全部 21 个关节角热启动；首次求解和暂停后使用裁进
+URDF 上下限的零位。Retargeter 由单独工作线程独占；主线程只提交最新关键点并读取
+最近完成的结果。线程忙时尚未处理的旧输入会被新输入覆盖，不形成延迟队列。
 
 ### 5. 状态、显示和输出
 
