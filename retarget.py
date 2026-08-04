@@ -1,11 +1,13 @@
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 import threading
+import time
 
 import numpy as np
 from scipy.optimize import Bounds, minimize
 
 import config as C
+from one_euro import OneEuro
 
 EPS = 1e-9
 HUMAN_TIPS = np.array((4, 8, 12, 16, 20))
@@ -29,8 +31,18 @@ ROBOT_FINGERS = tuple(
     )
     for finger in range(1, 5)
 )
-ROBOT_LINKS = tuple(dict.fromkeys(ROBOT_TIPS + ROBOT_THUMB + sum(ROBOT_FINGERS, ())))
+ROBOT_FINGER_JOINTS = tuple(
+    (
+        f"{name}_MCP_AA",
+        f"{name}_MCP_FE",
+        f"finger_{finger}_distal_phalanx_1_PIP_Joint",
+        f"finger_{finger}_fingertip_1_DIP_Joint",
+    )
+    for name, finger in zip(("Index", "Middle", "Ring", "Little"), range(1, 5))
+)
+ROBOT_LINKS = tuple(dict.fromkeys(ROBOT_TIPS + ROBOT_THUMB))
 ROBOT_LINK_INDEX = {name: index for index, name in enumerate(ROBOT_LINKS)}
+THUMB_DIRECTION_NAMES = ("thumb_cmc_mcp", "thumb_mcp_ip", "thumb_ip_tip")
 
 
 class _EvaluationLimit(Exception):
@@ -154,6 +166,10 @@ class RobotModel:
         self.lower, self.upper = np.asarray([limits[name] for name in self.names]).T
         self.joint_range = self.upper - self.lower
         self.midpoint = (self.lower + self.upper) / 2
+        self.thumb = np.arange(16, 21)
+        self.finger_joints = np.asarray(
+            [[self.index[name] for name in names] for names in ROBOT_FINGER_JOINTS]
+        )
         if np.any(self.joint_range <= EPS):
             raise ValueError("MMHand revolute joints must have nonzero ranges")
         pad_axis = np.asarray(C.THUMB_PAD_AXIS, float)
@@ -163,6 +179,20 @@ class RobotModel:
         self.seed = np.clip(np.zeros(len(self.names)), self.lower, self.upper)
         transforms = self.fk(self.seed)
         self.palm_frame = transforms["base_link"][:3, :3].copy()
+        self.finger_neutral, self.finger_axis = [], []
+        for chain, indices in zip(ROBOT_FINGERS, self.finger_joints):
+            direction = (
+                transforms[chain[1]][:3, 3] - transforms[chain[0]][:3, 3]
+            ) @ self.palm_frame
+            joint = self.joints[self.names[indices[0]]]
+            frame = transforms[joint["parent"]] @ joint["origin"]
+            axis = (frame[:3, :3] @ joint["axis"]) @ self.palm_frame
+            if abs(axis[2]) <= EPS:
+                raise ValueError("MMHand MCP A-A axis must follow the palm z axis")
+            self.finger_axis.append(axis[2])
+            self.finger_neutral.append(-np.arctan2(direction[1], direction[0]) / axis[2])
+        self.finger_neutral = np.asarray(self.finger_neutral)
+        self.finger_axis = np.asarray(self.finger_axis)
         cmc = self.joints["Thumb_CMC"]
         cmc_frame = transforms[cmc["parent"]] @ cmc["origin"]
         cmc_origin = cmc_frame[:3, 3]
@@ -196,8 +226,32 @@ class RobotModel:
         transforms = self.fk(q)
         return np.asarray([transforms[name][:3, 3] for name in ROBOT_TIPS])
 
-    def features(self, q, jacobian=False):
+    def finger_angles(self, points, previous=None):
+        q = self.seed.copy() if previous is None else np.asarray(previous, float).copy()
+        for row, (chain, indices) in enumerate(zip(HUMAN_FINGERS, self.finger_joints)):
+            directions = _directions(points[chain])
+            proximal, planar = directions[0], np.linalg.norm(directions[0, :2])
+            aa = (
+                self.finger_neutral[row]
+                if previous is None or planar <= EPS
+                else q[indices[0]]
+            )
+            if planar > EPS:
+                aa = self.finger_neutral[row] + np.arctan2(proximal[1], proximal[0]) / self.finger_axis[row]
+            angles = (
+                aa,
+                np.arctan2(-proximal[2], planar),
+                np.arccos(np.clip(proximal @ directions[1], -1, 1)),
+                np.arccos(np.clip(directions[1] @ directions[2], -1, 1)),
+            )
+            q[indices] = np.clip(angles, self.lower[indices], self.upper[indices])
+        return q
+
+    def features(self, q, jacobian=False, active=None):
         transforms, origins, axes = self._forward(np.asarray(q, float), True)
+        active = np.arange(len(self.names)) if active is None else np.asarray(active)
+        origins, axes = origins[active], axes[active]
+        influence = self.influence[:, active]
         world = np.asarray([transforms[name][:3, 3] for name in ROBOT_LINKS])
         points = (world - self.palm_position) @ self.palm_frame
         delta = world[:, None] - origins
@@ -205,7 +259,7 @@ class RobotModel:
         world_jacobians[:, :, 0] = axes[:, 1] * delta[:, :, 2] - axes[:, 2] * delta[:, :, 1]
         world_jacobians[:, :, 1] = axes[:, 2] * delta[:, :, 0] - axes[:, 0] * delta[:, :, 2]
         world_jacobians[:, :, 2] = axes[:, 0] * delta[:, :, 1] - axes[:, 1] * delta[:, :, 0]
-        world_jacobians *= self.influence
+        world_jacobians *= influence
         point_jacobians = np.einsum(
             "ij,knj->kin", self.palm_frame.T, world_jacobians
         )
@@ -219,7 +273,7 @@ class RobotModel:
         pad = pad_world @ self.palm_frame
         pad_jacobian = (
             np.cross(axes, pad_world)
-            * self.influence[ROBOT_LINK_INDEX[THUMB_PAD_LINK]]
+            * influence[ROBOT_LINK_INDEX[THUMB_PAD_LINK]]
         ) @ self.palm_frame
         values = [tips, tips[1:] - tips[0], pad[None]]
         derivatives = [
@@ -229,16 +283,10 @@ class RobotModel:
         ]
         thumb, thumb_jacobians = select(ROBOT_THUMB)
         thumb = np.vstack((np.zeros(3), thumb))
-        thumb_jacobians = np.concatenate((np.zeros((1, 3, len(self.names))), thumb_jacobians))
+        thumb_jacobians = np.concatenate((np.zeros((1, 3, len(active))), thumb_jacobians))
         thumb_shape, thumb_shape_jacobian = _directions(thumb, thumb_jacobians)
-        finger_shapes, finger_shape_jacobians = [], []
-        for chain in ROBOT_FINGERS:
-            chain_points, chain_jacobians = select(chain)
-            directions, direction_jacobians = _directions(chain_points, chain_jacobians)
-            finger_shapes.append(directions)
-            finger_shape_jacobians.append(direction_jacobians)
-        values += [thumb_shape, np.concatenate(finger_shapes)]
-        derivatives += [thumb_shape_jacobian, np.concatenate(finger_shape_jacobians)]
+        values.append(thumb_shape)
+        derivatives.append(thumb_shape_jacobian)
         if not jacobian:
             return tuple(values)
         return tuple(values), tuple(derivatives)
@@ -247,23 +295,23 @@ class RobotModel:
 class Retargeter:
     def __init__(self, model=None):
         self.model = RobotModel() if model is None else model
-        self.bounds = Bounds(self.model.lower, self.model.upper)
+        self.bounds = Bounds(self.model.lower[self.model.thumb], self.model.upper[self.model.thumb])
         self.q = self.model.seed.copy()
+        self.output_filter = OneEuro(*C.RETARGET_ANGLE_FILTER)
         self.has_previous = False
-        self.losses = None
+        self.losses = self.loss_terms = None
         self.options = {"ftol": C.RETARGET_FTOL, "disp": False}
 
-    @staticmethod
-    def _targets(points):
+    def _targets(self, points, previous=None):
         try:
             local = human_retarget_points(points)
             tips = local[HUMAN_TIPS]
             thumb_shape = _directions(local[HUMAN_THUMB])
-            finger_shape = np.concatenate([_directions(local[chain]) for chain in HUMAN_FINGERS])
+            fingers = self.model.finger_angles(local, previous)
         except ValueError:
             return None
         nearest = np.argsort(np.linalg.norm(tips[1:] - tips[0], axis=1), kind="stable")[:2] + 1
-        return tips, local[HUMAN_TIPS[1:]] - local[4], thumb_shape, finger_shape, nearest
+        return tips, local[HUMAN_TIPS[1:]] - local[4], thumb_shape, nearest, fingers
 
     @staticmethod
     def _term(value, jacobian, target, scale, weight, normalizer=1.0):
@@ -275,18 +323,25 @@ class Retargeter:
         )
         return loss, gradient
 
-    def _joint_term(self, q, target, weight):
-        error = (q - target) / self.model.joint_range
+    def _joint_term(self, q, target, weight, active=None):
+        joints = self.model.thumb
+        active = np.arange(len(q)) if active is None else np.asarray(active)
+        error = (q[joints] - target[joints]) / self.model.joint_range[joints]
+        gradient = np.zeros(len(active))
+        gradient[np.searchsorted(active, joints)] = (
+            2 * weight * error / (len(joints) * self.model.joint_range[joints])
+        )
         return (
             weight * np.mean(error * error),
-            2 * weight * error / (len(q) * self.model.joint_range),
+            gradient,
         )
 
-    def _losses(self, q, targets, previous=None):
-        values, jacobians = self.model.features(q, True)
+    def _losses(self, q, targets, previous=None, active=None):
+        active = np.arange(len(q)) if active is None else np.asarray(active)
+        values, jacobians = self.model.features(q, True, active)
         palm_loss, palm_gradient = self._term(
-            values[0], jacobians[0], targets[0],
-            C.RETARGET_PALM_TIPS_SCALE, C.RETARGET_PALM_TIPS_WEIGHT,
+            values[0][:1], jacobians[0][:1], targets[0][:1],
+            C.RETARGET_THUMB_TIP_SCALE, C.RETARGET_THUMB_TIP_WEIGHT,
             C.STANDARD_PALM_SIZE,
         )
         fingertip_loss, fingertip_gradient = self._term(
@@ -295,7 +350,7 @@ class Retargeter:
             C.RETARGET_THUMB_FINGERTIPS_WEIGHT,
             C.STANDARD_PALM_SIZE,
         )
-        pair = targets[4]
+        pair = targets[3]
         vector = values[0][pair].mean(axis=0) - values[0][0]
         vector_jacobian = jacobians[0][pair].mean(axis=0) - jacobians[0][0]
         toward, toward_jacobian = _direction(vector, vector_jacobian)
@@ -306,78 +361,102 @@ class Retargeter:
         )
         primary_loss = palm_loss + fingertip_loss + pad_loss
         primary_gradient = palm_gradient + fingertip_gradient + pad_gradient
-        thumb_loss, thumb_gradient = self._term(
-            values[3], jacobians[3], targets[2], 1.0,
-            C.RETARGET_THUMB_SHAPE_WEIGHT,
+        weights = (
+            C.RETARGET_THUMB_CMC_MCP_WEIGHT,
+            C.RETARGET_THUMB_MCP_IP_WEIGHT,
+            C.RETARGET_THUMB_IP_TIP_WEIGHT,
         )
-        finger_loss, finger_gradient = self._term(
-            values[4], jacobians[4], targets[3], 1.0,
-            C.RETARGET_FINGER_SHAPE_WEIGHT,
+        thumb_terms = tuple(
+            self._term(
+                values[3][i:i + 1], jacobians[3][i:i + 1], targets[2][i:i + 1],
+                1.0, weight / 3,
+            )
+            for i, weight in enumerate(weights)
+        )
+        thumb_loss = sum(loss for loss, _ in thumb_terms)
+        thumb_gradient = sum(
+            (gradient for _, gradient in thumb_terms), np.zeros(len(active))
         )
         midpoint_loss, midpoint_gradient = self._joint_term(
-            q, self.model.midpoint, C.RETARGET_MIDPOINT_WEIGHT
+            q, self.model.midpoint, C.RETARGET_MIDPOINT_WEIGHT, active
         )
         if previous is None:
-            temporal_loss, temporal_gradient = 0.0, np.zeros_like(q)
+            temporal_loss, temporal_gradient = 0.0, np.zeros(len(active))
         else:
             temporal_loss, temporal_gradient = self._joint_term(
-                q, previous, C.RETARGET_TEMPORAL_WEIGHT
+                q, previous, C.RETARGET_TEMPORAL_WEIGHT, active
             )
+        total = primary_loss + thumb_loss + temporal_loss + midpoint_loss
         return (
             primary_loss,
             primary_gradient,
-            primary_loss + thumb_loss + finger_loss + temporal_loss + midpoint_loss,
-            primary_gradient + thumb_gradient + finger_gradient
-            + temporal_gradient + midpoint_gradient,
+            total,
+            primary_gradient + thumb_gradient + temporal_gradient + midpoint_gradient,
+            {
+                "thumb_tip": palm_loss,
+                "thumb_fingertips": fingertip_loss,
+                "thumb_pad": pad_loss,
+                **dict(zip(THUMB_DIRECTION_NAMES, (term[0] for term in thumb_terms))),
+                "temporal": temporal_loss,
+                "midpoint": midpoint_loss,
+                "total": total,
+            },
         )
 
-    def solve(self, points):
+    def solve(self, points, timestamp=None):
         points = np.asarray(points, float)
         if points.shape != (21, 3) or not np.isfinite(points).all():
             return None
-        targets = self._targets(points)
+        previous = self.q.copy() if self.has_previous else None
+        targets = self._targets(points, previous)
         if targets is None:
             return None
-        previous = self.q.copy() if self.has_previous else None
+        fixed, thumb = targets[4], self.model.thumb
         cached_q, cached_value, evaluations, best = None, None, 0, None
 
-        def evaluate(q):
+        def evaluate(x):
             nonlocal cached_q, cached_value, evaluations, best
-            if cached_q is None or not np.array_equal(q, cached_q):
+            if cached_q is None or not np.array_equal(x, cached_q):
                 if evaluations >= C.RETARGET_MAX_EVALUATIONS:
                     raise _EvaluationLimit
-                cached_q = np.asarray(q).copy()
-                cached_value = self._losses(q, targets, previous)
+                cached_q = np.asarray(x).copy()
+                q = fixed.copy()
+                q[thumb] = x
+                losses = self._losses(q, targets, previous, thumb)
+                cached_value = losses[:4]
                 evaluations += 1
                 if np.isfinite(cached_value[2]) and np.isfinite(cached_value[3]).all():
-                    candidate = cached_value[2], cached_q.copy(), cached_value
+                    candidate = cached_value[2], q, losses
                     if best is None or candidate[0] < best[0]:
                         best = candidate
             return cached_value
 
         try:
-            evaluate(self.q)
-            result = minimize(
-                lambda q: evaluate(q)[2:], self.q, method="SLSQP", jac=True,
+            evaluate(fixed[thumb])
+            minimize(
+                lambda x: evaluate(x)[2:], fixed[thumb], method="SLSQP", jac=True,
                 bounds=self.bounds, options=self.options,
             )
-            if not result.success or not np.isfinite(result.x).all():
-                return None
-            candidate = np.clip(result.x, self.model.lower, self.model.upper)
-            losses = evaluate(candidate)
         except _EvaluationLimit:
-            if best is None:
-                return None
-            _, candidate, losses = best
+            pass
+        if best is None:
+            return None
+        _, candidate, losses = best
         self.q = candidate.copy()
         self.has_previous = True
+        timestamp = time.monotonic() if timestamp is None else timestamp
+        output = np.radians(self.output_filter(np.degrees(candidate), timestamp))
+        output = np.clip(output, self.model.lower, self.model.upper)
+        losses = self._losses(output, targets, previous, thumb)
         self.losses = float(losses[0]), float(losses[2])
-        return self.q.copy()
+        self.loss_terms = {name: float(value) for name, value in losses[4].items()}
+        return output
 
     def pause(self):
         self.q = self.model.seed.copy()
+        self.output_filter.reset()
         self.has_previous = False
-        self.losses = None
+        self.losses = self.loss_terms = None
 
 
 class RetargetWorker:
@@ -390,9 +469,9 @@ class RetargetWorker:
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
-    def submit(self, points):
+    def submit(self, points, timestamp=None):
         with self.condition:
-            self.pending = self.generation, np.asarray(points, float).copy()
+            self.pending = self.generation, np.asarray(points, float).copy(), timestamp
             self.condition.notify()
 
     def poll(self):
@@ -415,13 +494,13 @@ class RetargetWorker:
                 self.condition.wait_for(lambda: not self.running or self.pending is not None)
                 if not self.running:
                     return
-                current, points = self.pending
+                current, points, timestamp = self.pending
                 self.pending = None
             try:
                 if current != generation:
                     self.retargeter.pause()
                     generation = current
-                result = self.retargeter.solve(points)
+                result = self.retargeter.solve(points, timestamp)
             except Exception as error:
                 with self.condition:
                     self.error, self.running = error, False
@@ -429,7 +508,8 @@ class RetargetWorker:
                 return
             with self.condition:
                 if self.running and current == self.generation and result is not None:
-                    self.result = result
+                    losses = dict(getattr(self.retargeter, "loss_terms", None) or {})
+                    self.result = result, losses
 
     def close(self):
         with self.condition:

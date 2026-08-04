@@ -9,15 +9,17 @@ MultiView Hand Capture 从同步双目图像恢复 MediaPipe 21 个手部三维�
 主要功能：
 
 - 支持 Intel RealSense D435 双红外图像，直接读取出厂双目标定。
-- 对 D435 左右红外图像分别运行 MediaPipe，并通过双目三角化恢复三维点。
+- 支持单个 `2560×720` MJPEG 设备提供的左右拼接双目图像。
+- 对左右图像分别运行 MediaPipe，并通过双目三角化恢复三维点。
 - 对三维点和手指屈伸角分别执行 One Euro 滤波。
 - 通过骨长和 `0～180°` 无符号屈伸角约束抑制关键点飞行。
 - 通过单阶段加权优化将标准化左手 retarget 到 MMHand URDF。
 - 在一个网页中显示左右图像、标准人手和 MMHand。
 - 可选同时发布 ROS 2 关键点和机器人关节角。
 
-项目默认且仅支持 D435。程序只使用同步左右红外图像，不启用深度流，也不读取
-深度图；活动流内参、畸变参数和左右外参全部由 RealSense SDK 提供，无需棋盘标定。
+D435 模式只使用同步左右红外图像，不启用深度流，也不读取深度图；内外参数由
+RealSense SDK 提供。普通双目模式读取单个 UVC 设备的左右拼接图，并使用本地棋盘
+标定参数。之后的检测、三角化、滤波和 retarget 流程完全共用。
 
 ## 安装
 
@@ -56,27 +58,33 @@ python -m pip install -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 ## Config
 
-运行参数集中在 `config.py`，通常只需要修改 D435 编号、分辨率和帧率。
+运行参数集中在 `config.py`，通常只需要修改相机类型、编号和图像方向。
 
 ### 相机
 
 ```python
+CAMERA_TYPE = "stereo"  # "stereo" 或 "d435"
 CAMERA_INDEX = 0
 D435_WIDTH = 1280
 D435_HEIGHT = 720
 D435_FPS = 30
+SINGLE_WIDTH, HEIGHT = 1280, 720
+FULL_WIDTH = SINGLE_WIDTH * 2
+ROTATE_LEFT, ROTATE_RIGHT = 180, -180
 ```
 
-- 打开 D435 的 `infrared 1` 和 `infrared 2`。
-- 图像格式为 Y8，默认 `1280×720@30`。
-- 使用活动流内参和出厂左右外参。
-- 不需要也不提供外部棋盘标定流程。
+- `d435`：打开 `infrared 1/2` Y8 流，默认 `1280×720@30`，使用 SDK 出厂标定。
+- `stereo`：通过 OpenCV/V4L2 打开一个 MJPEG 设备，输入为左右横向拼接的
+  `2560×720` 图像；拆分后按 `ROTATE_LEFT/RIGHT` 旋转并读取 `stereo_params.json`。
 
 ### 三维重建和滤波
 
 | 参数 | 默认值 | 含义 |
 |---|---:|---|
-| `CALIBRATION_FRAMES` | 100 | 初始骨长估计使用的有效样本数 |
+| `BOARD_SIZE` | `(9, 6)` | 普通双目标定板内角点数 |
+| `SQUARE_SIZE` | 23.5 mm | 标定板格长 |
+| `MIN_CALIBRATION_PAIRS` | 10 | 标定要求的最少有效左右图像对数 |
+| `CALIBRATION_FRAMES` | 10 | 初始骨长估计使用的有效样本数 |
 | `CALIBRATION_HZ` | 10 Hz | 骨长样本的最大采样频率 |
 | `BONE_TOLERANCE` | 0.20 | 每根骨允许偏离标定长度的比例 |
 | `POINT_2D_FILTER` | `(1.0, 0.01, 1.0)` | 去畸变前像素点 One Euro 参数 |
@@ -117,17 +125,19 @@ Retarget 参数：
 
 | 参数 | 默认值 | 含义 |
 |---|---:|---|
-| `RETARGET_PALM_TIPS_SCALE` | 1.0 | 人手掌原点到五指尖向量的 scale |
+| `RETARGET_THUMB_TIP_SCALE` | 1.0 | 人手掌原点到拇指尖向量的 scale |
 | `RETARGET_THUMB_FINGERTIPS_SCALE` | 1.0 | 人手拇指尖到四指尖向量的 scale |
-| `RETARGET_PALM_TIPS_WEIGHT` | 1.0 | 掌原点到五指尖位置目标权重 |
-| `RETARGET_THUMB_FINGERTIPS_WEIGHT` | 1.0 | 拇指尖到四指尖位置目标权重 |
-| `RETARGET_THUMB_SHAPE_WEIGHT` | 1.0 | 拇指三段单位方向目标权重 |
-| `RETARGET_FINGER_SHAPE_WEIGHT` | 1.0 | 四指十二段单位方向目标权重 |
+| `RETARGET_THUMB_TIP_WEIGHT` | 1.0 | 掌原点到拇指尖位置目标权重 |
+| `RETARGET_THUMB_FINGERTIPS_WEIGHT` | 0.0 | 拇指尖到四指尖位置目标权重 |
+| `RETARGET_THUMB_CMC_MCP_WEIGHT` | 0.0 | 人手 CMC→MCP 对应的拇指近节方向权重 |
+| `RETARGET_THUMB_MCP_IP_WEIGHT` | 5.0 | 人手 MCP→IP 对应的拇指中节方向权重 |
+| `RETARGET_THUMB_IP_TIP_WEIGHT` | 1.0 | 人手 IP→TIP 对应的拇指远节方向权重 |
 | `THUMB_PAD_AXIS` | `(-0.200671, 0.970119, -0.136380)` | URDF 拇指 fingertip link 局部指腹方向 |
-| `RETARGET_THUMB_PAD_WEIGHT` | 0.5 | 拇指指腹朝向目标权重 |
-| `RETARGET_TEMPORAL_WEIGHT` | 0.1 | 相邻成功帧关节变化惩罚权重 |
-| `RETARGET_MIDPOINT_WEIGHT` | 0.01 | 关节偏离限位中点惩罚权重 |
-| `RETARGET_MAX_EVALUATIONS` | 20 | 每帧最多计算的不同 SLSQP 关节候选数 |
+| `RETARGET_THUMB_PAD_WEIGHT` | 0.0 | 拇指指腹朝向目标权重 |
+| `RETARGET_TEMPORAL_WEIGHT` | 0.0 | 相邻成功帧拇指关节变化惩罚权重 |
+| `RETARGET_MIDPOINT_WEIGHT` | 0.0 | 拇指关节偏离限位中点惩罚权重 |
+| `RETARGET_ANGLE_FILTER` | `(1.0, 0.02, 1.0)` | 最终 21 个关节角的 One Euro 参数，单位 degree |
+| `RETARGET_MAX_EVALUATIONS` | 30 | 每帧最多计算的不同 SLSQP 拇指候选数 |
 | `RETARGET_FTOL` | 3e-5 | SLSQP 停止精度 |
 
 ### Web 和 ROS
@@ -143,24 +153,29 @@ ROBOT_TOPIC = "/raw_ik_target"
 
 ## 运行
 
-项目默认且仅使用 D435。确认 `config.py` 中：
+默认使用普通拼接双目。确认 `config.py` 中：
 
 ```python
+CAMERA_TYPE = "stereo"
 CAMERA_INDEX = 0
 ```
 
-然后直接运行：
+首次使用、更换相机或改变镜头相对位置后，先执行：
 
 ```bash
-python track.py
+python calibrate.py
 ```
 
-### 启动参数
+标定窗口中 `C` 保存当前有效图像对，`Q` 结束采样并求解；至少采集 10 对。结果写入
+忽略提交的 `stereo_params.json`。仓库中的 `pattern.png` 可作为 `9×6` 内角点标定板，
+打印时需保证实际格长与 `SQUARE_SIZE` 一致。之后运行：
 
 ```bash
 python track.py
 python track.py --ros
 ```
+
+使用 D435 时设置 `CAMERA_TYPE = "d435"`，无需运行棋盘标定。
 
 程序始终估计和显示标准化的 21 个三维关键点，并将完成初始骨长估计的稳定左手
 映射到 MMHand。`--ros` 在相同流程上同时发布关键点和机器人关节两个 ROS 2 topic。
@@ -172,7 +187,7 @@ python track.py --ros
 - 左下：腕部坐标系中的 `0.086 m` 标准人手。
 - 右下：retarget 后的 MMHand URDF。
 
-程序启动后以最高 10 Hz 收集 100 个有效样本估计骨长，连续识别时约需 10 秒。
+程序启动后以最高 10 Hz 收集 10 个有效样本估计骨长，连续识别时约需 1 秒。
 页面状态从 `CALIBRATION` 变为 `GESTURE TRACKING` 后，retarget 和机器人 ROS
 输出才会开始。
 
@@ -183,13 +198,16 @@ config.py
     相机、滤波、质量门限、MMHand、Web 和 ROS 配置
 
 hand_core.py
-    D435 双红外接口、MediaPipe、双目三角化、滤波和标准手归一化
+    D435/普通拼接双目接口、MediaPipe、三角化、滤波和标准手归一化
 
 retarget.py
     MMHand URDF 运动学、解析 Jacobian 和单阶段加权优化
 
 track.py
     程序入口、实时循环、Web 页面、Viser 和 ROS 发布
+
+calibrate.py
+    普通拼接双目的棋盘标定工具
 
 test_hand_capture.py
     几何、滤波、MediaPipe、URDF、retarget、CLI 和 ROS 快速核心测试
@@ -199,6 +217,9 @@ test/
 
 assets/mmhand/
     MMHand URDF、STL 和第三方许可证
+
+stereo_params.json
+    普通双目标定结果，由 calibrate.py 生成且不提交
 
 ```
 
@@ -216,18 +237,19 @@ track.py
 
 ## 代码逻辑
 
-### 1. D435 相机参数
+### 1. 相机和标定参数
 
-`track.py` 直接创建 D435 相机和处理器：
+`track.py` 根据 `CAMERA_TYPE` 创建相机：
 
 ```text
-RealSenseCamera
-→ 左右 Y8 图像 + SDK 出厂内外参数
+d435   → RealSenseCamera → 左右 Y8 图像 + SDK 出厂内外参数
+stereo → Camera → 拆分/旋转 MJPEG 拼接图 + stereo_params.json
 → StereoProcessor
 ```
 
 `RealSenseCamera` 输出同步的 `left、right、timestamp`，并将 SDK 提供的
-`K1、D1、K2、D2、R、T` 交给 `StereoProcessor`。
+`K1、D1、K2、D2、R、T` 交给 `StereoProcessor`。普通 `Camera` 后台持续读取，只将
+最新完整拼接帧交给主线程，避免形成延迟队列；两种相机共用相同返回接口。
 
 ### 2. MediaPipe 和双目三角化
 
@@ -271,7 +293,7 @@ P2 = K2 [R | T]
 ```
 
 初始骨长样本按 `CALIBRATION_HZ` 限速采集，避免相机帧率或处理速度改变估计
-时长。100 个有效样本用于计算每根骨长度的中位数。之后每根骨只能在估计长度的
+时长。10 个有效样本用于计算每根骨长度的中位数。之后每根骨只能在估计长度的
 `1±BONE_TOLERANCE` 范围内变化。
 
 设当前关节前后的单位骨向量为 `u、v`，屈曲角为：
@@ -318,30 +340,47 @@ origin = point1
 `base_link`，原点取 `Thumb_MCP_AA` 关节原点在 `Thumb_CMC` 转轴上的正交投影。
 该原点和方向均不是优化变量。
 
-一次 SLSQP 同时优化 21 个 MMHand 关节，总损失包含：
+四指的 16 个关节不进入 IK。Retarget 在上述独立人手掌坐标中直接计算每指角度：
 
-- 掌原点到 Thumb、Index、Middle、Ring、Little 五个指尖的位置向量。
+```text
+human_AA = atan2(proximal_y, proximal_x)
+MCP_FE = atan2(-proximal_z, norm(proximal_xy))
+PIP/DIP = acos(clamp(previous_segment · next_segment, -1, 1))
+```
+
+MMHand A-A 零位不代表手指指向掌坐标 `+x`。代码从 URDF 零位 FK 读取近节方向角
+`theta0` 和 A-A 轴在 `base_link` 掌坐标中的 `z` 分量 `s`，使用
+`q_AA=(human_AA-theta0)/s`。当前 URDF 的零侧摆约对应 Index 22.80°、Middle 30.80°、
+Ring 35.80°、Little 35.80°；这些数值不会硬编码。所有直接角度裁进 URDF 限位。
+
+一次 SLSQP 只优化 J16～J20 五个拇指关节，总损失包含：
+
+- 掌原点到拇指尖的位置向量。
 - 拇指尖到另外四个指尖的位置向量。
 - 按人手输入选出离拇指最近的两个四指指尖，MMHand 拇指指腹朝向对应两个机器人
   指尖的中点；一次求解内手指编号固定。
 - 人手 CMC→MCP、MCP→IP、IP→TIP 与 MMHand 掌原点→PIP、PIP→DIP、DIP→TIP
-  三个拇指单位方向的匹配。
-- 四指各自 MCP→PIP、PIP→DIP、DIP→TIP 共十二个单位方向的匹配。
-- 相对上一次成功结果的关节变化惩罚；首次求解和暂停后的首帧不启用。
-- 相对各关节 URDF 上下限中点的偏离惩罚。
+  三个拇指单位方向的匹配；三段分别使用独立权重。
+- 相对上一次成功结果的拇指关节变化惩罚；首次求解和暂停后的首帧不启用。
+- 拇指关节相对各自 URDF 上下限中点的偏离惩罚。
 
 位置误差除以 `STANDARD_PALM_SIZE` 形成无量纲损失，人手向量先乘配置中的 scale。
-相邻帧和限位中点项先除以各关节自身的 `upper-lower` 再计算均方误差。所有目标由
+相邻帧和限位中点项先除以拇指关节自身的 `upper-lower` 再计算均方误差。所有目标由
 `config.py` 中的权重共同平衡，不再设置分阶段硬优先级。
+三个方向项各保留原三段平均损失中的 `1/3` 归一化，因此三个权重都为 `1.0` 时与拆分前
+的 `RETARGET_THUMB_SHAPE_WEIGHT = 1.0` 完全等价。
 每帧最多评估 `RETARGET_MAX_EVALUATIONS` 个不同关节候选；达到预算时采用其中总损失
 最低的有限候选，不再单独限制 SLSQP 主迭代次数。
 
 机器人 FK、关节轴和上下限均从 `assets/mmhand/urdf/hand.urdf` 读取。该文件已恢复为
 仓库历史中的原始、未做工作空间优化的 MMHand URDF，代码不会收紧或覆盖其限位。通用旋转关节
 Jacobian 根据 URDF 的轴、关节原点和祖先关系解析计算；没有 MMHand 尺寸常量。
-连续追踪时优化使用上一帧全部 21 个关节角热启动；首次求解和暂停后使用裁进
-URDF 上下限的零位。Retargeter 由单独工作线程独占；主线程只提交最新关键点并读取
+连续追踪时拇指优化使用上一帧五个关节角热启动，四指始终采用当帧人手角度；首次
+拇指求解和暂停后使用裁进 URDF 上下限的零位。Retargeter 由单独工作线程独占；主线程只提交最新关键点并读取
 最近完成的结果。线程忙时尚未处理的旧输入会被新输入覆盖，不形成延迟队列。
+最终返回和发布的全部 21 个关节角使用相机时间戳进行 One Euro 滤波；滤波只作用于
+输出，求解器仍保存未滤波解作为下一帧热启动和时间惩罚基准。暂停时滤波状态同步重置。
+Web 中的损失会在滤波输出上重新计算，因此对应实际发布的姿态。
 
 ### 5. 状态、显示和输出
 
@@ -357,6 +396,8 @@ retarget 或 ROS。有效左右手都会发布关键点；手丢失、检测到�
 标准人手仍以公共腕坐标显示，并在 CMC 位置叠加仅供 retarget 使用的动态坐标架；
 MMHand 在投影掌原点显示与 `base_link` 同向的静态坐标架。两个三维窗口的初始相机
 均从掌心侧正视手掌；在掌基座校平视角的基础上，相机视角统一顺时针旋转 15°。
+双目图像面板右上角显示最近一次成功 retarget 的各项加权损失、总损失及各项占比；
+没有有效左手时显示 waiting。
 这些视角设置不会改变计算坐标、retarget 或 ROS 输出。
 `RosOutput` 只在传入 `--ros` 时创建。
 

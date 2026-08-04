@@ -1,8 +1,13 @@
+import json
+import os
+import threading
 import time
 
 import cv2
 import mediapipe as mp
 import numpy as np
+
+from one_euro import OneEuro
 
 from config import (
     ANGLE_FILTER,
@@ -13,21 +18,90 @@ from config import (
     D435_HEIGHT,
     D435_WIDTH,
     FINGER_CHAINS,
+    FULL_WIDTH,
     HAND_LANDMARKER_PATH,
     HAND_SWITCH_FRAMES,
+    HEIGHT,
     MAX_DEPTH_MM,
     MAX_HAND_RADIUS,
     MAX_REPROJECTION_ERROR,
     MP_DETECTION_CONFIDENCE,
     MP_PRESENCE_CONFIDENCE,
     MP_TRACKING_CONFIDENCE,
+    PARAMS_PATH,
     POINT_2D_FILTER,
     POINT_3D_FILTER,
+    ROTATE_LEFT,
+    ROTATE_RIGHT,
     STANDARD_PALM_SIZE,
     STALE_FRAMES,
 )
 
 EPS = 1e-8
+
+
+def rotate_image(image, angle):
+    if angle == 0:
+        return image
+    if angle in (90, -270):
+        return cv2.rotate(image, cv2.ROTATE_90_CLOCKWISE)
+    if angle in (-90, 270):
+        return cv2.rotate(image, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    if abs(angle) == 180:
+        return cv2.rotate(image, cv2.ROTATE_180)
+    height, width = image.shape[:2]
+    matrix = cv2.getRotationMatrix2D((width / 2, height / 2), -angle, 1)
+    cosine, sine = abs(matrix[0, 0]), abs(matrix[0, 1])
+    size = int(height * sine + width * cosine), int(height * cosine + width * sine)
+    matrix[:, 2] += size[0] / 2 - width / 2, size[1] / 2 - height / 2
+    return cv2.warpAffine(image, matrix, size)
+
+
+def split_stereo(frame):
+    if frame is None or frame.shape[1] != FULL_WIDTH:
+        return None, None
+    middle = FULL_WIDTH // 2
+    return rotate_image(frame[:, :middle], ROTATE_LEFT), rotate_image(
+        frame[:, middle:], ROTATE_RIGHT
+    )
+
+
+class Camera:
+    def __init__(self, index, width=FULL_WIDTH, height=HEIGHT):
+        backend = cv2.CAP_V4L2 if os.name == "posix" else cv2.CAP_ANY
+        self.capture = cv2.VideoCapture(index, backend)
+        self.capture.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        if not self.capture.isOpened():
+            raise RuntimeError(f"Unable to open camera {index}")
+        self.ok, self.frame = self.capture.read()
+        self.timestamp = time.monotonic()
+        self.lock, self.running = threading.Lock(), True
+        self.thread = threading.Thread(target=self._read, daemon=True)
+        self.thread.start()
+
+    def _read(self):
+        while self.running:
+            ok, frame = self.capture.read()
+            if ok and frame is not None:
+                with self.lock:
+                    self.ok, self.frame, self.timestamp = ok, frame, time.monotonic()
+            else:
+                time.sleep(0.005)
+
+    def read(self):
+        with self.lock:
+            if not self.ok or self.frame is None:
+                return False, None, None, None
+            left, right = split_stereo(self.frame.copy())
+            return left is not None, left, right, self.timestamp
+
+    def close(self):
+        self.running = False
+        self.thread.join(timeout=1)
+        self.capture.release()
 
 
 class RealSenseCamera:
@@ -94,38 +168,6 @@ class RealSenseCamera:
 
     def close(self):
         self.pipeline.stop()
-
-
-class OneEuro:
-    def __init__(self, min_cutoff, beta, derivative_cutoff):
-        self.min_cutoff, self.beta, self.derivative_cutoff = (
-            min_cutoff,
-            beta,
-            derivative_cutoff,
-        )
-        self.reset()
-
-    @staticmethod
-    def _alpha(dt, cutoff):
-        value = 2 * np.pi * cutoff * dt
-        return value / (value + 1)
-
-    def __call__(self, value, timestamp):
-        value = np.asarray(value, float)
-        if self.value is None:
-            self.value, self.derivative, self.timestamp = value.copy(), np.zeros_like(value), timestamp
-            return value.copy()
-        dt = max(timestamp - self.timestamp, 1e-6)
-        derivative = (value - self.value) / dt
-        alpha = self._alpha(dt, self.derivative_cutoff)
-        derivative = alpha * derivative + (1 - alpha) * self.derivative
-        alpha = self._alpha(dt, self.min_cutoff + self.beta * np.abs(derivative))
-        self.value = alpha * value + (1 - alpha) * self.value
-        self.derivative, self.timestamp = derivative, timestamp
-        return self.value.copy()
-
-    def reset(self):
-        self.value = self.derivative = self.timestamp = None
 
 
 def _unit(vector, fallback=(1.0, 0.0, 0.0)):
@@ -325,7 +367,13 @@ def geometry_error(points, reprojection_error):
 
 
 class StereoProcessor:
-    def __init__(self, params):
+    def __init__(self, params=None):
+        if params is None:
+            if not PARAMS_PATH.is_file():
+                raise FileNotFoundError(
+                    f"Stereo calibration not found: {PARAMS_PATH}; run python calibrate.py"
+                )
+            params = json.loads(PARAMS_PATH.read_text())
         self.K1, self.D1 = np.asarray(params["K1"]), np.asarray(params["D1"])
         self.K2, self.D2 = np.asarray(params["K2"]), np.asarray(params["D2"])
         rotation, translation = np.asarray(params["R"]), np.asarray(params["T"])

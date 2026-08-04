@@ -8,6 +8,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from config import (
+    CAMERA_TYPE,
     CAMERA_INDEX,
     KEYPOINT_LAYOUT,
     KEYPOINT_TOPIC,
@@ -19,13 +20,38 @@ from config import (
     WEB_PORT,
     VIEW_PORTS,
 )
-from hand_core import RealSenseCamera, StereoProcessor
+from hand_core import Camera, RealSenseCamera, StereoProcessor
 from retarget import Retargeter, RetargetWorker, human_palm_frame
 
 ROBOT_CAMERA_DISTANCE = 0.42
 PALM_FRAME_AXIS_LENGTH = 0.04
 PALM_FRAME_AXIS_RADIUS = 0.0015
 PALM_FRAME_ORIGIN_RADIUS = 0.004
+LOSS_LABELS = (
+    ("thumb_tip", "thumb tip"),
+    ("thumb_fingertips", "thumb to fingers"),
+    ("thumb_pad", "thumb pad"),
+    ("thumb_cmc_mcp", "thumb CMC-MCP"),
+    ("thumb_mcp_ip", "thumb MCP-IP"),
+    ("thumb_ip_tip", "thumb IP-TIP"),
+    ("temporal", "temporal"),
+    ("midpoint", "midpoint"),
+    ("total", "total"),
+)
+
+
+def _loss_text(losses=None):
+    lines = ["Weighted retarget loss"]
+    if losses:
+        total = losses["total"]
+        lines += [
+            f"{label:<18}{losses[name]:.3e}  "
+            f"{(100 * losses[name] / total if total else 0):5.1f}%"
+            for name, label in LOSS_LABELS
+        ]
+    else:
+        lines.append("waiting")
+    return "\n".join(lines)
 
 
 def _human_view_wxyz(handedness, points):
@@ -120,6 +146,7 @@ class Viewer:
             np.asarray([model.seed[self.robot_index[name]] for name in self.urdf_names])
         )
         self.last_update, self.status = 0.0, "WAITING"
+        self.loss_text = _loss_text()
         self.stereo = cv2.imencode(".jpg", np.zeros((360, 1280, 3), np.uint8))[1].tobytes()
         self._start_dashboard()
         print(f"Dashboard: http://localhost:{WEB_PORT}")
@@ -144,18 +171,21 @@ font:15px sans-serif;display:grid;grid-template:40vh 60vh/repeat(2,1fr);gap:6px}
 .stereo{{grid-column:1/3}} h2{{position:absolute;z-index:2;margin:0;padding:8px 12px;
 font-size:15px;background:#101318cc;border-radius:0 0 6px 0}}
 img,iframe{{width:100%;height:100%;display:block;border:0;object-fit:contain}}
-#status{{color:#9bd;margin-left:12px;font-weight:normal}}</style></head><body>
-<section class="panel stereo"><h2>D435 IR + MediaPipe <span id="status">WAITING</span></h2>
-<img id="stereo"></section>
-<section class="panel"><h2>Normalized hand · wrist tracking frame + CMC retarget axes · 0.086 m</h2><iframe id="normalized"></iframe></section>
+#status{{color:#9bd;margin-left:12px;font-weight:normal}}
+#losses{{position:absolute;z-index:2;right:0;top:0;margin:0;padding:9px 12px;
+background:#101318dd;color:#bde2ff;font:13px/1.35 monospace;pointer-events:none}}</style></head><body>
+<section class="panel stereo"><h2>Stereo + MediaPipe <span id="status">WAITING</span></h2>
+<pre id="losses">Weighted retarget loss\nwaiting</pre><img id="stereo"></section>
+<section class="panel"><h2>Normalized hand</h2><iframe id="normalized"></iframe></section>
 <section class="panel"><h2>Retargeted MMHand</h2><iframe id="robot"></iframe></section>
 <script>
 const host=location.hostname, statusText=document.getElementById("status"),
-stereoImage=document.getElementById("stereo");
+stereoImage=document.getElementById("stereo"),lossText=document.getElementById("losses");
 for(const [id,port] of [["normalized",{normalized_port}],["robot",{robot_port}]])
   document.getElementById(id).src=`http://${{host}}:${{port}}`;
 setInterval(()=>{{stereoImage.src="/stereo.jpg?t="+Date.now();
-fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(1000 / WEB_FPS)});
+fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x);
+fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000 / WEB_FPS)});
 </script></body></html>""".encode()
 
         class Handler(BaseHTTPRequestHandler):
@@ -165,6 +195,8 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
                     body, content_type = owner.stereo, "image/jpeg"
                 elif path == "/status":
                     body, content_type = owner.status.encode(), "text/plain; charset=utf-8"
+                elif path == "/losses":
+                    body, content_type = owner.loss_text.encode(), "text/plain; charset=utf-8"
                 elif path == "/":
                     body, content_type = page, "text/html; charset=utf-8"
                 else:
@@ -184,7 +216,7 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
         self.http_thread = threading.Thread(target=self.http.serve_forever, daemon=True)
         self.http_thread.start()
 
-    def update(self, result, robot=None):
+    def update(self, result, robot=None, losses=None):
         now = time.monotonic()
         if now - self.last_update < 1 / WEB_FPS:
             return
@@ -194,6 +226,10 @@ fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x)}},{round(10
         if quality["reprojection_error"] is not None:
             detail += f" · reprojection: {quality['reprojection_error']:.1f} px"
         self.status = f"{result['phase']}{detail}"
+        if losses is not None:
+            self.loss_text = _loss_text(losses)
+        elif result["keypoint_relative"] is None or result["handedness"] != "Left":
+            self.loss_text = _loss_text()
         views = [
             _overlay(image, points) if image is not None else np.zeros((360, 640, 3), np.uint8)
             for image, points in zip(
@@ -283,12 +319,26 @@ def _parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def _capture():
+    if CAMERA_TYPE == "d435":
+        camera = RealSenseCamera(CAMERA_INDEX)
+        params = camera.params
+    elif CAMERA_TYPE == "stereo":
+        camera, params = Camera(CAMERA_INDEX), None
+    else:
+        raise ValueError("CAMERA_TYPE must be 'd435' or 'stereo'")
+    try:
+        return camera, StereoProcessor(params)
+    except Exception:
+        camera.close()
+        raise
+
+
 def main():
     args = _parse_args()
 
     retargeter = Retargeter()
-    camera = RealSenseCamera(CAMERA_INDEX)
-    processor = StereoProcessor(camera.params)
+    camera, processor = _capture()
     viewer = Viewer(retargeter.model)
     ros = RosOutput() if args.ros else None
     worker = RetargetWorker(retargeter)
@@ -305,13 +355,14 @@ def main():
             if valid and ros is not None:
                 ros.points(result["keypoint_relative"], result["handedness"])
             if valid and result["handedness"] == "Left" and result["phase"].startswith("GESTURE"):
-                worker.submit(result["keypoint_relative"])
+                worker.submit(result["keypoint_relative"], timestamp)
             else:
                 worker.pause()
-            robot = worker.poll()
+            output = worker.poll()
+            robot, losses = (None, None) if output is None else output
             if ros is not None and robot is not None:
                 ros.joints(np.degrees(robot))
-            viewer.update(result, robot)
+            viewer.update(result, robot, losses)
     except KeyboardInterrupt:
         pass
     finally:

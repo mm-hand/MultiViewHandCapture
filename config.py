@@ -1,16 +1,20 @@
 from pathlib import Path
 
-# 仓库根目录；其他资源路径都以此文件所在目录为基准。
-ROOT = Path(__file__).resolve().parent
+# 仓库根目录；仅用于生成下面的资源路径。
+_ROOT = Path(__file__).resolve().parent
+# 普通双目棋盘标定结果；由 calibrate.py 生成。
+PARAMS_PATH = _ROOT / "stereo_params.json"
 # 正式 MMHand URDF 路径；FK、关节限位和 Viser 显示都读取该文件。
-URDF_PATH = ROOT / "assets/mmhand/urdf/hand.urdf"
+URDF_PATH = _ROOT / "assets/mmhand/urdf/hand.urdf"
 # MediaPipe Tasks HandLandmarker 模型路径。
-HAND_LANDMARKER_PATH = ROOT / "assets/mediapipe/hand_landmarker.task"
+HAND_LANDMARKER_PATH = _ROOT / "assets/mediapipe/hand_landmarker.task"
 
 
 # Camera ----------------------------------------------------------------------
 
-# D435 相机枚举序号；0 表示当前连接列表中的第一台设备。
+# 相机类型："stereo" 为普通左右拼接相机，"d435" 为 RealSense D435。
+CAMERA_TYPE = "stereo"
+# 普通相机的 OpenCV 编号，或 D435 的设备枚举序号。
 CAMERA_INDEX = 0
 # D435 单路红外图像宽度，单位 pixel。
 D435_WIDTH = 1280
@@ -18,11 +22,19 @@ D435_WIDTH = 1280
 D435_HEIGHT = 720
 # D435 双红外流目标帧率，单位 frame/s。
 D435_FPS = 30
+# 普通双目单路尺寸；相机输出左右横向拼接的 MJPEG 图像。
+SINGLE_WIDTH, HEIGHT = 1280, 720
+FULL_WIDTH = SINGLE_WIDTH * 2
+# 拆分后左右图像的顺时针旋转角度，单位 degree。
+ROTATE_LEFT, ROTATE_RIGHT = 180, -180
+# 普通双目标定板内角点数、格长（mm）和最少有效图像对数。
+BOARD_SIZE, SQUARE_SIZE = (9, 6), 23.5
+MIN_CALIBRATION_PAIRS = 10
 
 # Hand calibration and filtering ----------------------------------------------
 
 # 启动时用于估计人手骨长中位数的有效样本数量。
-CALIBRATION_FRAMES = 100
+CALIBRATION_FRAMES = 10 # TODO
 # 骨长标定的最大采样频率，单位 Hz。
 CALIBRATION_HZ = 10
 # 每根骨相对标定长度允许变化的比例；0.20 表示允许 ±20%。
@@ -101,26 +113,30 @@ ROBOT_JOINT_NAMES = (
 )
 # MMHand retarget --------------------------------------------------------------
 
-# 掌原点到五指尖的人手向量缩放系数；1.0 表示不缩放。
-RETARGET_PALM_TIPS_SCALE = 1.0
+# 掌原点到拇指尖的人手向量缩放系数；1.0 表示不缩放。
+RETARGET_THUMB_TIP_SCALE = 1.0
 # 拇指尖到另外四指尖的人手向量缩放系数；1.0 表示不缩放。
 RETARGET_THUMB_FINGERTIPS_SCALE = 1.0
-# 掌原点到五指尖位置误差的损失权重。
-RETARGET_PALM_TIPS_WEIGHT = 1.0
+# 掌原点到拇指尖位置误差的损失权重。
+RETARGET_THUMB_TIP_WEIGHT = 1.0
 # 拇指尖到另外四指尖位置误差的损失权重。
-RETARGET_THUMB_FINGERTIPS_WEIGHT = 1.0
-# 拇指三段单位方向误差的损失权重。
-RETARGET_THUMB_SHAPE_WEIGHT = 200.0
-# 四指共十二段单位方向误差的损失权重。
-RETARGET_FINGER_SHAPE_WEIGHT = 1.0
+RETARGET_THUMB_FINGERTIPS_WEIGHT = 0.0
+# 人手 CMC→MCP 对应 MMHand 拇指近节单位方向误差权重。
+RETARGET_THUMB_CMC_MCP_WEIGHT = 0.0
+# 人手 MCP→IP 对应 MMHand 拇指中节单位方向误差权重。
+RETARGET_THUMB_MCP_IP_WEIGHT = 5.0
+# 人手 IP→TIP 对应 MMHand 拇指远节单位方向误差权重。
+RETARGET_THUMB_IP_TIP_WEIGHT = 1.0
 # 拇指 fingertip link 局部坐标中的指腹方向；运行时会归一化。
 THUMB_PAD_AXIS = (-0.200671, 0.970119, -0.136380)
 # 拇指指腹朝向人手最近两指对应机器人指尖中点的损失权重。
-RETARGET_THUMB_PAD_WEIGHT = 0.5
+RETARGET_THUMB_PAD_WEIGHT = 0.0
 # 相邻两次成功 retarget 关节变化的损失权重；首帧不启用。
-RETARGET_TEMPORAL_WEIGHT = 1
+RETARGET_TEMPORAL_WEIGHT = 0.0
 # 关节偏离各自 URDF 限位中点的损失权重。
-RETARGET_MIDPOINT_WEIGHT = 0.01
+RETARGET_MIDPOINT_WEIGHT = 0.0
+# 最终 21 个 MMHand 输出角的 One Euro 参数，角度单位 degree。
+RETARGET_ANGLE_FILTER = (1.0, 0.02, 1.0)
 # 每帧最多计算的不同 SLSQP 关节候选数；超限时采用最低损失候选。
 RETARGET_MAX_EVALUATIONS = 30
 # SLSQP 的目标和步长停止精度。

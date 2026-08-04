@@ -1,3 +1,4 @@
+import json
 import sys
 import threading
 import time
@@ -8,31 +9,44 @@ from unittest.mock import patch
 
 import numpy as np
 
+import calibrate
 from config import (
     ANGLE_FILTER,
+    BOARD_SIZE,
+    CAMERA_TYPE,
+    FULL_WIDTH,
     HAND_LANDMARKER_PATH,
+    HEIGHT,
     KEYPOINT_LAYOUT,
     KEYPOINT_TOPIC,
     MAX_DEPTH_MM,
     MP_DETECTION_CONFIDENCE,
     MP_PRESENCE_CONFIDENCE,
     MP_TRACKING_CONFIDENCE,
+    MIN_CALIBRATION_PAIRS,
+    PARAMS_PATH,
     POINT_2D_FILTER,
     POINT_3D_FILTER,
-    RETARGET_FINGER_SHAPE_WEIGHT,
     RETARGET_FTOL,
+    RETARGET_ANGLE_FILTER,
     RETARGET_MAX_EVALUATIONS,
     RETARGET_MIDPOINT_WEIGHT,
-    RETARGET_PALM_TIPS_SCALE,
-    RETARGET_PALM_TIPS_WEIGHT,
+    RETARGET_THUMB_TIP_SCALE,
+    RETARGET_THUMB_TIP_WEIGHT,
     RETARGET_TEMPORAL_WEIGHT,
     RETARGET_THUMB_FINGERTIPS_SCALE,
     RETARGET_THUMB_FINGERTIPS_WEIGHT,
+    RETARGET_THUMB_CMC_MCP_WEIGHT,
+    RETARGET_THUMB_IP_TIP_WEIGHT,
+    RETARGET_THUMB_MCP_IP_WEIGHT,
     RETARGET_THUMB_PAD_WEIGHT,
-    RETARGET_THUMB_SHAPE_WEIGHT,
     ROBOT_JOINT_NAMES,
     ROBOT_LAYOUT,
     ROBOT_TOPIC,
+    ROTATE_LEFT,
+    ROTATE_RIGHT,
+    SINGLE_WIDTH,
+    SQUARE_SIZE,
     THUMB_PAD_AXIS,
     URDF_PATH,
 )
@@ -47,15 +61,17 @@ from hand_core import (
     extract_angles,
     geometry_error,
     relative_points,
+    split_stereo,
 )
 from retarget import (
+    ROBOT_FINGERS,
     Retargeter,
     RetargetWorker,
     RobotModel,
     human_palm_frame,
     human_retarget_points,
 )
-from track import RosOutput, _frame_wxyz, _parse_args
+from track import RosOutput, _capture, _frame_wxyz, _loss_text, _parse_args
 
 
 def straight_hand(handedness):
@@ -79,6 +95,72 @@ def straight_hand(handedness):
 
 
 class CoreTests(unittest.TestCase):
+    def test_stereo_configuration_split_and_calibration_guard(self):
+        self.assertEqual(CAMERA_TYPE, "stereo")
+        self.assertEqual((SINGLE_WIDTH, HEIGHT, FULL_WIDTH), (1280, 720, 2560))
+        self.assertEqual((ROTATE_LEFT, ROTATE_RIGHT), (180, -180))
+        self.assertEqual((BOARD_SIZE, SQUARE_SIZE, MIN_CALIBRATION_PAIRS), ((9, 6), 23.5, 10))
+        self.assertEqual(PARAMS_PATH.name, "stereo_params.json")
+
+        frame = np.arange(2 * 8 * 3, dtype=np.uint8).reshape(2, 8, 3)
+        with patch("hand_core.FULL_WIDTH", 8), patch("hand_core.ROTATE_LEFT", 0), patch(
+            "hand_core.ROTATE_RIGHT", 180
+        ):
+            left, right = split_stereo(frame)
+            np.testing.assert_array_equal(left, frame[:, :4])
+            np.testing.assert_array_equal(right, np.rot90(frame[:, 4:], 2))
+            self.assertEqual(split_stereo(frame[:, :-1]), (None, None))
+
+        samples = [None] * (MIN_CALIBRATION_PAIRS - 1)
+        with patch.object(calibrate, "collect", return_value=(samples, [], [], (1, 1))):
+            with self.assertRaisesRegex(RuntimeError, str(MIN_CALIBRATION_PAIRS)):
+                calibrate.main()
+
+    def test_stereo_params_and_camera_mode_selection(self):
+        params = {
+            "K1": np.eye(3).tolist(),
+            "D1": np.zeros(5).tolist(),
+            "K2": np.eye(3).tolist(),
+            "D2": np.zeros(5).tolist(),
+            "R": np.eye(3).tolist(),
+            "T": [60, 0, 0],
+        }
+        path = types.SimpleNamespace(
+            is_file=lambda: True, read_text=lambda: json.dumps(params)
+        )
+        detector = types.SimpleNamespace(close=lambda: None)
+        with patch("hand_core.PARAMS_PATH", path), patch(
+            "hand_core.HandDetector", return_value=detector
+        ):
+            processor = StereoProcessor()
+        np.testing.assert_array_equal(processor.K1, np.eye(3))
+        np.testing.assert_array_equal(processor.P2[:, 3], (60, 0, 0))
+
+        missing = types.SimpleNamespace(is_file=lambda: False)
+        with patch("hand_core.PARAMS_PATH", missing), self.assertRaisesRegex(
+            FileNotFoundError, "calibrate.py"
+        ):
+            StereoProcessor()
+
+        d435 = types.SimpleNamespace(params=params)
+        with patch("track.CAMERA_TYPE", "d435"), patch(
+            "track.RealSenseCamera", return_value=d435
+        ), patch("track.StereoProcessor", return_value="processor") as constructor:
+            self.assertEqual(_capture(), (d435, "processor"))
+            constructor.assert_called_once_with(params)
+
+        camera = object()
+        with patch("track.CAMERA_TYPE", "stereo"), patch(
+            "track.Camera", return_value=camera
+        ), patch("track.StereoProcessor", return_value="processor") as constructor:
+            self.assertEqual(_capture(), (camera, "processor"))
+            constructor.assert_called_once_with(None)
+
+        with patch("track.CAMERA_TYPE", "unknown"), self.assertRaisesRegex(
+            ValueError, "CAMERA_TYPE"
+        ):
+            _capture()
+
     def test_cli_only_accepts_optional_ros(self):
         self.assertFalse(_parse_args([]).ros)
         self.assertTrue(_parse_args(["--ros"]).ros)
@@ -308,6 +390,12 @@ class RetargetTests(unittest.TestCase):
                 ) / (2 * step)
         for actual, expected in zip(jacobians, numeric):
             np.testing.assert_allclose(actual, expected, atol=1e-6, rtol=1e-5)
+        active_values, active_jacobians = self.model.features(q, True, self.model.thumb)
+        for value, active_value, jacobian, active_jacobian in zip(
+            values, active_values, jacobians, active_jacobians
+        ):
+            np.testing.assert_array_equal(active_value, value)
+            np.testing.assert_array_equal(active_jacobian, jacobian[..., self.model.thumb])
 
         points = relative_points(straight_hand("Left"))
         retargeter = Retargeter(self.model)
@@ -332,7 +420,7 @@ class RetargetTests(unittest.TestCase):
         targets = retargeter._targets(relative_points(straight_hand("Left")))
         distances = np.linalg.norm(targets[0][1:] - targets[0][0], axis=1)
         np.testing.assert_array_equal(
-            targets[4], np.argsort(distances, kind="stable")[:2] + 1
+            targets[3], np.argsort(distances, kind="stable")[:2] + 1
         )
         self.assertAlmostEqual(np.linalg.norm(self.model.features(self.model.seed)[2]), 1)
         midpoint = self.model.midpoint
@@ -353,6 +441,41 @@ class RetargetTests(unittest.TestCase):
         )
         self.assertAlmostEqual(lower_loss, RETARGET_MIDPOINT_WEIGHT / 4)
 
+    def test_direct_four_finger_angles_and_urdf_neutral(self):
+        expected = np.array((20, 30, 25, 20, 40, 30, 20, 50, 30, 15, 40, 25, 10, 30))
+        local = human_retarget_points(
+            relative_points(apply_angles(straight_hand("Left"), "Left", expected))
+        )
+        direct = self.model.finger_angles(local)
+        for row, (chain, joints, flexion) in enumerate(zip(
+            ROBOT_FINGERS, self.model.finger_joints, expected[2:].reshape(4, 3)
+        )):
+            np.testing.assert_allclose(direct[joints[1:]], np.radians(flexion), atol=1e-10)
+            self.assertAlmostEqual(direct[joints[0]], self.model.finger_neutral[row])
+            self.assertNotAlmostEqual(direct[joints[0]], 0)
+            self.assertNotAlmostEqual(direct[joints[0]], self.model.midpoint[joints[0]])
+            q = self.model.seed.copy()
+            q[joints[0]] = self.model.finger_neutral[row]
+            transforms = self.model.fk(q)
+            direction = (
+                transforms[chain[1]][:3, 3] - transforms[chain[0]][:3, 3]
+            ) @ self.model.palm_frame
+            self.assertGreater(direction[0], 0)
+            self.assertAlmostEqual(direction[1], 0, places=10)
+
+        side = local.copy()
+        angle = np.radians(10)
+        rotation = np.array(((np.cos(angle), -np.sin(angle)),
+                             (np.sin(angle), np.cos(angle))))
+        origin = side[5, :2].copy()
+        side[6:9, :2] = (side[6:9, :2] - origin) @ rotation.T + origin
+        spread = self.model.finger_angles(side)
+        index = self.model.finger_joints[0, 0]
+        self.assertAlmostEqual(
+            spread[index],
+            self.model.finger_neutral[0] + angle / self.model.finger_axis[0],
+        )
+
     def test_single_stage_retarget_and_limits(self):
         expected = np.array((20, 30, 25, 20, 40, 30, 20, 50, 30, 15, 40, 25, 10, 30))
         points = relative_points(
@@ -365,20 +488,37 @@ class RetargetTests(unittest.TestCase):
         np.testing.assert_allclose(targets[0], local[[4, 8, 12, 16, 20]])
         self.assertEqual(
             (
-                RETARGET_PALM_TIPS_SCALE,
+                RETARGET_THUMB_TIP_SCALE,
                 RETARGET_THUMB_FINGERTIPS_SCALE,
-                RETARGET_PALM_TIPS_WEIGHT,
+                RETARGET_THUMB_TIP_WEIGHT,
                 RETARGET_THUMB_FINGERTIPS_WEIGHT,
-                RETARGET_THUMB_SHAPE_WEIGHT,
-                RETARGET_FINGER_SHAPE_WEIGHT,
+                RETARGET_THUMB_CMC_MCP_WEIGHT,
+                RETARGET_THUMB_MCP_IP_WEIGHT,
+                RETARGET_THUMB_IP_TIP_WEIGHT,
                 RETARGET_THUMB_PAD_WEIGHT,
                 RETARGET_TEMPORAL_WEIGHT,
                 RETARGET_MIDPOINT_WEIGHT,
             ),
-            (1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.5, 0.1, 0.01),
+            (1.0, 1.0, 1.0, 0.0, 0.0, 5.0, 1.0, 0.0, 0.0, 0.0),
         )
         self.assertEqual(THUMB_PAD_AXIS, (-0.200671, 0.970119, -0.136380))
-        self.assertEqual((RETARGET_FTOL, RETARGET_MAX_EVALUATIONS), (3e-5, 20))
+        self.assertEqual(RETARGET_ANGLE_FILTER, (1.0, 0.02, 1.0))
+        self.assertEqual((RETARGET_FTOL, RETARGET_MAX_EVALUATIONS), (3e-5, 30))
+        direction_params = (
+            ("RETARGET_THUMB_CMC_MCP_WEIGHT", "thumb_cmc_mcp"),
+            ("RETARGET_THUMB_MCP_IP_WEIGHT", "thumb_mcp_ip"),
+            ("RETARGET_THUMB_IP_TIP_WEIGHT", "thumb_ip_tip"),
+        )
+        baseline = retargeter._losses(self.model.seed, targets, None, self.model.thumb)[4]
+        for parameter, name in direction_params:
+            with patch(f"retarget.C.{parameter}", 0.0):
+                changed = retargeter._losses(
+                    self.model.seed, targets, None, self.model.thumb
+                )[4]
+            self.assertEqual(changed[name], 0.0)
+            for _, other in direction_params:
+                if other != name:
+                    self.assertEqual(changed[other], baseline[other])
         self.assertFalse(retargeter.has_previous)
         result = retargeter.solve(points)
         self.assertIsNotNone(result)
@@ -388,6 +528,22 @@ class RetargetTests(unittest.TestCase):
         self.assertTrue(np.all(result <= self.model.upper + 1e-10))
         self.assertEqual(len(retargeter.losses), 2)
         self.assertLessEqual(retargeter.losses[0], retargeter.losses[1])
+        self.assertEqual(
+            tuple(retargeter.loss_terms),
+            ("thumb_tip", "thumb_fingertips", "thumb_pad", "thumb_cmc_mcp",
+             "thumb_mcp_ip", "thumb_ip_tip", "temporal", "midpoint", "total"),
+        )
+        self.assertAlmostEqual(
+            sum(value for name, value in retargeter.loss_terms.items() if name != "total"),
+            retargeter.loss_terms["total"],
+        )
+        loss_text = _loss_text(retargeter.loss_terms)
+        self.assertIn("thumb to fingers", loss_text)
+        self.assertIn("thumb CMC-MCP", loss_text)
+        self.assertIn("thumb MCP-IP", loss_text)
+        self.assertIn("thumb IP-TIP", loss_text)
+        self.assertIn("100.0%", loss_text)
+        self.assertIn("  0.0%", _loss_text(dict.fromkeys(retargeter.loss_terms, 0.0)))
         for angles in (
             np.zeros(14),
             np.array((45, 55, 80, 90, 75, 80, 90, 75, 80, 90, 75, 80, 90, 75)),
@@ -407,8 +563,9 @@ class RetargetTests(unittest.TestCase):
         np.testing.assert_array_equal(retargeter.q, self.model.seed)
         self.assertFalse(retargeter.has_previous)
         self.assertIsNone(retargeter.losses)
+        self.assertIsNone(retargeter.loss_terms)
 
-    def test_single_stage_calls_slsqp_once_and_keeps_state_on_failure(self):
+    def test_thumb_ik_calls_slsqp_once_and_keeps_best_candidate(self):
         points = relative_points(straight_hand("Left"))
         retargeter = Retargeter(self.model)
         calls = []
@@ -421,15 +578,17 @@ class RetargetTests(unittest.TestCase):
 
         with patch("retarget.minimize", side_effect=fake_minimize):
             result = retargeter.solve(points)
-        np.testing.assert_array_equal(result, self.model.seed)
+        expected = retargeter._targets(points)[4]
+        np.testing.assert_allclose(result, expected, atol=1e-15)
         self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0]["bounds"].lb), 5)
         self.assertNotIn("constraints", calls[0])
         self.assertNotIn("maxiter", calls[0]["options"])
         previous, losses = retargeter.q.copy(), retargeter.losses
         failure = types.SimpleNamespace(success=False, x=np.full(21, np.nan))
         with patch("retarget.minimize", return_value=failure):
-            self.assertIsNone(retargeter.solve(points))
-        np.testing.assert_array_equal(retargeter.q, previous)
+            fallback = retargeter.solve(points)
+        np.testing.assert_allclose(fallback, previous, atol=1e-15)
         self.assertEqual(retargeter.losses, losses)
 
     def test_retarget_stops_after_evaluation_budget_with_best_candidate(self):
@@ -437,38 +596,75 @@ class RetargetTests(unittest.TestCase):
         retargeter = Retargeter(self.model)
         evaluated = []
 
-        def fake_losses(q, _targets, _previous):
+        def fake_losses(q, _targets, _previous, _active):
             evaluated.append(np.asarray(q).copy())
             loss = float(100 - len(evaluated))
-            return loss, np.zeros(21), loss, np.zeros(21)
+            terms = dict.fromkeys(
+                ("thumb_tip", "thumb_fingertips", "thumb_pad", "thumb_cmc_mcp",
+                 "thumb_mcp_ip", "thumb_ip_tip", "temporal", "midpoint"),
+                0.0,
+            )
+            terms["total"] = loss
+            return loss, np.zeros(5), loss, np.zeros(5), terms
 
         def exhaust(fun, _x0, **_kwargs):
             for step in range(1, RETARGET_MAX_EVALUATIONS + 2):
                 fraction = step / (RETARGET_MAX_EVALUATIONS + 2)
-                fun(self.model.lower + fraction * self.model.joint_range)
+                joints = self.model.thumb
+                fun(self.model.lower[joints] + fraction * self.model.joint_range[joints])
             self.fail("Evaluation budget was not enforced")
 
         with patch.object(retargeter, "_losses", side_effect=fake_losses), \
              patch("retarget.minimize", side_effect=exhaust):
             result = retargeter.solve(points)
-        self.assertEqual(len(evaluated), RETARGET_MAX_EVALUATIONS)
+        self.assertEqual(len(evaluated), RETARGET_MAX_EVALUATIONS + 1)
         np.testing.assert_array_equal(result, evaluated[-1])
-        self.assertEqual(retargeter.losses, (80.0, 80.0))
+        self.assertEqual(
+            retargeter.losses,
+            (99.0 - RETARGET_MAX_EVALUATIONS,) * 2,
+        )
+
+    def test_retarget_output_filter_uses_timestamps_and_resets(self):
+        first_pose = relative_points(straight_hand("Left"))
+        second_pose = relative_points(apply_angles(
+            straight_hand("Left"), "Left",
+            np.array((60, 70, 80, 75, 70, 65, 60, 55, 50, 45, 40, 35, 30, 25)),
+        ))
+        retargeter = Retargeter(self.model)
+        first = retargeter.solve(first_pose, 0.0)
+        raw_first = retargeter.q.copy()
+        np.testing.assert_allclose(first, raw_first, atol=1e-15)
+        second = retargeter.solve(second_pose, 1 / 30)
+        raw_second = retargeter.q.copy()
+        changed = np.abs(raw_second - first) > 1e-8
+        self.assertTrue(changed.any())
+        self.assertTrue(np.all(np.abs(second - first) <= np.abs(raw_second - first) + 1e-12))
+        self.assertTrue(np.any(np.abs(second[changed] - raw_second[changed]) > 1e-8))
+        self.assertEqual(retargeter.output_filter.value.shape, (21,))
+        targets = retargeter._targets(second_pose, raw_first)
+        expected = retargeter._losses(second, targets, raw_first, self.model.thumb)[4]
+        for name, value in expected.items():
+            self.assertAlmostEqual(retargeter.loss_terms[name], value)
+        retargeter.pause()
+        reset = retargeter.solve(second_pose, 1.0)
+        np.testing.assert_allclose(reset, retargeter.q, atol=1e-15)
 
     def test_retarget_worker_keeps_latest_frame_and_discards_paused_work(self):
         class FakeRetargeter:
             model = object()
 
             def __init__(self):
-                self.calls, self.pauses = [], 0
+                self.calls, self.timestamps, self.pauses = [], [], 0
                 self.started, self.release = threading.Event(), threading.Event()
 
-            def solve(self, points):
+            def solve(self, points, timestamp):
                 value = int(points[0, 0])
                 self.calls.append(value)
+                self.timestamps.append(timestamp)
                 if not self.release.is_set():
                     self.started.set()
                     self.release.wait(1)
+                self.loss_terms = {"total": float(value)}
                 return np.full(21, value, float)
 
             def pause(self):
@@ -479,37 +675,40 @@ class RetargetTests(unittest.TestCase):
         def wait_for(expected):
             deadline = time.monotonic() + 1
             while time.monotonic() < deadline:
-                result = worker.poll()
-                if result is not None and result[0] == expected:
-                    return result
+                output = worker.poll()
+                if output is not None and output[0][0] == expected:
+                    self.assertEqual(output[1], {"total": float(expected)})
+                    return output[0]
                 time.sleep(0.001)
             self.fail(f"Timed out waiting for retarget result {expected}")
 
         worker = RetargetWorker(fake)
         try:
-            worker.submit(np.full((21, 3), 1))
+            worker.submit(np.full((21, 3), 1), 1.0)
             self.assertTrue(fake.started.wait(1))
-            worker.submit(np.full((21, 3), 2))
-            worker.submit(np.full((21, 3), 3))
+            worker.submit(np.full((21, 3), 2), 2.0)
+            worker.submit(np.full((21, 3), 3), 3.0)
             fake.release.set()
             np.testing.assert_array_equal(wait_for(3), np.full(21, 3))
             self.assertEqual(fake.calls, [1, 3])
+            self.assertEqual(fake.timestamps, [1.0, 3.0])
             self.assertIsNone(worker.poll())
 
             fake.started.clear()
             fake.release.clear()
-            worker.submit(np.full((21, 3), 4))
+            worker.submit(np.full((21, 3), 4), 4.0)
             self.assertTrue(fake.started.wait(1))
             worker.pause()
-            worker.submit(np.full((21, 3), 5))
+            worker.submit(np.full((21, 3), 5), 5.0)
             fake.release.set()
             np.testing.assert_array_equal(wait_for(5), np.full(21, 5))
             self.assertEqual(fake.calls, [1, 3, 4, 5])
+            self.assertEqual(fake.timestamps, [1.0, 3.0, 4.0, 5.0])
             self.assertEqual(fake.pauses, 1)
         finally:
             worker.close()
 
-        def fail(_points):
+        def fail(_points, _timestamp):
             raise ValueError("broken")
 
         broken = types.SimpleNamespace(model=None, pause=lambda: None, solve=fail)
