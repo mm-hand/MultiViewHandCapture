@@ -11,7 +11,9 @@ from viewer import Viewer
 
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--ros", action="store_true")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--ros", action="store_true")
+    output.add_argument("--sim", action="store_true")
     return parser.parse_args(argv)
 
 
@@ -30,10 +32,17 @@ def main():
     viewer = Viewer(retargeter.model)
     ros = RosOutput() if args.ros else None
     worker = RetargetWorker(retargeter)
+    simulation = None
     try:
+        if args.sim:
+            from simulation import GraspSimulation
+
+            simulation = GraspSimulation()
         while True:
             frame = source.read()
             if frame is None:
+                if simulation is not None and not simulation.update(None):
+                    break
                 time.sleep(0.002)
                 continue
             if frame.points is not None and ros is not None:
@@ -47,9 +56,13 @@ def main():
             if ros is not None and robot is not None:
                 ros.joints(np.degrees(robot))
             viewer.update(frame, robot, losses)
+            if simulation is not None and not simulation.update(robot):
+                break
     except KeyboardInterrupt:
         pass
     finally:
+        if simulation is not None:
+            simulation.close()
         worker.close()
         source.close()
         viewer.close()

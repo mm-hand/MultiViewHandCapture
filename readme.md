@@ -23,6 +23,12 @@ conda activate mmhand
 MediaPipe Tasks 的 HandLandmarker 模型已包含在
 `vision/assets/hand_landmarker.task`，运行时无需下载。
 
+抓取仿真是可选依赖：
+
+```bash
+python -m pip install -r simulation/requirements.txt
+```
+
 ## 快速开始
 
 所有运行参数集中在 `config.py`。
@@ -60,6 +66,7 @@ D435 模式读取同步的 `infrared 1/2` Y8 流，使用 SDK 提供的双目标
 ```bash
 python track.py
 python track.py --ros  # 同时发布 ROS 2 topic
+python track.py --sim  # 同时打开 SAPIEN 抓取仿真
 ```
 
 打开 `http://localhost:8080`：
@@ -160,7 +167,7 @@ MMHand 掌轴直接采用 URDF 根 `base_link` 的轴方向：`+x` 大致由腕�
 track (runtime)
 ├── vision.camera → vision.source ─┐
 ├── manus.source（未来）───────────┴→ HandFrame → retarget
-└── viewer / ros / simulation（未来）← MMHand joints
+└── viewer / ros / simulation ← MMHand joints
 ```
 
 `track.py` 只负责选择 Source、转发 HandFrame 和 retarget 结果，以及按逆序释放资源。
@@ -220,19 +227,40 @@ Retargeter 由独立线程持有。主线程只提交最新有效帧，线程忙
 新输入覆盖，避免排队累积延迟。暂停会同时清除热启动和输出滤波状态。Web 损失使用
 实际滤波输出重新计算，因此与发布姿态一致。
 
-## Manus 与抓取仿真扩展
+## Manus 与抓取仿真
 
 未来的 `manus/` 只需包含 SDK 连接、数据解析、手套标定和 `ManusSource`。适配器负责
 把 Manus 关节旋转重建为相同的标准 21 点，现有 runtime、retarget、Viewer 和 ROS
 无需修改。厂商 SDK 二进制通过外部安装提供，不复制到仓库。
 
-`simulation.GraspSimulation` 是无物理引擎依赖的接口空壳。未来仿真在 retarget
-之后消费实际 MMHand 关节，单位为 radian、顺序为 J00–J20；它不访问 Source 或
-HandFrame。最小调用示例：
+`simulation.GraspSimulation` 在进程内消费 retarget 输出，单位为 radian、顺序为
+J00–J20；它不访问 Source 或 HandFrame，也不改变普通运行路径。仿真只加载
+`config.URDF_PATH` 指向的最新 MMHand，不包含第二份 URDF、NERO 或额外 mesh。
+当前 URDF 的少数惯性张量含零特征值；SAPIEN 加载时只在内存中为非正定特征值增加
+`1e-9` 数值下限，不改写 URDF 文件、几何、关节、质量或限位。
+
+安装可选依赖后运行：
 
 ```bash
-python -m simulation.example
+python track.py --sim
 ```
+
+场景只有地面、MMHand 和一个竖直动态圆柱。启动及按 `R` 时，圆柱半径在
+`25–35 mm`、高度在 `80–120 mm` 内独立随机，终端打印实际尺寸；接触数变化时打印
+与圆柱接触的指尖数量。
+
+| 按键 | 功能 |
+|---|---|
+| `Up/Down`、`Left/Right` | 腕部沿世界 X、Y 移动 |
+| `U/J` | 腕部沿世界 Z 正/负方向移动 |
+| `I/K` | 腕部绕局部 X 轴正/负旋转 |
+| `O/L` | 腕部绕局部 Y 轴正/负旋转 |
+| `P/M` | 腕部绕局部 Z 轴正/负旋转 |
+| `R` | 重置腕部并重新生成随机尺寸圆柱 |
+| `Q/Esc` | 关闭仿真和 runtime |
+
+无有效新 retarget 输出时，仿真保持最后一个手势并继续物理。关闭 SAPIEN Viewer
+会按正常清理路径释放 retarget worker、相机、Web Viewer 和 ROS。
 
 ## ROS 2 输出
 
@@ -254,7 +282,7 @@ ros2 topic echo /raw_ik_target
 
 ```text
 vision/                相机、MediaPipe、标定和视觉资产
-simulation/            抓取仿真接口空壳与示例
+simulation/            极简 SAPIEN MMHand 抓取仿真
 hand.py                标准 HandFrame 和 21 点拓扑
 config.py              所有运行配置
 one_euro.py            One Euro 滤波器
@@ -263,6 +291,7 @@ viewer.py              Web dashboard、标准手和 MMHand 显示
 ros.py                 ROS 2 消息构造与 topic 发布
 track.py               Source 选择、组件装配和实时循环
 test_hand_capture.py   核心行为测试
+test_simulation.py     可选 SAPIEN headless 测试
 assets/mmhand/         MMHand URDF、网格和许可证
 test/                  一次性机器人工作空间优化资料，不属于日常测试
 ```
@@ -270,7 +299,9 @@ test/                  一次性机器人工作空间优化资料，不属于日
 运行快速核心测试：
 
 ```bash
-python -m unittest -v test_hand_capture.py
+python -m unittest -v test_hand_capture.py test_simulation.py
 ```
 
-测试不依赖 `test_data/` 中的录像，也不会执行 `test/` 下的一次性优化程序。
+未安装 SAPIEN 时仿真测试自动跳过；安装后会加载当前 MMHand URDF，验证关节契约、
+随机圆柱范围、重置和关节限位。测试不依赖 `test_data/` 中的录像，也不会执行
+`test/` 下的一次性优化程序。

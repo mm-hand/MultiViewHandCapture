@@ -144,9 +144,14 @@ class CoreTests(unittest.TestCase):
         ):
             _source()
 
-    def test_cli_only_accepts_optional_ros(self):
-        self.assertFalse(_parse_args([]).ros)
+    def test_cli_only_accepts_optional_outputs(self):
+        args = _parse_args([])
+        self.assertFalse(args.ros)
+        self.assertFalse(args.sim)
         self.assertTrue(_parse_args(["--ros"]).ros)
+        self.assertTrue(_parse_args(["--sim"]).sim)
+        with patch("sys.stderr"), self.assertRaises(SystemExit):
+            _parse_args(["--ros", "--sim"])
         with patch("sys.stderr"), self.assertRaises(SystemExit):
             _parse_args(["--mode", "points"])
 
