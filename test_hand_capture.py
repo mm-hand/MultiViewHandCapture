@@ -9,8 +9,9 @@ from unittest.mock import patch
 
 import numpy as np
 
-import calibrate
-from camera import split_stereo
+from hand import FINGER_CHAINS, HandFrame
+from vision import calibrate
+from vision.camera import split_stereo
 from config import (
     HAND_LANDMARKER_PATH,
     KEYPOINT_LAYOUT,
@@ -25,12 +26,12 @@ from config import (
     ROBOT_TOPIC,
     URDF_PATH,
 )
-from hand_core import (
-    FINGER_CHAINS,
+from vision.source import (
     HandDetector,
     Kinematics,
     StableHandedness,
     StereoProcessor,
+    VisionSource,
     apply_angles,
     extract_angles,
     geometry_error,
@@ -47,7 +48,7 @@ from retarget import (
     human_retarget_points,
 )
 from ros import RosOutput
-from track import _capture, _parse_args
+from track import _parse_args, _source
 from viewer import _frame_wxyz, _loss_text
 
 
@@ -74,8 +75,10 @@ def straight_hand(handedness):
 class CoreTests(unittest.TestCase):
     def test_stereo_split_and_calibration_guard(self):
         frame = np.arange(2 * 8 * 3, dtype=np.uint8).reshape(2, 8, 3)
-        with patch("camera.FULL_WIDTH", 8), patch("camera.ROTATE_LEFT", 0), patch(
-            "camera.ROTATE_RIGHT", 180
+        with patch("vision.camera.FULL_WIDTH", 8), patch(
+            "vision.camera.ROTATE_LEFT", 0
+        ), patch(
+            "vision.camera.ROTATE_RIGHT", 180
         ):
             left, right = split_stereo(frame)
             np.testing.assert_array_equal(left, frame[:, :4])
@@ -100,43 +103,88 @@ class CoreTests(unittest.TestCase):
             is_file=lambda: True, read_text=lambda: json.dumps(params)
         )
         detector = types.SimpleNamespace(close=lambda: None)
-        with patch("hand_core.PARAMS_PATH", path), patch(
-            "hand_core.HandDetector", return_value=detector
+        with patch("vision.source.PARAMS_PATH", path), patch(
+            "vision.source.HandDetector", return_value=detector
         ):
             processor = StereoProcessor()
         np.testing.assert_array_equal(processor.K1, np.eye(3))
         np.testing.assert_array_equal(processor.P2[:, 3], (60, 0, 0))
 
         missing = types.SimpleNamespace(is_file=lambda: False)
-        with patch("hand_core.PARAMS_PATH", missing), self.assertRaisesRegex(
-            FileNotFoundError, "calibrate.py"
+        with patch("vision.source.PARAMS_PATH", missing), self.assertRaisesRegex(
+            FileNotFoundError, "vision.calibrate"
         ):
             StereoProcessor()
 
         d435 = types.SimpleNamespace(params=params)
-        with patch("track.CAMERA_TYPE", "d435"), patch(
-            "track.RealSenseCamera", return_value=d435
-        ), patch("track.StereoProcessor", return_value="processor") as constructor:
-            self.assertEqual(_capture(), (d435, "processor"))
-            constructor.assert_called_once_with(params)
+        with patch("vision.source.RealSenseCamera", return_value=d435), patch(
+            "vision.source.StereoProcessor", return_value="processor"
+        ) as constructor:
+            source = VisionSource("d435")
+        self.assertIs(source.camera, d435)
+        constructor.assert_called_once_with(params)
 
         camera = object()
-        with patch("track.CAMERA_TYPE", "stereo"), patch(
-            "track.StereoCamera", return_value=camera
-        ), patch("track.StereoProcessor", return_value="processor") as constructor:
-            self.assertEqual(_capture(), (camera, "processor"))
-            constructor.assert_called_once_with(None)
+        with patch("vision.source.StereoCamera", return_value=camera), patch(
+            "vision.source.StereoProcessor", return_value="processor"
+        ) as constructor:
+            source = VisionSource("stereo")
+        self.assertIs(source.camera, camera)
+        constructor.assert_called_once_with(None)
 
-        with patch("track.CAMERA_TYPE", "unknown"), self.assertRaisesRegex(
-            ValueError, "CAMERA_TYPE"
+        selected = object()
+        with patch("track.INPUT_SOURCE", "stereo"), patch(
+            "vision.source.VisionSource", return_value=selected
+        ) as constructor:
+            self.assertIs(_source(), selected)
+        constructor.assert_called_once_with("stereo")
+
+        with patch("track.INPUT_SOURCE", "unknown"), self.assertRaisesRegex(
+            ValueError, "INPUT_SOURCE"
         ):
-            _capture()
+            _source()
 
     def test_cli_only_accepts_optional_ros(self):
         self.assertFalse(_parse_args([]).ros)
         self.assertTrue(_parse_args(["--ros"]).ros)
         with patch("sys.stderr"), self.assertRaises(SystemExit):
             _parse_args(["--mode", "points"])
+
+    def test_vision_source_emits_simple_hand_frames(self):
+        points = straight_hand("Left") / 1000
+        result = StereoProcessor._empty()
+        result.update(
+            found=True,
+            handedness="Left",
+            keypoint_relative=points,
+            image_left=np.zeros((8, 8, 3), np.uint8),
+            image_right=np.zeros((8, 8, 3), np.uint8),
+            px_left=np.zeros((21, 2)),
+            px_right=np.zeros((21, 2)),
+            phase="CALIBRATION (1/10) - Left Hand",
+        )
+        source = object.__new__(VisionSource)
+        source.camera = types.SimpleNamespace(
+            read=lambda: (True, np.empty(0), np.empty(0), 1.0)
+        )
+        source.processor = types.SimpleNamespace(process=lambda *_: result)
+        source.last_timestamp = None
+
+        frame = source.read()
+        self.assertIsInstance(frame, HandFrame)
+        np.testing.assert_array_equal(frame.points, points)
+        self.assertFalse(frame.ready)
+        self.assertEqual(frame.preview.shape, (360, 1280, 3))
+
+        result["phase"] = "GESTURE TRACKING - Left Hand"
+        source.last_timestamp = None
+        self.assertTrue(source.read().ready)
+
+        result.update(stale=True, phase="STALE (1/3)")
+        source.last_timestamp = None
+        stale = source.read()
+        self.assertIsNone(stale.points)
+        self.assertFalse(stale.ready)
 
     def test_unsigned_flexion_angles_for_both_hands(self):
         expected = np.array((20, 30, 25, 130, 40, 15, 70, 25, 20, 80, 35, 10, 60, 20))

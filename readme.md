@@ -1,8 +1,8 @@
 # MultiView Hand Capture
 
-从同步双目图像恢复 MediaPipe 21 点三维手部关键点，并将稳定左手实时映射到
-MMHand 的 21 个关节。项目支持普通拼接双目和 Intel RealSense D435，共用同一套
-检测、三角化、滤波、retarget、Web 显示和 ROS 2 输出流程。
+将设备输入统一为标准 21 点手姿态，再把稳定左手实时映射到 MMHand 的 21 个关节。
+当前视觉输入支持普通拼接双目和 Intel RealSense D435，后续可通过相同接口接入
+Manus 等手部设备，并共用 retarget、Web 显示和 ROS 2 输出。
 
 ## 安装
 
@@ -21,7 +21,7 @@ conda activate mmhand
 ```
 
 MediaPipe Tasks 的 HandLandmarker 模型已包含在
-`assets/mediapipe/hand_landmarker.task`，运行时无需下载。
+`vision/assets/hand_landmarker.task`，运行时无需下载。
 
 ## 快速开始
 
@@ -29,31 +29,31 @@ MediaPipe Tasks 的 HandLandmarker 模型已包含在
 
 ### 普通拼接双目
 
-普通模式由 `camera.StereoCamera` 读取单个 `2560×720` MJPEG 设备，拆成两个
+普通模式由 `vision.camera.StereoCamera` 读取单个 `2560×720` MJPEG 设备，拆成两个
 `1280×720` 图像。首次使用、移动镜头或改变分辨率后需要重新标定：
 
 ```python
-CAMERA_TYPE = "stereo"
+INPUT_SOURCE = "stereo"
 CAMERA_INDEX = 0
 ```
 
 ```bash
-python calibrate.py
+python -m vision.calibrate
 ```
 
 标定窗口中按 `C` 保存有效棋盘图像对，按 `Q` 求解。默认棋盘为 `9×6` 内角点、
-格长 `23.5 mm`，至少需要 10 对；结果写入不提交的 `stereo_params.json`。
-`pattern.png` 可用于打印标定板，但实际格长必须与 `SQUARE_SIZE` 一致。
+格长 `23.5 mm`，至少需要 10 对；结果写入不提交的 `vision/stereo_params.json`。
+`vision/assets/pattern.png` 可用于打印标定板，但实际格长必须与 `SQUARE_SIZE` 一致。
 
 ### RealSense D435
 
 ```python
-CAMERA_TYPE = "d435"
+INPUT_SOURCE = "d435"
 CAMERA_INDEX = 0
 ```
 
 D435 模式读取同步的 `infrared 1/2` Y8 流，使用 SDK 提供的双目标定，不启用深度流，
-也不需要运行 `calibrate.py`。
+也不需要运行 `vision.calibrate`。
 
 ### 启动
 
@@ -76,7 +76,7 @@ python track.py --ros  # 同时发布 ROS 2 topic
 
 | 分组 | 参数 |
 |---|---|
-| 相机 | `CAMERA_TYPE`、`CAMERA_INDEX`、图像尺寸、旋转角、D435 帧率 |
+| 输入与相机 | `INPUT_SOURCE`、`CAMERA_INDEX`、图像尺寸、旋转角、D435 帧率 |
 | 标定与约束 | `BOARD_SIZE`、`SQUARE_SIZE`、`CALIBRATION_*`、`BONE_TOLERANCE` |
 | One Euro | `POINT_2D_FILTER`、`POINT_3D_FILTER`、`ANGLE_FILTER` |
 | 检测门限 | `MP_*_CONFIDENCE`、`MAX_REPROJECTION_ERROR`、`MAX_DEPTH_MM`、`MAX_HAND_RADIUS` |
@@ -88,6 +88,8 @@ One Euro 元组依次为
 `(min_cutoff, beta, derivative_cutoff)`。二维点使用 pixel，三维点使用 mm，角度使用
 degree，因此不同信号的参数不能直接互换。配置在对象创建时读取，修改后需重启程序。
 
+`INPUT_SOURCE` 当前接受 `stereo` 和 `d435`；未来的 Manus 实现使用 `manus`。
+
 MMHand 数组和 ROS 输出使用固定的 J00–J20 顺序：
 
 ```text
@@ -98,11 +100,28 @@ Index   A-A, F-E, PIP, DIP
 Thumb   MCP A-A, MCP F-E, PIP, DIP, CMC
 ```
 
+## 标准输入接口
+
+所有输入源只向 runtime 返回 `hand.HandFrame`：
+
+```text
+timestamp   输入时间戳，单位 second
+points      新鲜的标准 21×3 手姿态；无效或 stale 时为 None
+handedness  Left、Right 或 None
+ready       输入设备是否已完成自身校准
+status      Viewer 显示的简短状态
+preview     可选输入预览图像
+```
+
+标准点顺序为 Wrist，Thumb CMC/MCP/IP/TIP，以及 Index、Middle、Ring、Little 各自的
+MCP/PIP/DIP/TIP。Source 只需实现 `read() -> HandFrame | None` 和 `close()`；没有基类、
+注册器或设备专用 runtime。
+
 ## 坐标系
 
 ### 跟踪坐标系
 
-`keypoint_relative` 和 ROS 关键点使用腕点坐标系。原点为 MediaPipe point 0，轴为：
+`HandFrame.points` 和 ROS 关键点使用腕点坐标系。原点为 point 0，轴为：
 
 ```text
 +z = unit(point9 - point0)
@@ -135,16 +154,16 @@ MMHand 掌轴直接采用 URDF 根 `base_link` 的轴方向：`+x` 大致由腕�
 
 ## 处理流程
 
-模块由 runtime 统一装配，数据按以下方向传递：
+模块由 runtime 统一装配，设备差异止于 Source：
 
 ```text
 track (runtime)
-├── camera → hand_core → retarget
-├── viewer
-└── ros
+├── vision.camera → vision.source ─┐
+├── manus.source（未来）───────────┴→ HandFrame → retarget
+└── viewer / ros / simulation（未来）← MMHand joints
 ```
 
-`track.py` 只负责选择相机、装配组件、转发跟踪和 retarget 结果，以及按逆序释放资源。
+`track.py` 只负责选择 Source、转发 HandFrame 和 retarget 结果，以及按逆序释放资源。
 
 ### 三维手部跟踪
 
@@ -160,7 +179,7 @@ track (runtime)
 → 21 点重建和标准化
 ```
 
-普通双目从 `stereo_params.json` 读取 `K1、D1、K2、D2、R、T`；D435 从 SDK 获取
+普通双目从 `vision/stereo_params.json` 读取 `K1、D1、K2、D2、R、T`；D435 从 SDK 获取
 相同参数。`T` 使用毫米，因此三角化的 `keypoint_absolute` 也是毫米。
 
 启动后以 `CALIBRATION_HZ` 限速收集有效样本，用每根骨长的中位数建立手模型。
@@ -170,8 +189,8 @@ PIP、DIP 和拇指弯曲采用相邻单位骨向量的无符号夹角：
 angle = acos(clamp(u · v, -1, 1))
 ```
 
-连续坏帧期间短暂保留上一结果供显示，但 stale 帧不进入 retarget 或 ROS。超过
-`STALE_FRAMES` 后清空结果，并重置二维、三维和角度滤波器。
+stale 帧只更新状态和输入预览，不输出标准手姿态，也不进入 retarget 或 ROS。超过
+`STALE_FRAMES` 后重置二维、三维和角度滤波器。
 
 ### MMHand retarget
 
@@ -201,6 +220,20 @@ Retargeter 由独立线程持有。主线程只提交最新有效帧，线程忙
 新输入覆盖，避免排队累积延迟。暂停会同时清除热启动和输出滤波状态。Web 损失使用
 实际滤波输出重新计算，因此与发布姿态一致。
 
+## Manus 与抓取仿真扩展
+
+未来的 `manus/` 只需包含 SDK 连接、数据解析、手套标定和 `ManusSource`。适配器负责
+把 Manus 关节旋转重建为相同的标准 21 点，现有 runtime、retarget、Viewer 和 ROS
+无需修改。厂商 SDK 二进制通过外部安装提供，不复制到仓库。
+
+`simulation.GraspSimulation` 是无物理引擎依赖的接口空壳。未来仿真在 retarget
+之后消费实际 MMHand 关节，单位为 radian、顺序为 J00–J20；它不访问 Source 或
+HandFrame。最小调用示例：
+
+```bash
+python -m simulation.example
+```
+
 ## ROS 2 输出
 
 `python track.py --ros` 发布两个 `std_msgs/msg/Float32MultiArray`：
@@ -220,18 +253,18 @@ ros2 topic echo /raw_ik_target
 ## 文件结构
 
 ```text
-config.py             所有运行配置
-camera.py             普通拼接双目、RealSense D435 和图像拆分
-one_euro.py           One Euro 滤波器
-hand_core.py          MediaPipe、三角化、手部约束与标准化
-retarget.py           URDF 运动学、解析 Jacobian、四指映射和拇指 IK
-viewer.py             Web dashboard、Viser 场景和图像显示
-ros.py                ROS 2 消息构造与 topic 发布
-track.py              参数解析、组件装配和实时循环
-calibrate.py          普通拼接双目标定
-test_hand_capture.py  核心行为测试
-assets/               MediaPipe 模型、MMHand URDF、网格和许可证
-test/                 一次性机器人工作空间优化资料，不属于日常测试
+vision/                相机、MediaPipe、标定和视觉资产
+simulation/            抓取仿真接口空壳与示例
+hand.py                标准 HandFrame 和 21 点拓扑
+config.py              所有运行配置
+one_euro.py            One Euro 滤波器
+retarget.py            URDF 运动学、解析 Jacobian、四指映射和拇指 IK
+viewer.py              Web dashboard、标准手和 MMHand 显示
+ros.py                 ROS 2 消息构造与 topic 发布
+track.py               Source 选择、组件装配和实时循环
+test_hand_capture.py   核心行为测试
+assets/mmhand/         MMHand URDF、网格和许可证
+test/                  一次性机器人工作空间优化资料，不属于日常测试
 ```
 
 运行快速核心测试：

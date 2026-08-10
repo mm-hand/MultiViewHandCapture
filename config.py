@@ -2,18 +2,18 @@ from pathlib import Path
 
 # 仓库根目录；仅用于生成下面的资源路径。
 _ROOT = Path(__file__).resolve().parent
-# 普通双目棋盘标定结果；由 calibrate.py 生成。
-PARAMS_PATH = _ROOT / "stereo_params.json"
+# 普通双目棋盘标定结果；由 vision/calibrate.py 生成。
+PARAMS_PATH = _ROOT / "vision/stereo_params.json"
 # 正式 MMHand URDF 路径；FK、关节限位和 Viser 显示都读取该文件。
 URDF_PATH = _ROOT / "assets/mmhand/urdf/hand.urdf"
 # MediaPipe Tasks HandLandmarker 模型路径。
-HAND_LANDMARKER_PATH = _ROOT / "assets/mediapipe/hand_landmarker.task"
+HAND_LANDMARKER_PATH = _ROOT / "vision/assets/hand_landmarker.task"
 
 
 # Camera ----------------------------------------------------------------------
 
-# 相机类型："stereo" 为普通左右拼接相机，"d435" 为 RealSense D435。
-CAMERA_TYPE = "stereo"
+# 输入来源："stereo"、"d435"，未来可扩展为 "manus"。
+INPUT_SOURCE = "stereo"
 # 普通相机的 OpenCV 编号，或 D435 的设备枚举序号。
 CAMERA_INDEX = 0
 # D435 单路红外图像宽度，单位 pixel。
@@ -148,21 +148,3 @@ VIEW_PORTS = (
 )
 # Dashboard JPEG 和状态文本的最大刷新频率，单位 Hz。
 WEB_FPS = 15
-
-
-# MediaPipe landmark topology -------------------------------------------------
-
-# 每个元素是一根手指从腕点到指尖的 MediaPipe landmark 索引链。
-FINGER_CHAINS = (
-    (0, 1, 2, 3, 4),      # 第 1 项：拇指 Thumb。
-    (0, 5, 6, 7, 8),      # 第 2 项：食指 Index。
-    (0, 9, 10, 11, 12),   # 第 3 项：中指 Middle。
-    (0, 13, 14, 15, 16),  # 第 4 项：无名指 Ring。
-    (0, 17, 18, 19, 20),  # 第 5 项：小指 Little。
-)
-# 从每条 FINGER_CHAINS 相邻索引自动生成的骨边；用于骨长约束和关键点连线显示。
-SKELETON_EDGES = tuple(
-    edge
-    for chain in FINGER_CHAINS
-    for edge in zip(chain[:-1], chain[1:])
-)

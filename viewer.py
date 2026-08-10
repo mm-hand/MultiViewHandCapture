@@ -6,7 +6,8 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
-from config import SKELETON_EDGES, URDF_PATH, WEB_FPS, WEB_PORT, VIEW_PORTS
+from config import URDF_PATH, WEB_FPS, WEB_PORT, VIEW_PORTS
+from hand import SKELETON_EDGES
 from retarget import human_palm_frame
 
 ROBOT_CAMERA_DISTANCE = 0.42
@@ -71,22 +72,6 @@ def _robot_camera_pose(model):
     )
 
 
-def _overlay(image, points):
-    image = image.copy()
-    if points is not None:
-        for start, end in SKELETON_EDGES:
-            cv2.line(
-                image,
-                tuple(points[start].astype(int)),
-                tuple(points[end].astype(int)),
-                (0, 255, 0),
-                2,
-            )
-        for point in points.astype(int):
-            cv2.circle(image, tuple(point), 3, (255, 60, 60), -1)
-    return cv2.resize(image, (640, 360))
-
-
 class Viewer:
     def __init__(self, model):
         import viser
@@ -145,7 +130,7 @@ class Viewer:
         )
         self.last_update, self.status = 0.0, "WAITING"
         self.loss_text = _loss_text()
-        self.stereo = cv2.imencode(".jpg", np.zeros((360, 1280, 3), np.uint8))[1].tobytes()
+        self.preview = cv2.imencode(".jpg", np.zeros((360, 1280, 3), np.uint8))[1].tobytes()
         self._start_dashboard()
         print(f"Dashboard: http://localhost:{WEB_PORT}")
 
@@ -166,22 +151,22 @@ class Viewer:
 *{{box-sizing:border-box}} body{{margin:0;height:100vh;background:#101318;color:#eef;
 font:15px sans-serif;display:grid;grid-template:40vh 60vh/repeat(2,1fr);gap:6px}}
 .panel{{position:relative;overflow:hidden;background:#181d25;border:1px solid #343b48}}
-.stereo{{grid-column:1/3}} h2{{position:absolute;z-index:2;margin:0;padding:8px 12px;
+.input{{grid-column:1/3}} h2{{position:absolute;z-index:2;margin:0;padding:8px 12px;
 font-size:15px;background:#101318cc;border-radius:0 0 6px 0}}
 img,iframe{{width:100%;height:100%;display:block;border:0;object-fit:contain}}
 #status{{color:#9bd;margin-left:12px;font-weight:normal}}
 #losses{{position:absolute;z-index:2;right:0;top:0;margin:0;padding:9px 12px;
 background:#101318dd;color:#bde2ff;font:13px/1.35 monospace;pointer-events:none}}</style></head><body>
-<section class="panel stereo"><h2>Stereo + MediaPipe <span id="status">WAITING</span></h2>
-<pre id="losses">Weighted retarget loss\nwaiting</pre><img id="stereo"></section>
+<section class="panel input"><h2>Input <span id="status">WAITING</span></h2>
+<pre id="losses">Weighted retarget loss\nwaiting</pre><img id="preview"></section>
 <section class="panel"><h2>Normalized hand</h2><iframe id="normalized"></iframe></section>
 <section class="panel"><h2>Retargeted MMHand</h2><iframe id="robot"></iframe></section>
 <script>
 const host=location.hostname, statusText=document.getElementById("status"),
-stereoImage=document.getElementById("stereo"),lossText=document.getElementById("losses");
+previewImage=document.getElementById("preview"),lossText=document.getElementById("losses");
 for(const [id,port] of [["normalized",{normalized_port}],["robot",{robot_port}]])
   document.getElementById(id).src=`http://${{host}}:${{port}}`;
-setInterval(()=>{{stereoImage.src="/stereo.jpg?t="+Date.now();
+setInterval(()=>{{previewImage.src="/preview.jpg?t="+Date.now();
 fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x);
 fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000 / WEB_FPS)});
 </script></body></html>""".encode()
@@ -189,8 +174,8 @@ fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
                 path = self.path.split("?", 1)[0]
-                if path == "/stereo.jpg":
-                    body, content_type = owner.stereo, "image/jpeg"
+                if path == "/preview.jpg":
+                    body, content_type = owner.preview, "image/jpeg"
                 elif path == "/status":
                     body, content_type = owner.status.encode(), "text/plain; charset=utf-8"
                 elif path == "/losses":
@@ -214,33 +199,25 @@ fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000
         self.http_thread = threading.Thread(target=self.http.serve_forever, daemon=True)
         self.http_thread.start()
 
-    def update(self, result, robot=None, losses=None):
+    def update(self, frame, robot=None, losses=None):
         now = time.monotonic()
         if now - self.last_update < 1 / WEB_FPS:
             return
         self.last_update = now
-        quality = result["quality"]
-        detail = f" · rejected: {quality['rejected_reason']}" if quality["rejected_reason"] else ""
-        if quality["reprojection_error"] is not None:
-            detail += f" · reprojection: {quality['reprojection_error']:.1f} px"
-        self.status = f"{result['phase']}{detail}"
+        self.status = frame.status
         if losses is not None:
             self.loss_text = _loss_text(losses)
-        elif result["keypoint_relative"] is None or result["handedness"] != "Left":
+        elif frame.points is None or frame.handedness != "Left":
             self.loss_text = _loss_text()
-        views = [
-            _overlay(image, points) if image is not None else np.zeros((360, 640, 3), np.uint8)
-            for image, points in zip(
-                (result["image_left"], result["image_right"]),
-                (result["px_left"], result["px_right"]),
-            )
-        ]
-        ok, encoded = cv2.imencode(".jpg", np.hstack(views), (cv2.IMWRITE_JPEG_QUALITY, 82))
+        preview = frame.preview
+        if preview is None:
+            preview = np.zeros((360, 1280, 3), np.uint8)
+        ok, encoded = cv2.imencode(".jpg", preview, (cv2.IMWRITE_JPEG_QUALITY, 82))
         if ok:
-            self.stereo = encoded.tobytes()
-        points = result["keypoint_relative"]
-        if points is not None and result["handedness"] in ("Left", "Right"):
-            self.human_frame.wxyz = _human_view_wxyz(result["handedness"], points)
+            self.preview = encoded.tobytes()
+        points = frame.points
+        if points is not None and frame.handedness in ("Left", "Right"):
+            self.human_frame.wxyz = _human_view_wxyz(frame.handedness, points)
         visible = points is not None
         self.human_cloud.visible = self.human_bones.visible = visible
         if not visible:
@@ -250,12 +227,12 @@ fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000
             self.human_cloud.points = points.astype(np.float32)
             self.human_bones.points = points[np.asarray(SKELETON_EDGES)].astype(np.float32)
             try:
-                origin, frame = human_palm_frame(points)
+                origin, palm_frame = human_palm_frame(points)
             except ValueError:
                 self.human_retarget_frame.visible = False
             else:
                 self.human_retarget_frame.position = origin
-                self.human_retarget_frame.wxyz = _frame_wxyz(frame)
+                self.human_retarget_frame.wxyz = _frame_wxyz(palm_frame)
                 self.human_retarget_frame.visible = True
         if robot is not None:
             self.urdf.update_cfg(

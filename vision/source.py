@@ -10,9 +10,9 @@ from one_euro import OneEuro
 from config import (
     ANGLE_FILTER,
     BONE_TOLERANCE,
+    CAMERA_INDEX,
     CALIBRATION_FRAMES,
     CALIBRATION_HZ,
-    FINGER_CHAINS,
     HAND_LANDMARKER_PATH,
     HAND_SWITCH_FRAMES,
     MAX_DEPTH_MM,
@@ -27,8 +27,11 @@ from config import (
     STANDARD_PALM_SIZE,
     STALE_FRAMES,
 )
+from hand import FINGER_CHAINS, HandFrame, SKELETON_EDGES
+from .camera import RealSenseCamera, StereoCamera
 
 EPS = 1e-8
+
 
 def _unit(vector, fallback=(1.0, 0.0, 0.0)):
     norm = np.linalg.norm(vector)
@@ -231,7 +234,8 @@ class StereoProcessor:
         if params is None:
             if not PARAMS_PATH.is_file():
                 raise FileNotFoundError(
-                    f"Stereo calibration not found: {PARAMS_PATH}; run python calibrate.py"
+                    f"Stereo calibration not found: {PARAMS_PATH}; "
+                    "run python -m vision.calibrate"
                 )
             params = json.loads(PARAMS_PATH.read_text())
         self.K1, self.D1 = np.asarray(params["K1"]), np.asarray(params["D1"])
@@ -330,3 +334,82 @@ class StereoProcessor:
     def close(self):
         self.left_detector.close()
         self.right_detector.close()
+
+
+def _overlay(image, points):
+    image = image.copy()
+    if points is not None:
+        for start, end in SKELETON_EDGES:
+            cv2.line(
+                image,
+                tuple(points[start].astype(int)),
+                tuple(points[end].astype(int)),
+                (0, 255, 0),
+                2,
+            )
+        for point in points.astype(int):
+            cv2.circle(image, tuple(point), 3, (255, 60, 60), -1)
+    return cv2.resize(image, (640, 360))
+
+
+def _preview(result):
+    views = [
+        _overlay(image, points)
+        if image is not None
+        else np.zeros((360, 640, 3), np.uint8)
+        for image, points in zip(
+            (result["image_left"], result["image_right"]),
+            (result["px_left"], result["px_right"]),
+        )
+    ]
+    return np.hstack(views)
+
+
+def _status(result):
+    quality = result["quality"]
+    detail = (
+        f" · rejected: {quality['rejected_reason']}"
+        if quality["rejected_reason"]
+        else ""
+    )
+    if quality["reprojection_error"] is not None:
+        detail += f" · reprojection: {quality['reprojection_error']:.1f} px"
+    return f"{result['phase']}{detail}"
+
+
+class VisionSource:
+    def __init__(self, kind):
+        if kind == "d435":
+            camera = RealSenseCamera(CAMERA_INDEX)
+            params = camera.params
+        elif kind == "stereo":
+            camera, params = StereoCamera(CAMERA_INDEX), None
+        else:
+            raise ValueError("Vision source must be 'stereo' or 'd435'")
+        try:
+            self.processor = StereoProcessor(params)
+        except Exception:
+            camera.close()
+            raise
+        self.camera, self.last_timestamp = camera, None
+
+    def read(self):
+        ok, left, right, timestamp = self.camera.read()
+        if not ok or timestamp == self.last_timestamp:
+            return None
+        self.last_timestamp = timestamp
+        result = self.processor.process(left, right, timestamp)
+        points = result["keypoint_relative"]
+        fresh = result["found"] and not result["stale"] and points is not None
+        return HandFrame(
+            timestamp=timestamp,
+            points=points if fresh else None,
+            handedness=result["handedness"] if fresh else None,
+            ready=fresh and result["phase"].startswith("GESTURE"),
+            status=_status(result),
+            preview=_preview(result),
+        )
+
+    def close(self):
+        self.processor.close()
+        self.camera.close()
