@@ -17,6 +17,7 @@ import trimesh
 from transforms3d.quaternions import axangle2quat, mat2quat
 
 if __package__:
+    from config import MCP_AA_NEUTRAL_DEG
     from .prepare_full_fidelity_urdf import (
         ARM_ACTIVE_JOINT_NAMES as ARM_JOINT_NAMES,
         DEFAULT_OUTPUT_URDF as FULL_ROBOT_URDF,
@@ -33,6 +34,7 @@ if __package__:
 else:
     # Direct execution keeps imports rooted in this checkout only.
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from config import MCP_AA_NEUTRAL_DEG
     from teleop_maniskill.prepare_full_fidelity_urdf import (
         ARM_ACTIVE_JOINT_NAMES as ARM_JOINT_NAMES,
         DEFAULT_OUTPUT_URDF as FULL_ROBOT_URDF,
@@ -85,7 +87,10 @@ ARM_HOME_QPOS = np.asarray(
     [-0.1, 0.55, 0.0, 1.05, 0.0, 0.0, 0.0], dtype=np.float64
 )
 HAND_OPEN_QPOS = np.zeros(21, dtype=np.float64)
-HAND_OPEN_QPOS[[0, 4, 8, 12, 16]] = np.radians((36, 29, 31, 23, 28))
+# Match Retargeter's seed: only the four-finger A-A calibration offsets are
+# explicit.  Thumb joints start at zero and are then clipped by the current
+# URDF limits.  The current hand limits contain zero for all five thumb joints.
+HAND_OPEN_QPOS[[0, 4, 8, 12]] = np.radians(MCP_AA_NEUTRAL_DEG)
 
 ROBOT_ROOT_POSE = sapien.Pose([0.0, 0.45, 0.714], [0.0, 0.0, 0.0, 1.0])
 TCP_LINK_NAME = "capture_hand__base_link"

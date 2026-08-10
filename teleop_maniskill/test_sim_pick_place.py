@@ -169,6 +169,16 @@ class TestStandalonePickPlace(unittest.TestCase):
         self.assertEqual(tuple(HAND_JOINT_NAMES), tuple(JOINT_NAMES))
         self.assertEqual(simulation.arm_indices.shape, (7,))
         self.assertEqual(simulation.hand_indices.shape, (21,))
+        self.assertAlmostEqual(simulation.hand_lower[16], -1.2)
+        self.assertAlmostEqual(simulation.hand_upper[16], 1.0)
+        self.assertAlmostEqual(simulation.hand_lower[20], 0.0)
+        self.assertAlmostEqual(simulation.hand_upper[20], 1.51)
+        np.testing.assert_allclose(
+            simulation.open_hand[16:21],
+            [0.0, 0.0, 0.0, 0.0, 0.0],
+            rtol=0.0,
+            atol=1e-7,
+        )
 
         # SAPIEN's active-qpos order is intentionally not capture order.  This
         # guards against accidentally replacing the name-based mapping with a
@@ -453,7 +463,9 @@ class TestStandalonePickPlace(unittest.TestCase):
                 - object_start
             )
             self.assertGreater(object_delta[0], 0.035)
-            self.assertLess(max_thumb_error, math.radians(2.0))
+            # The commanded thumb pose should remain stiff while the hand
+            # pushes the object, even with contact loading at the new neutral.
+            self.assertLess(max_thumb_error, math.radians(2.1))
             for name, expected in zip(HAND_JOINT_NAMES[16:21], simulation.open_hand[16:21]):
                 self.assertAlmostEqual(
                     float(simulation.joints_by_name[name].get_drive_target()[0]),

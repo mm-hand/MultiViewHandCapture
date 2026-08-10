@@ -276,7 +276,7 @@ HAND_JOINTS = (
         "capture_hand__mmhand_thumb_1_thumb_base_1",
         "capture_hand__mmhand_thumb_1_thumb_abduction_adduction_link_1",
         "0.000906 -0.012002 -0.045452", "0.0 -0.0 0.0",
-        "-0.070801 0.928071 -0.365612", "0.0", "0.994838",
+        "-0.070801 0.928071 -0.365612", "-1.2", "1",
     ),
     JointSpec(
         "Thumb_MCP_FE", "revolute",
@@ -305,7 +305,7 @@ HAND_JOINTS = (
         "Thumb_CMC", "revolute", "capture_hand__palm_1",
         "capture_hand__mmhand_thumb_1_thumb_base_1",
         "-0.052098 -0.000861 0.0088", "0.0 -0.0 0.0",
-        "0.0 0.0 -1.0", "0.0", "1.343904",
+        "0.0 0.0 -1.0", "0.0", "1.51",
     ),
     JointSpec(
         "capture_hand__palm_1_fixed_joint", "fixed",

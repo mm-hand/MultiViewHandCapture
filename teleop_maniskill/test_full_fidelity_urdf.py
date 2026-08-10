@@ -13,7 +13,13 @@ from .prepare_full_fidelity_urdf import (
     DEFAULT_MANIFEST,
     DEFAULT_OUTPUT_URDF,
     HAND_ACTIVE_JOINT_NAMES,
+    HAND_PREFIX,
     validate_urdf,
+)
+
+
+SOURCE_HAND_URDF = (
+    Path(__file__).resolve().parents[1] / "assets/mmhand/urdf/hand.urdf"
 )
 
 
@@ -78,6 +84,32 @@ class TestFullFidelityUrdf(unittest.TestCase):
         ]
         self.assertTrue(hand_visuals)
         self.assertTrue(all(visual.find("material") is not None for visual in hand_visuals))
+
+    def test_active_hand_joints_match_current_capture_urdf(self) -> None:
+        """Fail clearly when hand.urdf changes without rebuilding the bundle."""
+
+        source = ET.parse(SOURCE_HAND_URDF).getroot()
+        for name in HAND_ACTIVE_JOINT_NAMES:
+            with self.subTest(joint=name):
+                expected = source.find(f"joint[@name='{name}']")
+                bundled = self.root.find(f"joint[@name='{name}']")
+                self.assertIsNotNone(expected)
+                self.assertIsNotNone(bundled)
+                self.assertEqual(bundled.get("type"), expected.get("type"))
+                self.assertEqual(
+                    bundled.find("parent").get("link"),
+                    HAND_PREFIX + expected.find("parent").get("link"),
+                )
+                self.assertEqual(
+                    bundled.find("child").get("link"),
+                    HAND_PREFIX + expected.find("child").get("link"),
+                )
+                for tag in ("origin", "axis", "limit"):
+                    self.assertEqual(
+                        bundled.find(tag).attrib,
+                        expected.find(tag).attrib,
+                        f"{name} {tag} differs from assets/mmhand/urdf/hand.urdf",
+                    )
 
     def test_manifest_hashes_all_runtime_assets(self) -> None:
         payload = json.loads(DEFAULT_MANIFEST.read_text(encoding="utf-8"))

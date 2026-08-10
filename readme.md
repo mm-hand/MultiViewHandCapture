@@ -116,6 +116,9 @@ D435_WIDTH, D435_HEIGHT, D435_FPS = 1280, 720, 30
 - 左右各占 `1280×720`，并按 `ROTATE_LEFT/ROTATE_RIGHT` 旋转。
 - 标定参数来自 `stereo_params.json`。
 
+`track.py` 会在启动相机线程前检查该文件；缺失时会给出明确错误。普通双目先运行
+`python calibrate.py` 生成本机标定，D435 则保持 `CAMERA_TYPE="d435"`，无需该文件。
+
 ### 三维重建和滤波
 
 | 参数 | 默认值 | 含义 |
@@ -294,10 +297,11 @@ MSAA 4、2048 阴影图、40° FOV；同时创建 front、left-rear、right-rear
 
 仿真以 100 Hz 物理、20 Hz 控制运行。NERO 腕姿固定，只接受世界 XYZ 增量；
 默认 `0.12 m/s` 即每步 `6 mm`，单步上限 `2 cm`。MMHand 使用 21 维绝对关节
-目标和 `3 rad/s` 变化率限制。捕捉和仿真现在使用完全相同的 J00–J20 顺序、
+目标和 `6 rad/s` 变化率限制。捕捉和仿真现在使用完全相同的 J00–J20 顺序、
 符号、零位、关节轴和限位，UDP 目标只做有限值检查与同索引限位裁剪，不再使用
-0616 URDF 所需的重排、取负和角度偏移。张手/reset 使用捕捉模型的机械中位角
-`36/29/31/23/28°`。终端以 5 Hz 显示 UDP age、TCP XYZ 和
+0616 URDF 所需的重排、取负和角度偏移。张手/reset 对四指使用捕捉端 A-A
+零偏 `36/29/31/23°`；拇指从零种子按当前 URDF 限位裁剪，因此当前为
+`Thumb_MCP_AA=0`、`Thumb_CMC=0`。终端以 5 Hz 显示 UDP age、TCP XYZ 和
 contact/grasp/lift/in-place/success；断流或跟踪无效时显示 `HOLD`。
 
 仿真控制：
@@ -584,6 +588,6 @@ ros2 topic echo /raw_ik_target
   teleop_maniskill.test_sim_pick_place
 ```
 
-当前 checkout 的旧 `test_hand_capture.py` 仍引用已经不存在的
-`config.ROBOT_TO_CONTRACT`，会在收集阶段失败；这是本功能之前已有的基线接口
-失配。本次新增测试彼此独立，不修改该旧接口。
+其中 `test_full_fidelity_urdf` 会逐关节比较捕捉端 `hand.urdf` 与仿真组合 URDF
+的 parent/child、origin、axis 和 limit；修改源 URDF 后如果忘记重建仿真资产，
+测试会直接失败并指出对应关节。

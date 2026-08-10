@@ -9,7 +9,7 @@ import unittest
 
 import numpy as np
 
-from config import ROBOT_JOINT_NAMES
+from config import MCP_AA_NEUTRAL_DEG, ROBOT_JOINT_NAMES
 from teleop_maniskill.run_sim_teleop import (
     DEFAULT_PYTHON,
     PROJECT_ROOT,
@@ -17,6 +17,7 @@ from teleop_maniskill.run_sim_teleop import (
     child_environment,
     parse_args,
     require_project_path,
+    wait_for_processes,
 )
 from teleop_maniskill.teleop_protocol import (
     JOINT_NAMES,
@@ -30,6 +31,17 @@ from teleop_maniskill.teleop_protocol import (
 
 
 class LauncherTests(unittest.TestCase):
+    class _Process:
+        def __init__(self, *codes):
+            self.codes = list(codes)
+            self.poll_count = 0
+
+        def poll(self):
+            self.poll_count += 1
+            if len(self.codes) > 1:
+                return self.codes.pop(0)
+            return self.codes[0]
+
     def test_default_interpreters_use_the_same_project_virtualenv(self):
         args = parse_args([])
         self.assertEqual(args.capture_python, DEFAULT_PYTHON)
@@ -150,6 +162,22 @@ class LauncherTests(unittest.TestCase):
         external = parse_args(["--object-mesh-path", "/usr/bin/python3"])
         with self.assertRaisesRegex(ValueError, "inside the project root"):
             build_commands(external)
+
+    def test_capture_failure_keeps_simulation_alive_until_it_exits(self):
+        simulation = self._Process(None, None, 0)
+        capture = self._Process(3)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = wait_for_processes(
+                {"simulation": simulation, "capture": capture},
+                poll_interval=0.0,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertEqual(capture.poll_count, 1)
+        self.assertGreaterEqual(simulation.poll_count, 3)
+        self.assertIn("capture exited with code 3", output.getvalue())
+        self.assertIn("simulation remains open in HOLD", output.getvalue())
 
 
 def unused_endpoint():
@@ -366,7 +394,7 @@ class ProtocolTests(unittest.TestCase):
 class MappingTests(unittest.TestCase):
     def test_neutral_keeps_same_urdf_coordinates(self):
         q = np.zeros(21)
-        q[[0, 4, 8, 12, 16]] = np.radians((36, 29, 31, 23, 28))
+        q[[0, 4, 8, 12]] = np.radians(MCP_AA_NEUTRAL_DEG)
         np.testing.assert_allclose(capture_to_sim(q), q, atol=1e-15)
 
     def test_same_urdf_order_and_signs_are_identity(self):
@@ -375,9 +403,10 @@ class MappingTests(unittest.TestCase):
 
     def test_open_fist_and_single_index_keep_capture_directions(self):
         open_capture = np.zeros(21)
-        open_capture[[0, 4, 8, 12, 16]] = np.radians((36, 29, 31, 23, 28))
+        open_capture[[0, 4, 8, 12]] = np.radians(MCP_AA_NEUTRAL_DEG)
         fist_capture = open_capture.copy()
-        fist_capture[[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19, 20]] = 0.5
+        fist_capture[[1, 2, 3, 5, 6, 7, 9, 10, 11, 13, 14, 15, 17, 18, 19]] = 0.5
+        fist_capture[20] = 1.0
 
         open_target = capture_to_sim(open_capture)
         fist_target = capture_to_sim(fist_capture)
@@ -407,7 +436,7 @@ class MappingTests(unittest.TestCase):
         self.assertAlmostEqual(mapped[15], -0.2)
 
         degrees_mistaken_for_radians = np.zeros(21)
-        degrees_mistaken_for_radians[[0, 4, 8, 12, 16]] = (36, 29, 31, 23, 28)
+        degrees_mistaken_for_radians[[0, 4, 8, 12]] = MCP_AA_NEUTRAL_DEG
         self.assertGreater(
             np.max(np.abs(capture_to_sim(degrees_mistaken_for_radians))),
             20.0,

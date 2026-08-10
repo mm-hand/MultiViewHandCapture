@@ -13,7 +13,11 @@ checkout or the original `assets/mmhand` directory.
   `asset/nero_mmhand_orig_urdf/meshes/nero/` on 2026-07-31.
 - The hand's complete 32-link kinematic tree, inertials, mesh frames, mesh
   scales, and 21 active joints were imported from this capture project's
-  `assets/mmhand/urdf/hand.urdf` and `assets/mmhand/meshes/` on 2026-07-31.
+  `assets/mmhand/urdf/hand.urdf` and `assets/mmhand/meshes/`, most recently on
+  2026-08-03. The current source URDF SHA-256 is
+  `644c2874dc40c54fb383bbb96bb1465a39ea1a5d6675dc043c25746d214f3d78`.
+  This revision changes `Thumb_MCP_AA` limits to `[-1.2, 1.0] rad` and
+  `Thumb_CMC` limits to `[0.0, 1.51] rad`.
 - `nero_capture_mmhand.urdf` is a modified combination. Hand link and fixed
   joint names are namespaced to avoid `base_link` collisions, runtime mesh
   paths are made local, and display materials are split into palm, joint-base,

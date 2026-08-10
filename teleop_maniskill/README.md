@@ -155,6 +155,9 @@ CAMERA_INDEX = 0
 - `stereo` 读取单路 `2560×720` 左右拼接画面，并使用项目根目录的
   `stereo_params.json`。首次使用或改变镜头位置后先运行 `.venv/bin/python calibrate.py`。
 
+启动时会先检查所选相机配置。`stereo` 模式缺少 `stereo_params.json` 时会直接打印
+可操作的错误，不会先创建后台相机线程；当前 checkout 默认使用已连接的 D435。
+
 捕捉 Web 页默认为 <http://localhost:8080>。程序先收集 100 个有效样本估计骨长，
 连续识别时大约需要 10 秒。只有页面状态进入 `GESTURE TRACKING` 后，有效左手
 目标才会驱动仿真 MMHand。
@@ -209,6 +212,10 @@ CAMERA_INDEX = 0
 position/velocity iterations 为 `25/4`，全部主动关节 friction 为 `0`，动态物体的
 linear/angular damping 为 `2/2`。较低物体阻尼使固定手势随 EE 推进时优先推动物体，
 而不是让轻质指节明显退让；这些参数不会改变 IK、手部目标角或 URDF 运动学。
+
+张手/reset 与捕捉端使用同一个 seed：四指 A-A 为 `36/29/31/23°`，五个拇指
+关节从零开始并按 URDF 限位裁剪。当前新版 URDF 因而得到
+`Thumb_MCP_AA=0`、`Thumb_CMC=0`；没有额外的旧版拇指 `28°` 偏移。
 
 调试时可使用其他端口，但发送和接收必须完全一致：
 
@@ -326,6 +333,20 @@ teleop_maniskill/assets/objects/my_object/mesh/simplified.obj
 .venv/bin/python teleop_maniskill/prepare_full_fidelity_urdf.py validate
 ```
 
+如果再次修改根目录的 `assets/mmhand/urdf/hand.urdf`，用当前组合资产自身提供
+不变的 NERO 部分即可重新导入，不需要 UltraDexGrasp checkout：
+
+```bash
+.venv/bin/python teleop_maniskill/prepare_full_fidelity_urdf.py build \
+  --nero-source teleop_maniskill/assets/robot/nero_capture_mmhand.urdf \
+  --hand-source assets/mmhand/urdf/hand.urdf
+.venv/bin/python teleop_maniskill/prepare_standalone_urdf.py
+```
+
+第一条命令会同时重写高精度组合 URDF 和 `MANIFEST.json`；第二条同步仅用于
+physics/debug 的 primitive fallback。随后运行本节测试，逐关节 parity 测试会检查
+parent/child、origin、axis 和 limit 是否仍与捕捉端一致。
+
 运行 teleop 独立回归测试：
 
 ```bash
@@ -374,6 +395,14 @@ shader，不会自动尝试 RT；当前设备上 RT 后端不可用，不要手�
   进入 `GESTURE TRACKING`，并且视野中是左手。
 
 `HOLD` 不会把手指瞬间弹回零位，而是保持最后一个有效姿态。
+一键启动时，如果捕捉端因相机占用、标定缺失等原因单独退出，SAPIEN Viewer 也会
+继续保持打开并显示 `HOLD`，终端会保留捕捉端的真实错误；修复后重新启动即可。
+
+### `stereo calibration not found`
+
+当前 `config.py` 选择了普通拼接双目，但项目根目录没有本机生成的
+`stereo_params.json`。普通双目请先运行 `.venv/bin/python calibrate.py`；使用 D435
+则把 `CAMERA_TYPE` 改为 `"d435"`，它会读取出厂标定，不需要这个文件。
 
 ### `Address already in use`
 

@@ -954,7 +954,7 @@
     <child link="capture_hand__mmhand_thumb_1_thumb_abduction_adduction_link_1" />
     <origin xyz="0.000906 -0.012002 -0.045452" rpy="0.0 -0.0 0.0" />
     <axis xyz="-0.070801 0.928071 -0.365612" />
-    <limit lower="0.0" upper="0.994838" effort="100" velocity="100" />
+    <limit lower="-1.2" upper="1" effort="100" velocity="100" />
   </joint>
   <joint name="Thumb_MCP_FE" type="revolute">
     <parent link="capture_hand__mmhand_thumb_1_thumb_abduction_adduction_link_1" />
@@ -982,7 +982,7 @@
     <child link="capture_hand__mmhand_thumb_1_thumb_base_1" />
     <origin xyz="-0.052098 -0.000861 0.0088" rpy="0.0 -0.0 0.0" />
     <axis xyz="0.0 0.0 -1.0" />
-    <limit lower="0.0" upper="1.343904" effort="100" velocity="100" />
+    <limit lower="0.0" upper="1.51" effort="100" velocity="100" />
   </joint>
   <joint name="capture_hand__palm_1_fixed_joint" type="fixed">
     <parent link="capture_hand__base_link" />

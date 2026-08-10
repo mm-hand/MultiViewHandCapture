@@ -239,6 +239,40 @@ def stop_processes(processes: dict[str, subprocess.Popen]) -> None:
             pass
 
 
+def wait_for_processes(
+    processes: dict[str, subprocess.Popen], poll_interval: float = 0.2
+) -> int:
+    """Keep the simulator alive when only capture fails.
+
+    The arm keyboard controls and Viewer remain useful without a live hand
+    stream, and the receiver already represents this state as HOLD.  Only the
+    simulation/Viewer lifetime controls the launcher lifetime.
+    """
+
+    capture_exit_reported = False
+    while True:
+        simulation_code = processes["simulation"].poll()
+        if simulation_code is not None:
+            print(
+                f"[EXIT] simulation exited with code {simulation_code}",
+                flush=True,
+            )
+            return simulation_code
+
+        capture = processes.get("capture")
+        if capture is not None and not capture_exit_reported:
+            capture_code = capture.poll()
+            if capture_code is not None:
+                print(
+                    f"[WARN] capture exited with code {capture_code}; "
+                    "simulation remains open in HOLD. Fix the capture error "
+                    "above, then restart the launcher.",
+                    flush=True,
+                )
+                capture_exit_reported = True
+        time.sleep(poll_interval)
+
+
 def main() -> int:
     args = parse_args()
     sim_command, capture_command = build_commands(args)
@@ -255,14 +289,11 @@ def main() -> int:
             return simulation_code or 1
 
         processes["capture"] = start_process(capture_command, capture_env, "capture")
-        print("[INFO] Close the SAPIEN viewer or press Ctrl-C here to stop both processes.")
-        while True:
-            for name, process in processes.items():
-                code = process.poll()
-                if code is not None:
-                    print(f"[EXIT] {name} exited with code {code}", flush=True)
-                    return code
-            time.sleep(0.2)
+        print(
+            "[INFO] Close the SAPIEN viewer or press Ctrl-C here to stop both "
+            "processes. Capture errors leave the Viewer open in HOLD."
+        )
+        return wait_for_processes(processes)
     except KeyboardInterrupt:
         print("\n[INFO] Interrupted.", flush=True)
         return 0

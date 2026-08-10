@@ -2,9 +2,9 @@
   "generated_asset": "nero_capture_mmhand.urdf",
   "runtime_files": [
     {
-      "bytes": 3094,
+      "bytes": 3330,
       "path": "ASSET_PROVENANCE.md",
-      "sha256": "e0382a2b82b7ea7984a2dc31adb0d1d24214c458ac8fa57896a359fbf56bb953"
+      "sha256": "638e7a39977a5148541aa36638ea6e2cc55c5f9ee25e896dd02951e81a5b1775"
     },
     {
       "bytes": 2249,
@@ -242,11 +242,11 @@
       "sha256": "8c2498c59bcf574386cbd7e01fd5d81ff2483e26ae2f0e919deec62a04bce77d"
     },
     {
-      "bytes": 48209,
+      "bytes": 48199,
       "path": "nero_capture_mmhand.urdf",
-      "sha256": "e1e860b83941e60c27c1f78a7e00fef8757958565a41d506f2b6ab34a04206a5"
+      "sha256": "7081915179837bb050bfcefc814940613dbdd15a87313be1338caebd2847278a"
     }
   ],
   "schema": "teleop.robot-assets.manifest.v1",
-  "total_bytes": 97806019
+  "total_bytes": 97806245
 }

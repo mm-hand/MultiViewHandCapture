@@ -18,6 +18,12 @@ from teleop_maniskill.prepare_standalone_urdf import (
 )
 
 
+SOURCE_HAND_URDF = (
+    Path(__file__).resolve().parents[1] / "assets/mmhand/urdf/hand.urdf"
+)
+HAND_PREFIX = "capture_hand__"
+
+
 class TestStandaloneUrdf(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -44,6 +50,25 @@ class TestStandaloneUrdf(unittest.TestCase):
         self.assertEqual(mount.find("child").get("link"), MOUNT_JOINT.child)
         self.assertEqual(mount.find("origin").get("xyz"), MOUNT_JOINT.xyz)
         self.assertEqual(mount.find("origin").get("rpy"), MOUNT_JOINT.rpy)
+
+    def test_active_hand_kinematics_match_current_capture_urdf(self) -> None:
+        source = ET.parse(SOURCE_HAND_URDF).getroot()
+        for name in HAND_JOINT_NAMES:
+            with self.subTest(joint=name):
+                expected = source.find(f"joint[@name='{name}']")
+                bundled = self.root.find(f"joint[@name='{name}']")
+                self.assertIsNotNone(expected)
+                self.assertIsNotNone(bundled)
+                self.assertEqual(
+                    bundled.find("parent").get("link"),
+                    HAND_PREFIX + expected.find("parent").get("link"),
+                )
+                self.assertEqual(
+                    bundled.find("child").get("link"),
+                    HAND_PREFIX + expected.find("child").get("link"),
+                )
+                for tag in ("origin", "axis", "limit"):
+                    self.assertEqual(bundled.find(tag).attrib, expected.find(tag).attrib)
 
     def test_all_geometry_is_local_urdf_primitives(self) -> None:
         self.assertEqual(self.root.findall(".//mesh"), [])

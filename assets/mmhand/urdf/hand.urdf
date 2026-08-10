@@ -757,7 +757,7 @@
   <parent link="palm_1"/>
   <child link="mmhand_thumb_1_thumb_base_1"/>
   <axis xyz="0.0 0.0 -1.0"/>
-  <limit upper="1.51" lower="0.7" effort="100" velocity="100"/>
+  <limit upper="1.51" lower="0.0" effort="100" velocity="100"/>
 </joint>
 
 <joint name="Ring_MCP_FE" type="revolute">
@@ -845,7 +845,7 @@
   <parent link="mmhand_thumb_1_thumb_base_1"/>
   <child link="mmhand_thumb_1_thumb_abduction_adduction_link_1"/>
   <axis xyz="-0.070801 0.928071 -0.365612"/>
-  <limit upper="0.07" lower="-1.2" effort="100" velocity="100"/>
+  <limit upper="1" lower="-1.2" effort="100" velocity="100"/>
 </joint>
 
 <joint name="Thumb_MCP_FE" type="revolute">

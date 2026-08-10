@@ -39,7 +39,12 @@ from config import (
     URDF_PATH,
 )
 from retarget import Retargeter, RobotModel, THUMB
-from track import ROBOT_CAMERA_DISTANCE, _human_view_wxyz, _robot_camera_pose
+from track import (
+    ROBOT_CAMERA_DISTANCE,
+    _camera_configuration_error,
+    _human_view_wxyz,
+    _robot_camera_pose,
+)
 
 
 def straight_hand(handedness):
@@ -62,6 +67,15 @@ def _unit(vector):
 
 
 class CoreTests(unittest.TestCase):
+    def test_stereo_mode_requires_a_calibration_file(self):
+        missing = Path("/definitely/missing/stereo_params.json")
+        self.assertIn(
+            "stereo calibration not found",
+            _camera_configuration_error("stereo", missing),
+        )
+        self.assertIsNone(_camera_configuration_error("d435", missing))
+        self.assertIn("CAMERA_TYPE", _camera_configuration_error("invalid", missing))
+
     def test_calibration_pair_configuration(self):
         self.assertEqual(MIN_CALIBRATION_PAIRS, 10)
         samples = [None] * (MIN_CALIBRATION_PAIRS - 1)
