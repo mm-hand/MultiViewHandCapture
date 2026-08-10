@@ -29,8 +29,8 @@ MediaPipe Tasks 的 HandLandmarker 模型已包含在
 
 ### 普通拼接双目
 
-普通模式读取单个 `2560×720` MJPEG 设备，拆成两个 `1280×720` 图像。首次使用、
-移动镜头或改变分辨率后需要重新标定：
+普通模式由 `camera.StereoCamera` 读取单个 `2560×720` MJPEG 设备，拆成两个
+`1280×720` 图像。首次使用、移动镜头或改变分辨率后需要重新标定：
 
 ```python
 CAMERA_TYPE = "stereo"
@@ -135,6 +135,17 @@ MMHand 掌轴直接采用 URDF 根 `base_link` 的轴方向：`+x` 大致由腕�
 
 ## 处理流程
 
+模块由 runtime 统一装配，数据按以下方向传递：
+
+```text
+track (runtime)
+├── camera → hand_core → retarget
+├── viewer
+└── ros
+```
+
+`track.py` 只负责选择相机、装配组件、转发跟踪和 retarget 结果，以及按逆序释放资源。
+
 ### 三维手部跟踪
 
 ```text
@@ -210,10 +221,13 @@ ros2 topic echo /raw_ik_target
 
 ```text
 config.py             所有运行配置
+camera.py             普通拼接双目、RealSense D435 和图像拆分
 one_euro.py           One Euro 滤波器
-hand_core.py          相机、MediaPipe、三角化、手部约束与标准化
+hand_core.py          MediaPipe、三角化、手部约束与标准化
 retarget.py           URDF 运动学、解析 Jacobian、四指映射和拇指 IK
-track.py              实时循环、线程调度、Web/Viser 和 ROS 输出
+viewer.py             Web dashboard、Viser 场景和图像显示
+ros.py                ROS 2 消息构造与 topic 发布
+track.py              参数解析、组件装配和实时循环
 calibrate.py          普通拼接双目标定
 test_hand_capture.py  核心行为测试
 assets/               MediaPipe 模型、MMHand URDF、网格和许可证

@@ -12,14 +12,14 @@ from config import (
     PARAMS_PATH,
     SQUARE_SIZE,
 )
-from hand_core import Camera
+from camera import StereoCamera
 
 
 def collect():
     grid = np.zeros((np.prod(BOARD_SIZE), 3), np.float32)
     grid[:, :2] = np.mgrid[: BOARD_SIZE[0], : BOARD_SIZE[1]].T.reshape(-1, 2) * SQUARE_SIZE
     objects, lefts, rights, size = [], [], [], None
-    camera = Camera(CAMERA_INDEX)
+    camera = StereoCamera(CAMERA_INDEX)
     criteria = cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.001
     print(f"棋盘格内角点 {BOARD_SIZE}，格长 {SQUARE_SIZE} mm；C 采样，Q 完成。")
     time.sleep(1)

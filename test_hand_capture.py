@@ -10,6 +10,7 @@ from unittest.mock import patch
 import numpy as np
 
 import calibrate
+from camera import split_stereo
 from config import (
     HAND_LANDMARKER_PATH,
     KEYPOINT_LAYOUT,
@@ -28,15 +29,14 @@ from hand_core import (
     FINGER_CHAINS,
     HandDetector,
     Kinematics,
-    OneEuro,
     StableHandedness,
     StereoProcessor,
     apply_angles,
     extract_angles,
     geometry_error,
     relative_points,
-    split_stereo,
 )
+from one_euro import OneEuro
 from retarget import (
     ROBOT_FINGERS,
     ROBOT_TIPS,
@@ -46,7 +46,9 @@ from retarget import (
     human_palm_frame,
     human_retarget_points,
 )
-from track import RosOutput, _capture, _frame_wxyz, _loss_text, _parse_args
+from ros import RosOutput
+from track import _capture, _parse_args
+from viewer import _frame_wxyz, _loss_text
 
 
 def straight_hand(handedness):
@@ -72,8 +74,8 @@ def straight_hand(handedness):
 class CoreTests(unittest.TestCase):
     def test_stereo_split_and_calibration_guard(self):
         frame = np.arange(2 * 8 * 3, dtype=np.uint8).reshape(2, 8, 3)
-        with patch("hand_core.FULL_WIDTH", 8), patch("hand_core.ROTATE_LEFT", 0), patch(
-            "hand_core.ROTATE_RIGHT", 180
+        with patch("camera.FULL_WIDTH", 8), patch("camera.ROTATE_LEFT", 0), patch(
+            "camera.ROTATE_RIGHT", 180
         ):
             left, right = split_stereo(frame)
             np.testing.assert_array_equal(left, frame[:, :4])
@@ -120,7 +122,7 @@ class CoreTests(unittest.TestCase):
 
         camera = object()
         with patch("track.CAMERA_TYPE", "stereo"), patch(
-            "track.Camera", return_value=camera
+            "track.StereoCamera", return_value=camera
         ), patch("track.StereoProcessor", return_value="processor") as constructor:
             self.assertEqual(_capture(), (camera, "processor"))
             constructor.assert_called_once_with(None)
