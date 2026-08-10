@@ -28,6 +28,25 @@ class SimulationTests(unittest.TestCase):
         )
         self.assertFalse((Path(simulation.__file__).parent / "assets").exists())
 
+    def test_contact_material_and_object_damping(self):
+        import sapien
+
+        simulation = self.simulation
+        self.assertAlmostEqual(simulation.hand_material.get_static_friction(), 2.0)
+        self.assertAlmostEqual(simulation.hand_material.get_dynamic_friction(), 1.0)
+        self.assertAlmostEqual(simulation.object_material.get_static_friction(), 0.3)
+        self.assertAlmostEqual(simulation.object_material.get_dynamic_friction(), 0.3)
+        self.assertAlmostEqual(simulation.object_body.get_linear_damping(), 2.0)
+        self.assertAlmostEqual(simulation.object_body.get_angular_damping(), 2.0)
+
+        scene_config = sapien.physx.get_scene_config()
+        self.assertTrue(scene_config.enable_pcm)
+        self.assertTrue(scene_config.enable_tgs)
+        self.assertTrue(scene_config.enable_friction_every_iteration)
+        shape_config = sapien.physx.get_shape_config()
+        self.assertAlmostEqual(shape_config.contact_offset, 0.003)
+        self.assertAlmostEqual(shape_config.rest_offset, 0.0)
+
     def test_random_cylinder_reset_and_joint_input(self):
         simulation = self.simulation
         old = simulation.object

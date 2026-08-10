@@ -9,6 +9,12 @@ from config import ROBOT_JOINT_NAMES, URDF_PATH
 
 _DT = 0.01
 _HOME = np.array((0.0, 0.0, 0.20))
+_CONTACT_OFFSET = 0.003
+_SURFACE_FRICTION = 0.3
+_HAND_STATIC_FRICTION = 2.0
+_HAND_DYNAMIC_FRICTION = 1.0
+_OBJECT_LINEAR_DAMPING = 2.0
+_OBJECT_ANGULAR_DAMPING = 2.0
 _FINGERTIPS = {
     "finger_1_fingertip_1",
     "finger_2_fingertip_1",
@@ -34,10 +40,27 @@ class GraspSimulation:
     def __init__(self, headless=False):
         self.headless = headless
         self.rng = np.random.default_rng()
-        config = sapien.physx.get_body_config()
-        config.solver_position_iterations = 25
-        config.solver_velocity_iterations = 4
-        sapien.physx.set_body_config(config)
+
+        scene_config = sapien.physx.get_scene_config()
+        scene_config.enable_pcm = True
+        scene_config.enable_tgs = True
+        scene_config.enable_friction_every_iteration = True
+        sapien.physx.set_scene_config(scene_config)
+
+        body_config = sapien.physx.get_body_config()
+        body_config.sleep_threshold = 0.005
+        body_config.solver_position_iterations = 25
+        body_config.solver_velocity_iterations = 4
+        sapien.physx.set_body_config(body_config)
+
+        shape_config = sapien.physx.get_shape_config()
+        shape_config.contact_offset = _CONTACT_OFFSET
+        shape_config.rest_offset = 0.0
+        sapien.physx.set_shape_config(shape_config)
+        sapien.physx.set_default_material(
+            _SURFACE_FRICTION, _SURFACE_FRICTION, 0.0
+        )
+
         if headless:
             self.scene = sapien.Scene([sapien.physx.PhysxCpuSystem()])
         else:
@@ -45,8 +68,12 @@ class GraspSimulation:
             sapien.render.set_camera_shader_dir("default")
             self.scene = sapien.Scene()
         self.scene.set_timestep(_DT)
-        self.hand_material = self.scene.create_physical_material(2.0, 1.0, 0.0)
-        self.object_material = self.scene.create_physical_material(0.5, 0.5, 0.0)
+        self.hand_material = self.scene.create_physical_material(
+            _HAND_STATIC_FRICTION, _HAND_DYNAMIC_FRICTION, 0.0
+        )
+        self.object_material = self.scene.create_physical_material(
+            _SURFACE_FRICTION, _SURFACE_FRICTION, 0.0
+        )
         self.scene.add_ground(0.0, render=not headless, material=self.object_material)
         self.hand = self._load_hand()
         self.object = None
@@ -131,6 +158,13 @@ class GraspSimulation:
             )
         cylinder = builder.build("cylinder")
         cylinder.pose = sapien.Pose([0.10, 0.0, self.height / 2])
+        self.object_body = cylinder.find_component_by_type(
+            sapien.physx.PhysxRigidDynamicComponent
+        )
+        if self.object_body is None:
+            raise RuntimeError("Cylinder has no dynamic PhysX body")
+        self.object_body.set_linear_damping(_OBJECT_LINEAR_DAMPING)
+        self.object_body.set_angular_damping(_OBJECT_ANGULAR_DAMPING)
         print(f"cylinder radius={self.radius * 1000:.1f}mm height={self.height * 1000:.1f}mm")
         return cylinder
 
