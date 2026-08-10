@@ -8,6 +8,9 @@ from config import ROBOT_JOINT_NAMES, URDF_PATH
 
 
 _DT = 0.01
+_HAND_CONTROL_DT = 0.05
+_HAND_RATE_LIMIT = 6.0
+_HAND_MAX_DELTA = _HAND_RATE_LIMIT * _HAND_CONTROL_DT
 _HOME = np.array((0.0, 0.0, 0.20))
 _CONTACT_OFFSET = 0.003
 _SURFACE_FRICTION = 0.3
@@ -15,6 +18,11 @@ _HAND_STATIC_FRICTION = 2.0
 _HAND_DYNAMIC_FRICTION = 1.0
 _OBJECT_LINEAR_DAMPING = 2.0
 _OBJECT_ANGULAR_DAMPING = 2.0
+_JOINT_FRICTION = 0.0
+_DRIVE_STIFFNESS = 1000.0
+_DRIVE_DAMPING = 100.0
+_DRIVE_FORCE_LIMIT = 1e10
+_SELF_COLLISION_BIT = 30
 _FINGERTIPS = {
     "finger_1_fingertip_1",
     "finger_2_fingertip_1",
@@ -77,6 +85,7 @@ class GraspSimulation:
         self.scene.add_ground(0.0, render=not headless, material=self.object_material)
         self.hand = self._load_hand()
         self.object = None
+        self.hand_control_accumulator = 0.0
         self._reset()
         self.viewer = None
         if not headless:
@@ -117,28 +126,78 @@ class GraspSimulation:
         if len(joints) != 21 or {joint.name for joint in joints} != set(ROBOT_JOINT_NAMES):
             raise RuntimeError("MMHand joints do not match ROBOT_JOINT_NAMES")
         self.joints = {joint.name: joint for joint in joints}
-        index = {joint.name: i for i, joint in enumerate(joints)}
+        self.joint_index = {joint.name: i for i, joint in enumerate(joints)}
         limits = np.asarray(hand.get_qlimits(), float)
-        self.lower = np.array([limits[index[name], 0] for name in ROBOT_JOINT_NAMES])
-        self.upper = np.array([limits[index[name], 1] for name in ROBOT_JOINT_NAMES])
-        for joint in joints:
-            joint.set_friction(0.0)
+        self.lower = np.array([
+            limits[self.joint_index[name], 0] for name in ROBOT_JOINT_NAMES
+        ])
+        self.upper = np.array([
+            limits[self.joint_index[name], 1] for name in ROBOT_JOINT_NAMES
+        ])
+        self.neutral_qpos = np.clip(np.zeros(21), limits[:, 0], limits[:, 1])
+        self.neutral_command = np.array([
+            self.neutral_qpos[self.joint_index[name]] for name in ROBOT_JOINT_NAMES
+        ])
+        return hand
+
+    def _configure_hand_physics(self):
+        """Reapply the contact and drive settings that make grasping stiff."""
+        for joint in self.hand.active_joints:
+            joint.set_friction(_JOINT_FRICTION)
             joint.set_drive_properties(
-                stiffness=1000.0, damping=100.0, force_limit=1e10, mode="force"
+                stiffness=_DRIVE_STIFFNESS,
+                damping=_DRIVE_DAMPING,
+                force_limit=_DRIVE_FORCE_LIMIT,
+                mode="force",
             )
-        for link in hand.links:
+            joint.set_drive_velocity_target(0.0)
+        shape_count = 0
+        for link in self.hand.links:
             for shape in link.collision_shapes:
                 shape.set_physical_material(self.hand_material)
                 groups = list(shape.get_collision_groups())
-                groups[2] |= 1 << 30
+                groups[2] |= 1 << _SELF_COLLISION_BIT
                 shape.set_collision_groups(groups)
-        hand.pose = sapien.Pose(_HOME)
-        q = np.clip(np.zeros(21), limits[:, 0], limits[:, 1])
-        hand.set_qpos(q)
-        hand.set_qvel(np.zeros(21))
-        for joint, value in zip(joints, q):
-            joint.set_drive_target(float(value))
-        return hand
+                shape_count += 1
+        self.hand_collision_shape_count = shape_count
+
+    def _apply_hand_command(self):
+        for name, value in zip(ROBOT_JOINT_NAMES, self.commanded_q):
+            self.joints[name].set_drive_target(float(value))
+
+    def command_hand(self, robot_joints):
+        """Store a finite, limit-clipped desired J00-J20 pose."""
+        q = np.asarray(robot_joints, float)
+        if q.shape != (21,) or not np.isfinite(q).all():
+            raise ValueError("robot_joints must contain 21 finite radians")
+        self.desired_q = np.clip(q, self.lower, self.upper)
+        return self.desired_q.copy()
+
+    def _advance_hand_command(self):
+        """Advance the drive target by at most 0.30 rad per 20 Hz tick."""
+        delta = np.clip(
+            self.desired_q - self.commanded_q,
+            -_HAND_MAX_DELTA,
+            _HAND_MAX_DELTA,
+        )
+        self.commanded_q = np.clip(
+            self.commanded_q + delta,
+            self.lower,
+            self.upper,
+        )
+        self._apply_hand_command()
+        return self.commanded_q.copy()
+
+    def _reset_hand(self):
+        self.hand.pose = sapien.Pose(_HOME)
+        self.hand.set_qpos(self.neutral_qpos.copy())
+        self.hand.set_qvel(np.zeros(21))
+        self.hand.set_qf(np.zeros(21))
+        self.desired_q = self.neutral_command.copy()
+        self.commanded_q = self.neutral_command.copy()
+        self.hand_control_accumulator = 0.0
+        self._configure_hand_physics()
+        self._apply_hand_command()
 
     def _new_cylinder(self):
         self.radius = float(self.rng.uniform(0.025, 0.035))
@@ -169,7 +228,7 @@ class GraspSimulation:
         return cylinder
 
     def _reset(self):
-        self.hand.pose = sapien.Pose(_HOME)
+        self._reset_hand()
         if self.object is not None:
             self.scene.remove_entity(self.object)
         self.object = self._new_cylinder()
@@ -216,11 +275,7 @@ class GraspSimulation:
         if self.viewer is not None and self.viewer.closed:
             return False
         if robot_joints is not None:
-            q = np.asarray(robot_joints, float)
-            if q.shape != (21,) or not np.isfinite(q).all():
-                raise ValueError("robot_joints must contain 21 finite radians")
-            for name, value in zip(ROBOT_JOINT_NAMES, np.clip(q, self.lower, self.upper)):
-                self.joints[name].set_drive_target(float(value))
+            self.command_hand(robot_joints)
         now = time.monotonic()
         elapsed = min(now - self.last_time, 0.05)
         self.last_time = now
@@ -231,12 +286,19 @@ class GraspSimulation:
             if _key(window, "key_press", "r"):
                 self._reset()
             self._move(elapsed)
+        self.hand_control_accumulator = min(
+            self.hand_control_accumulator + elapsed,
+            _HAND_CONTROL_DT,
+        )
+        if self.hand_control_accumulator >= _HAND_CONTROL_DT - 1e-12:
+            self._advance_hand_command()
+            self.hand_control_accumulator = max(
+                0.0,
+                self.hand_control_accumulator - _HAND_CONTROL_DT,
+            )
         self.accumulator = min(self.accumulator + elapsed, 5 * _DT)
         while self.accumulator >= _DT:
-            self.hand.set_qf(self.hand.compute_passive_force(
-                gravity=True, coriolis_and_centrifugal=True
-            ))
-            self.scene.step()
+            self.step_physics()
             self.accumulator -= _DT
         contacts = self._contacts()
         if contacts != self.last_contacts:
@@ -246,6 +308,16 @@ class GraspSimulation:
             self.scene.update_render()
             self.viewer.render()
         return True
+
+    def step_physics(self, steps=1):
+        if not isinstance(steps, int) or steps < 0:
+            raise ValueError("steps must be a non-negative integer")
+        for _ in range(steps):
+            self.hand.set_qf(self.hand.compute_passive_force(
+                gravity=True,
+                coriolis_and_centrifugal=True,
+            ))
+            self.scene.step()
 
     def close(self):
         if self.viewer is not None and not self.viewer.closed:

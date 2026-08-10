@@ -1,8 +1,18 @@
 import json
+from pathlib import Path
+import sys
 import time
 
 import cv2
 import numpy as np
+
+# ``python vision/calibrate.py`` puts only ``vision/`` on sys.path.  Add the
+# project root before importing the root-level config module.  Module execution
+# (``python -m vision.calibrate``) already has this path and needs no change.
+if __package__ in {None, ""}:
+    project_root = str(Path(__file__).resolve().parents[1])
+    if project_root not in sys.path:
+        sys.path.insert(0, project_root)
 
 from config import (
     BOARD_SIZE,
@@ -12,7 +22,7 @@ from config import (
     PARAMS_PATH,
     SQUARE_SIZE,
 )
-from .camera import StereoCamera
+from vision.camera import StereoCamera
 
 
 def collect():

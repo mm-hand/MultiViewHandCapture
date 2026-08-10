@@ -15,7 +15,7 @@ HAND_LANDMARKER_PATH = _ROOT / "vision/assets/hand_landmarker.task"
 # 输入来源："stereo"、"d435"，未来可扩展为 "manus"。
 INPUT_SOURCE = "stereo"
 # 普通相机的 OpenCV 编号，或 D435 的设备枚举序号。
-CAMERA_INDEX = 0
+CAMERA_INDEX = 2
 # D435 单路红外图像宽度，单位 pixel。
 D435_WIDTH = 1280
 # D435 单路红外图像高度，单位 pixel。

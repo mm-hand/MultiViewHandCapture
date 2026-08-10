@@ -47,6 +47,9 @@ CAMERA_INDEX = 0
 python -m vision.calibrate
 ```
 
+也可以从项目根目录直接运行 `python vision/calibrate.py`；两种方式使用同一个
+`config.py` 和 `vision/stereo_params.json`。
+
 标定窗口中按 `C` 保存有效棋盘图像对，按 `Q` 求解。默认棋盘为 `9×6` 内角点、
 格长 `23.5 mm`，至少需要 10 对；结果写入不提交的 `vision/stereo_params.json`。
 `vision/assets/pattern.png` 可用于打印标定板，但实际格长必须与 `SQUARE_SIZE` 一致。
@@ -262,6 +265,18 @@ python track.py --sim
 无有效新 retarget 输出时，仿真保持最后一个手势并继续物理。关闭 SAPIEN Viewer
 会按正常清理路径释放 retarget worker、相机、Web Viewer 和 ROS。
 
+为避免刚性 URDF 手指接触物体后被轻易撞偏，极简仿真保留以下抓取稳定设置：
+
+- MMHand 碰撞形状使用静/动摩擦 `2.0/1.0`，物体与地面保持 `0.3/0.3`。
+- 21 个手指 drive 使用 `stiffness=1000`、`damping=100`、`force_limit=1e10`
+  和 force mode，并在每个物理步补偿重力与科氏力。
+- retarget 目标与实际下发的 drive target 分开保存，以 `6 rad/s` 追踪；20 Hz
+  控制步内每个关节最多变化 `0.30 rad`。没有新输出时继续保持最后目标，不回零。
+- PhysX 使用 `3 mm` contact offset、TGS/PCM、`25/4` solver iterations；圆柱的
+  线性/角阻尼为 `2/2`，手部 self-collision mask 使用 bit 30。
+- 按 `R` 会把手指 qpos/qvel 和 drive target 恢复到 URDF 零位，并重新应用上述
+  drive、摩擦和 self-collision 设置；下一份有效人手目标会从零位平滑恢复跟随。
+
 ## ROS 2 输出
 
 `python track.py --ros` 发布两个 `std_msgs/msg/Float32MultiArray`：
@@ -299,9 +314,11 @@ test/                  一次性机器人工作空间优化资料，不属于日
 运行快速核心测试：
 
 ```bash
-python -m unittest -v test_hand_capture.py test_simulation.py
+python -m unittest -v test_hand_capture.py
+python -m unittest -v test_simulation.py
 ```
 
 未安装 SAPIEN 时仿真测试自动跳过；安装后会加载当前 MMHand URDF，验证关节契约、
-随机圆柱范围、重置和关节限位。测试不依赖 `test_data/` 中的录像，也不会执行
-`test/` 下的一次性优化程序。
+随机圆柱范围、重置、关节限位以及上述抓取稳定设置。两组测试使用独立 Python
+进程，避免 MediaPipe EGL 与 SAPIEN/PhysX 原生运行时在退出阶段相互影响。测试不依赖
+`test_data/` 中的录像，也不会执行 `test/` 下的一次性优化程序。
