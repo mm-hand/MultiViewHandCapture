@@ -39,6 +39,7 @@ from hand_core import (
 )
 from retarget import (
     ROBOT_FINGERS,
+    ROBOT_TIPS,
     Retargeter,
     RetargetWorker,
     RobotModel,
@@ -271,19 +272,72 @@ class RetargetTests(unittest.TestCase):
     def setUpClass(cls):
         cls.model = RobotModel()
 
-    def test_original_urdf_topology_limits_and_meshes(self):
+    def test_latest_urdf_topology_limits_meshes_and_tips(self):
         self.assertEqual(self.model.names, ROBOT_JOINT_NAMES)
         self.assertEqual(len(self.model.joints), 31)
         self.assertEqual(len(self.model.fk(np.zeros(21))), 32)
         self.assertTrue(np.all(self.model.lower <= self.model.upper))
 
         root = ET.parse(URDF_PATH).getroot()
+        self.assertEqual(len(root.findall("link")), 32)
+        self.assertEqual(len(root.findall("joint")), 31)
         meshes = list(root.iter("mesh"))
-        self.assertEqual(len(meshes), 39)
+        self.assertEqual(len(meshes), 43)
         for mesh in meshes:
             filename = mesh.get("filename")
             self.assertTrue(filename.startswith("../meshes/"))
             self.assertTrue((URDF_PATH.parent / filename).resolve().is_file())
+        referenced_meshes = {mesh.get("filename").rsplit("/", 1)[-1] for mesh in meshes}
+        asset_meshes = {
+            path.name for path in (URDF_PATH.parent.parent / "meshes").glob("*.stl")
+        }
+        self.assertEqual(len(referenced_meshes), 27)
+        self.assertEqual(asset_meshes, referenced_meshes)
+
+        expected_tips = {
+            "1-tip": (
+                "finger_1_fingertip_1",
+                "1-tip_Link",
+                (0.023001459, 0.010424364, -0.004367931),
+            ),
+            "2-tip": (
+                "finger_2_fingertip_1",
+                "2-tip_Link",
+                (0.021343147, 0.013505685, -0.004311705),
+            ),
+            "3-tip": (
+                "finger_3_fingertip_1",
+                "3-tip_Link",
+                (0.020106421, 0.015325961, -0.004336191),
+            ),
+            "4-tip": (
+                "finger_4_fingertip_1",
+                "4-tip_Link",
+                (0.020105907, 0.015325727, -0.004336522),
+            ),
+            "5-tip": (
+                "mmhand_thumb_1_finger_7_fingertip_1",
+                "5-tip_Link",
+                (0.012366569, -0.000590601, -0.022397383),
+            ),
+        }
+        joints = {joint.get("name"): joint for joint in root.findall("joint")}
+        links = {link.get("name") for link in root.findall("link")}
+        for name, (parent, child, xyz) in expected_tips.items():
+            joint = joints[name]
+            self.assertEqual(joint.get("type"), "fixed")
+            self.assertEqual(joint.find("parent").get("link"), parent)
+            self.assertEqual(joint.find("child").get("link"), child)
+            self.assertIn(child, links)
+            np.testing.assert_allclose(
+                np.fromstring(joint.find("origin").get("xyz"), sep=" "), xyz, atol=0
+            )
+        transforms = self.model.fk(self.model.seed)
+        np.testing.assert_allclose(
+            self.model.fingertips(self.model.seed),
+            np.asarray([transforms[name][:3, 3] for name in ROBOT_TIPS]),
+            atol=0,
+        )
 
         limits = {
             joint.get("name"): (
@@ -298,12 +352,12 @@ class RetargetTests(unittest.TestCase):
             np.asarray([limits[name] for name in self.model.names]),
         )
         expected_limits = {
-            "Thumb_CMC": (0.0, 1.343904),
-            "Ring_MCP_AA": (0.0, 1.064651),
-            "Middle_MCP_AA": (0.0, 1.029744),
-            "Index_MCP_AA": (0.0, 1.012291),
-            "Little_MCP_AA": (0.0, 0.942478),
-            "Thumb_MCP_AA": (0.0, 0.994838),
+            "Thumb_CMC": (0.0, 0.942478),
+            "Ring_MCP_AA": (-0.802851, 0.453786),
+            "Middle_MCP_AA": (-0.558505, 0.523599),
+            "Index_MCP_AA": (-0.488692, 0.628319),
+            "Little_MCP_AA": (-1.22173, 0.366519),
+            "Thumb_MCP_AA": (-1.308997, 0.436332),
         }
         for name, expected in expected_limits.items():
             np.testing.assert_allclose(limits[name], expected, atol=0)
