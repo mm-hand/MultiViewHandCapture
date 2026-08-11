@@ -60,9 +60,9 @@ def _checked_unit(vector):
     return vector / norm
 
 
-def human_palm_frame(points):
-    """Return the CMC origin and base_link-style human palm axes."""
-    points = np.asarray(points, float)
+def compute_cmc_frame(points_world):
+    """Return ``origin_world, R_world_from_cmc`` for the existing CMC frame."""
+    points = np.asarray(points_world, float)
     if points.shape != (21, 3) or not np.isfinite(points).all():
         raise ValueError("Human landmarks must be finite with shape (21, 3)")
     x_axis = _checked_unit(points[9] - points[0])
@@ -73,11 +73,16 @@ def human_palm_frame(points):
     return points[1].copy(), np.column_stack((x_axis, y_axis, z_axis))
 
 
+def human_palm_frame(points):
+    """Backward-compatible name for :func:`compute_cmc_frame`."""
+    return compute_cmc_frame(points)
+
+
 def human_retarget_points(points):
     """Express tracking landmarks in the independent CMC retarget frame."""
     points = np.asarray(points, float)
-    origin, frame = human_palm_frame(points)
-    return (points - origin) @ frame
+    origin_world, R_world_from_cmc = compute_cmc_frame(points)
+    return (points - origin_world) @ R_world_from_cmc
 
 
 def _rotation(axis, angle):

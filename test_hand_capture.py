@@ -133,25 +133,30 @@ class CoreTests(unittest.TestCase):
         constructor.assert_called_once_with(None)
 
         selected = object()
-        with patch("track.INPUT_SOURCE", "stereo"), patch(
+        with patch("track.CAMERA_TYPE", "stereo"), patch(
             "vision.source.VisionSource", return_value=selected
         ) as constructor:
-            self.assertIs(_source(), selected)
+            self.assertIs(_source("vision"), selected)
         constructor.assert_called_once_with("stereo")
 
-        with patch("track.INPUT_SOURCE", "unknown"), self.assertRaisesRegex(
-            ValueError, "INPUT_SOURCE"
-        ):
-            _source()
+        with self.assertRaisesRegex(ValueError, "Unsupported source"):
+            _source("unknown")
 
-    def test_cli_only_accepts_optional_outputs(self):
+    def test_cli_source_and_optional_outputs(self):
         args = _parse_args([])
+        self.assertEqual(args.source, "vision")
         self.assertFalse(args.ros)
         self.assertFalse(args.sim)
+        self.assertEqual(_parse_args(["--source", "vision"]).source, "vision")
+        self.assertEqual(_parse_args(["--source", "manus"]).source, "manus")
         self.assertTrue(_parse_args(["--ros"]).ros)
         self.assertTrue(_parse_args(["--sim"]).sim)
+        self.assertTrue(_parse_args(["--source", "vision", "--ros"]).ros)
+        self.assertTrue(_parse_args(["--source", "manus", "--ros"]).ros)
         with patch("sys.stderr"), self.assertRaises(SystemExit):
             _parse_args(["--ros", "--sim"])
+        with patch("sys.stderr"), self.assertRaises(SystemExit):
+            _parse_args(["--source", "xxx"])
         with patch("sys.stderr"), self.assertRaises(SystemExit):
             _parse_args(["--mode", "points"])
 

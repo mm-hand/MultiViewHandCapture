@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation
 
 from config import URDF_PATH, WEB_FPS, WEB_PORT, VIEW_PORTS
 from hand import SKELETON_EDGES
-from retarget import human_palm_frame
+from retarget import compute_cmc_frame
 
 ROBOT_CAMERA_DISTANCE = 0.42
 PALM_FRAME_AXIS_LENGTH = 0.04
@@ -227,7 +227,7 @@ fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000
             self.human_cloud.points = points.astype(np.float32)
             self.human_bones.points = points[np.asarray(SKELETON_EDGES)].astype(np.float32)
             try:
-                origin, palm_frame = human_palm_frame(points)
+                origin, palm_frame = compute_cmc_frame(points)
             except ValueError:
                 self.human_retarget_frame.visible = False
             else:

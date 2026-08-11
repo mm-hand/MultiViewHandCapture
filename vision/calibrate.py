@@ -6,23 +6,25 @@ import time
 import cv2
 import numpy as np
 
-# ``python vision/calibrate.py`` puts only ``vision/`` on sys.path.  Add the
-# project root before importing the root-level config module.  Module execution
-# (``python -m vision.calibrate``) already has this path and needs no change.
-if __package__ in {None, ""}:
-    project_root = str(Path(__file__).resolve().parents[1])
-    if project_root not in sys.path:
-        sys.path.insert(0, project_root)
+# Support both documented package execution from the repository root and
+# direct execution while the shell is inside vision/.
+if __package__ in (None, ""):
+    repository_root = Path(__file__).resolve().parents[1]
+    if str(repository_root) not in sys.path:
+        sys.path.insert(0, str(repository_root))
 
 from config import (
     BOARD_SIZE,
     CAMERA_INDEX,
-    INPUT_SOURCE,
+    CAMERA_TYPE,
     MIN_CALIBRATION_PAIRS,
     PARAMS_PATH,
     SQUARE_SIZE,
 )
-from vision.camera import StereoCamera
+if __package__ in (None, ""):
+    from vision.camera import StereoCamera
+else:
+    from .camera import StereoCamera
 
 
 def collect():
@@ -107,8 +109,8 @@ def solve(objects, lefts, rights, size):
 
 
 def main():
-    if INPUT_SOURCE != "stereo":
-        raise RuntimeError("Set INPUT_SOURCE='stereo' in config.py before calibration")
+    if CAMERA_TYPE != "stereo":
+        raise RuntimeError("Set CAMERA_TYPE='stereo' in config.py before calibration")
     objects, lefts, rights, size = collect()
     if len(objects) < MIN_CALIBRATION_PAIRS:
         raise RuntimeError(f"至少需要 {MIN_CALIBRATION_PAIRS} 对有效棋盘格图像")

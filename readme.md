@@ -1,8 +1,8 @@
 # MultiView Hand Capture
 
 将设备输入统一为标准 21 点手姿态，再把稳定左手实时映射到 MMHand 的 21 个关节。
-当前视觉输入支持普通拼接双目和 Intel RealSense D435，后续可通过相同接口接入
-Manus 等手部设备，并共用 retarget、Web 显示和 ROS 2 输出。
+当前输入支持普通拼接双目、Intel RealSense D435 和 MANUS Raw Skeleton，并共用
+retarget、Web 显示和 ROS 2 输出。
 
 ## 安装
 
@@ -39,12 +39,13 @@ python -m pip install -r simulation/requirements.txt
 `1280×720` 图像。首次使用、移动镜头或改变分辨率后需要重新标定：
 
 ```python
-INPUT_SOURCE = "stereo"
+CAMERA_TYPE = "stereo"
 CAMERA_INDEX = 0
 ```
 
 ```bash
 python -m vision.calibrate
+# 或者：cd vision && python calibrate.py
 ```
 
 也可以从项目根目录直接运行 `python vision/calibrate.py`；两种方式使用同一个
@@ -57,7 +58,7 @@ python -m vision.calibrate
 ### RealSense D435
 
 ```python
-INPUT_SOURCE = "d435"
+CAMERA_TYPE = "d435"
 CAMERA_INDEX = 0
 ```
 
@@ -70,6 +71,10 @@ D435 模式读取同步的 `infrared 1/2` Y8 流，使用 SDK 提供的双目标
 python track.py
 python track.py --ros  # 同时发布 ROS 2 topic
 python track.py --sim  # 同时打开 SAPIEN 抓取仿真
+python track.py --source vision
+python track.py --source vision --ros
+python track.py --source manus
+python track.py --source manus --ros
 ```
 
 打开 `http://localhost:8080`：
@@ -86,7 +91,8 @@ python track.py --sim  # 同时打开 SAPIEN 抓取仿真
 
 | 分组 | 参数 |
 |---|---|
-| 输入与相机 | `INPUT_SOURCE`、`CAMERA_INDEX`、图像尺寸、旋转角、D435 帧率 |
+| 输入与相机 | CLI `--source`、`CAMERA_TYPE`、`CAMERA_INDEX`、图像尺寸、旋转角、D435 帧率 |
+| MANUS | `MANUS_SDK_VERSION`、`MANUS_SDK_BRIDGE_PATH`、`MANUS_STALE_SECONDS` |
 | 标定与约束 | `BOARD_SIZE`、`SQUARE_SIZE`、`CALIBRATION_*`、`BONE_TOLERANCE` |
 | One Euro | `POINT_2D_FILTER`、`POINT_3D_FILTER`、`ANGLE_FILTER` |
 | 检测门限 | `MP_*_CONFIDENCE`、`MAX_REPROJECTION_ERROR`、`MAX_DEPTH_MM`、`MAX_HAND_RADIUS` |
@@ -98,7 +104,8 @@ One Euro 元组依次为
 `(min_cutoff, beta, derivative_cutoff)`。二维点使用 pixel，三维点使用 mm，角度使用
 degree，因此不同信号的参数不能直接互换。配置在对象创建时读取，修改后需重启程序。
 
-`INPUT_SOURCE` 当前接受 `stereo` 和 `d435`；未来的 Manus 实现使用 `manus`。
+一级输入由 CLI 的 `--source vision/manus` 决定；`CAMERA_TYPE` 只在 VisionSource
+内部接受 `stereo` 或 `d435`。
 
 MMHand 数组和 ROS 输出使用固定的 J00–J20 顺序：
 
@@ -120,6 +127,9 @@ points      新鲜的标准 21×3 手姿态；无效或 stale 时为 None
 handedness  Left、Right 或 None
 ready       输入设备是否已完成自身校准
 status      Viewer 显示的简短状态
+thumb_tip_orientation_world_xyzw
+            MANUS Thumb Tip 相对 MANUS WORLD 的 GLOBAL quaternion [x,y,z,w]；
+            Vision、invalid 或 stale frame 为 None
 preview     可选输入预览图像
 ```
 
@@ -153,7 +163,8 @@ origin = point1
 +z = +x × +y
 ```
 
-这套定义只依赖人手关键点，不读取 MMHand URDF，也不会写回跟踪结果。
+`compute_cmc_frame()` 返回的三列为上述轴在 world/输入坐标中的表示，矩阵语义是
+`R_world_from_cmc`。这套定义只依赖人手关键点，不读取 MMHand URDF，也不会写回跟踪结果。
 
 ### MMHand 掌坐标系
 
@@ -169,7 +180,7 @@ MMHand 掌轴直接采用 URDF 根 `base_link` 的轴方向：`+x` 大致由腕�
 ```text
 track (runtime)
 ├── vision.camera → vision.source ─┐
-├── manus.source（未来）───────────┴→ HandFrame → retarget
+├── manus.source → manus.adapter ──┴→ HandFrame → retarget
 └── viewer / ros / simulation ← MMHand joints
 ```
 
@@ -232,9 +243,17 @@ Retargeter 由独立线程持有。主线程只提交最新有效帧，线程忙
 
 ## Manus 与抓取仿真
 
-未来的 `manus/` 只需包含 SDK 连接、数据解析、手套标定和 `ManusSource`。适配器负责
-把 Manus 关节旋转重建为相同的标准 21 点，现有 runtime、retarget、Viewer 和 ROS
-无需修改。厂商 SDK 二进制通过外部安装提供，不复制到仓库。
+`ManusSource` 默认直接加载 `manus/assets` 中的官方 MANUS Core SDK 3.1.1
+Integrated runtime，不需要另开 sender。项目的薄 C++ wrapper 明确调用
+`CoreSdk_InitializeCoordinateSystemWithVUH(..., true)`；`unitScale=1.0` 表示 metre，
+并通过 `CoreSdk_GetRawSkeletonNodeInfoArray()` 取得节点语义。SDK 来源、checksum 和
+wrapper 重建方法见 `manus/assets/README.md`。旧 ZMQ parser 仅作为可选兼容代码保留，
+不是默认 MANUS 输入链。
+
+positions 经 NodeInfo（若 transport 提供）或官方 25 点 fallback 映射为 standard21，之后
+和 Vision 共用 `hand.relative_points()`。Thumb Tip quaternion 直接保存为
+`HandFrame.thumb_tip_orientation_world_xyzw`；Phase 1 不转 CMC/robot frame，也不进入
+retarget residual。
 
 `simulation.GraspSimulation` 在进程内消费 retarget 输出，单位为 radian、顺序为
 J00–J20；它不访问 Source 或 HandFrame，也不改变普通运行路径。仿真只加载
@@ -297,6 +316,7 @@ ros2 topic echo /raw_ik_target
 
 ```text
 vision/                相机、MediaPipe、标定和视觉资产
+manus/                 MANUS source、25→21 adapter 和 SDK 资产说明
 simulation/            极简 SAPIEN MMHand 抓取仿真
 hand.py                标准 HandFrame 和 21 点拓扑
 config.py              所有运行配置
@@ -307,6 +327,7 @@ ros.py                 ROS 2 消息构造与 topic 发布
 track.py               Source 选择、组件装配和实时循环
 test_hand_capture.py   核心行为测试
 test_simulation.py     可选 SAPIEN headless 测试
+test_manus_phase1.py   MANUS Phase 1 接口、mapping、quaternion 与 stale 测试
 assets/mmhand/         MMHand URDF、网格和许可证
 test/                  一次性机器人工作空间优化资料，不属于日常测试
 ```
@@ -316,9 +337,10 @@ test/                  一次性机器人工作空间优化资料，不属于日
 ```bash
 python -m unittest -v test_hand_capture.py
 python -m unittest -v test_simulation.py
+python -m unittest -v test_manus_phase1.py
 ```
 
 未安装 SAPIEN 时仿真测试自动跳过；安装后会加载当前 MMHand URDF，验证关节契约、
-随机圆柱范围、重置、关节限位以及上述抓取稳定设置。两组测试使用独立 Python
+随机圆柱范围、重置、关节限位以及上述抓取稳定设置。各组测试使用独立 Python
 进程，避免 MediaPipe EGL 与 SAPIEN/PhysX 原生运行时在退出阶段相互影响。测试不依赖
 `test_data/` 中的录像，也不会执行 `test/` 下的一次性优化程序。

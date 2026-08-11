@@ -12,8 +12,8 @@ HAND_LANDMARKER_PATH = _ROOT / "vision/assets/hand_landmarker.task"
 
 # Camera ----------------------------------------------------------------------
 
-# 输入来源："stereo"、"d435"，未来可扩展为 "manus"。
-INPUT_SOURCE = "stereo"
+# VisionSource 内部相机类型。一级输入源由 track.py 的 --source 决定。
+CAMERA_TYPE = "stereo"
 # 普通相机的 OpenCV 编号，或 D435 的设备枚举序号。
 CAMERA_INDEX = 2
 # D435 单路红外图像宽度，单位 pixel。
@@ -83,6 +83,23 @@ STALE_FRAMES = 3
 HAND_SWITCH_FRAMES = 5
 # 标准化人手的目标掌尺寸，单位 m；用于 keypoint_relative 和 retarget。
 STANDARD_PALM_SIZE = 0.086
+
+
+# MANUS ------------------------------------------------------------------------
+
+# 官方 MANUS Core SDK 3.1.1 Integrated runtime 及本项目薄封装。
+MANUS_SDK_VERSION = "3.1.1"
+MANUS_SDK_BRIDGE_PATH = _ROOT / "manus/assets/libmanus_sdk_bridge.so"
+# 可选兼容旧 MANUS ZMQ sender；默认输入不再使用它。
+MANUS_ENDPOINT = "tcp://127.0.0.1:8000"
+# bridge 的 CoordinateSystemVUH.unitScale=1.0，官方定义为 meter。
+MANUS_POSITION_SCALE_TO_M = 1.0
+# 超过该接收间隔后，MANUS frame 视为 stale，绝不复用上一帧四元数。
+MANUS_STALE_SECONDS = 0.20
+# legacy bridge 只发送 gloveId，不发送 Side。按实际设备 ID 填写，例如：
+# MANUS_GLOVE_ID_TO_HANDEDNESS = {"60f3738b": "Left", "8569617b": "Right"}
+# 若 transport 提供 NodeInfo，则代码优先使用 NodeInfo.side，不查此表。
+MANUS_GLOVE_ID_TO_HANDEDNESS = {}
 
 
 # MMHand joint mapping ---------------------------------------------------------

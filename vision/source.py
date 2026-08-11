@@ -24,10 +24,9 @@ from config import (
     PARAMS_PATH,
     POINT_2D_FILTER,
     POINT_3D_FILTER,
-    STANDARD_PALM_SIZE,
     STALE_FRAMES,
 )
-from hand import FINGER_CHAINS, HandFrame, SKELETON_EDGES
+from hand import FINGER_CHAINS, HandFrame, SKELETON_EDGES, relative_points
 from .camera import RealSenseCamera, StereoCamera
 
 EPS = 1e-8
@@ -122,18 +121,6 @@ def enforce_lengths(points, lengths):
             shift = result[start] + _unit(vector) * target - result[end]
             result[list(chain[position + 1 :])] += shift
     return result
-
-
-def relative_points(points):
-    centered = points - points[0]
-    palm_size = np.mean([np.linalg.norm(centered[index]) for index in (5, 9, 13, 17)])
-    if palm_size < EPS:
-        return None
-    points = centered * STANDARD_PALM_SIZE / palm_size
-    z_axis = _unit(points[9])
-    x_axis = _unit(np.cross(points[5] - points[17], z_axis))
-    y_axis = _unit(np.cross(z_axis, x_axis))
-    return points @ np.column_stack((x_axis, y_axis, z_axis))
 
 
 class Kinematics:
@@ -407,6 +394,7 @@ class VisionSource:
             handedness=result["handedness"] if fresh else None,
             ready=fresh and result["phase"].startswith("GESTURE"),
             status=_status(result),
+            thumb_tip_orientation_world_xyzw=None,
             preview=_preview(result),
         )
 

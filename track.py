@@ -3,7 +3,7 @@ import time
 
 import numpy as np
 
-from config import INPUT_SOURCE
+from config import CAMERA_TYPE
 from retarget import Retargeter, RetargetWorker
 from ros import RosOutput
 from viewer import Viewer
@@ -11,24 +11,29 @@ from viewer import Viewer
 
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument("--source", choices=("vision", "manus"), default="vision")
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--ros", action="store_true")
     output.add_argument("--sim", action="store_true")
     return parser.parse_args(argv)
 
 
-def _source():
-    if INPUT_SOURCE in ("stereo", "d435"):
+def _source(source_name):
+    if source_name == "vision":
         from vision.source import VisionSource
 
-        return VisionSource(INPUT_SOURCE)
-    raise ValueError(f"Unsupported INPUT_SOURCE: {INPUT_SOURCE}")
+        return VisionSource(CAMERA_TYPE)
+    if source_name == "manus":
+        from manus.source import ManusSource
+
+        return ManusSource()
+    raise ValueError(f"Unsupported source: {source_name}")
 
 
 def main():
     args = _parse_args()
     retargeter = Retargeter()
-    source = _source()
+    source = _source(args.source)
     viewer = Viewer(retargeter.model)
     ros = RosOutput() if args.ros else None
     worker = RetargetWorker(retargeter)
