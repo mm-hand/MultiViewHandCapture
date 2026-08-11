@@ -1,7 +1,8 @@
 # MultiView Hand Capture
 
 将设备输入统一为标准 21 点手姿态，再把稳定左手实时映射到 MMHand 的 21 个关节。
-当前输入支持普通拼接双目、Intel RealSense D435 和 MANUS Raw Skeleton，并共用
+当前输入支持普通拼接双目、Intel RealSense D435、MANUS Raw Skeleton
+和 D435 彩色单目 WiLoR，并共用
 retarget、Web 显示和 ROS 2 输出。
 
 ## 安装
@@ -27,6 +28,12 @@ MediaPipe Tasks 的 HandLandmarker 模型已包含在
 
 ```bash
 python -m pip install -r simulation/requirements.txt
+```
+
+WiLoR 仅需额外安装 ONNX Runtime CUDA：
+
+```bash
+python -m pip install -r wilor/requirements.txt
 ```
 
 ## 快速开始
@@ -75,11 +82,13 @@ python track.py --source vision
 python track.py --source vision --ros
 python track.py --source manus
 python track.py --source manus --ros
+python track.py --source wilor
+python track.py --source wilor --ros
 ```
 
 打开 `http://localhost:8080`：
 
-- 上方显示左右双目图像；加权 retarget 损失及占比浮动在右上角。
+- 上方显示当前 Source 的输入预览；加权 retarget 损失及占比浮动在右上角。
 - 左下显示 `Normalized hand`，包含人手 retarget 坐标轴和原点。
 - 右下显示 MMHand URDF，包含 MMHand 掌坐标轴和原点。
 
@@ -93,6 +102,7 @@ python track.py --source manus --ros
 |---|---|
 | 输入与相机 | CLI `--source`、`CAMERA_TYPE`、`CAMERA_INDEX`、图像尺寸、旋转角、D435 帧率 |
 | MANUS | `MANUS_SDK_VERSION`、`MANUS_SDK_BRIDGE_PATH`、`MANUS_STALE_SECONDS` |
+| WiLoR | `WILOR_*` 单目分辨率、CUDA device、检测阈值与检测间隔 |
 | 标定与约束 | `BOARD_SIZE`、`SQUARE_SIZE`、`CALIBRATION_*`、`BONE_TOLERANCE` |
 | One Euro | `POINT_2D_FILTER`、`POINT_3D_FILTER`、`ANGLE_FILTER` |
 | 检测门限 | `MP_*_CONFIDENCE`、`MAX_REPROJECTION_ERROR`、`MAX_DEPTH_MM`、`MAX_HAND_RADIUS` |
@@ -104,7 +114,7 @@ One Euro 元组依次为
 `(min_cutoff, beta, derivative_cutoff)`。二维点使用 pixel，三维点使用 mm，角度使用
 degree，因此不同信号的参数不能直接互换。配置在对象创建时读取，修改后需重启程序。
 
-一级输入由 CLI 的 `--source vision/manus` 决定；`CAMERA_TYPE` 只在 VisionSource
+一级输入由 CLI 的 `--source vision/manus/wilor` 决定；`CAMERA_TYPE` 只在 VisionSource
 内部接受 `stereo` 或 `d435`。
 
 MMHand 数组和 ROS 输出使用固定的 J00–J20 顺序：
@@ -127,6 +137,9 @@ points      新鲜的标准 21×3 手姿态；无效或 stale 时为 None
 handedness  Left、Right 或 None
 ready       输入设备是否已完成自身校准
 status      Viewer 显示的简短状态
+finger_pad_directions
+            Thumb、Index、Middle、Ring、Little 的 5×3 指腹外向单位向量；
+            与 points 共用掌局部坐标，目前仅 WiLoR 提供
 thumb_tip_orientation_world_xyzw
             MANUS Thumb Tip 相对 MANUS WORLD 的 GLOBAL quaternion [x,y,z,w]；
             Vision、invalid 或 stale frame 为 None
@@ -149,8 +162,8 @@ MCP/PIP/DIP/TIP。Source 只需实现 `read() -> HandFrame | None` 和 `close()`
 +y = +z × +x
 ```
 
-关键点再按掌尺寸缩放到 `STANDARD_PALM_SIZE`，默认 `0.086 m`。该坐标系用于跟踪、
-显示和关键点发布，不受 retarget 坐标定义影响。
+关键点再按掌尺寸缩放到 `STANDARD_PALM_SIZE`，默认 `0.086 m`。指腹向量只旋转到该
+坐标系，不缩放。该坐标系用于跟踪、显示和关键点发布，不受 retarget 坐标定义影响。
 
 ### 人手 retarget 坐标系
 
@@ -180,7 +193,8 @@ MMHand 掌轴直接采用 URDF 根 `base_link` 的轴方向：`+x` 大致由腕�
 ```text
 track (runtime)
 ├── vision.camera → vision.source ─┐
-├── manus.source → manus.adapter ──┴→ HandFrame → retarget
+├── manus.source → manus.adapter ──┤→ HandFrame → retarget
+├── D435 color → wilor.source ───┴
 └── viewer / ros / simulation ← MMHand joints
 ```
 
@@ -212,6 +226,13 @@ angle = acos(clamp(u · v, -1, 1))
 
 stale 帧只更新状态和输入预览，不输出标准手姿态，也不进入 retarget 或 ROS。超过
 `STALE_FRAMES` 后重置二维、三维和角度滤波器。
+
+### WiLoR 彩色单目
+
+`WilorSource` 只打开 D435 color stream，不读取红外双目或
+`vision/stereo_params.json`。FP16 detector 与 WiLoR ONNX 在 CUDA 上运行；
+MANO mesh 回归为标准 21 点，指腹面片的面积加权外法线产生五个指腹方向。
+左手镜像同时作用于点和向量，避免法线翻转。没有手时两项结果都是 `None`。
 
 ### MMHand retarget
 
@@ -317,6 +338,7 @@ ros2 topic echo /raw_ik_target
 ```text
 vision/                相机、MediaPipe、标定和视觉资产
 manus/                 MANUS source、25→21 adapter 和 SDK 资产说明
+wilor/                 D435 彩色单目 WiLoR ONNX source 与 LFS 资产
 simulation/            极简 SAPIEN MMHand 抓取仿真
 hand.py                标准 HandFrame 和 21 点拓扑
 config.py              所有运行配置
@@ -328,6 +350,7 @@ track.py               Source 选择、组件装配和实时循环
 test_hand_capture.py   核心行为测试
 test_simulation.py     可选 SAPIEN headless 测试
 test_manus_phase1.py   MANUS Phase 1 接口、mapping、quaternion 与 stale 测试
+test_wilor.py          WiLoR mapping、指腹方向、镜像与 detector 测试
 assets/mmhand/         MMHand URDF、网格和许可证
 test/                  一次性机器人工作空间优化资料，不属于日常测试
 ```
@@ -338,7 +361,11 @@ test/                  一次性机器人工作空间优化资料，不属于日
 python -m unittest -v test_hand_capture.py
 python -m unittest -v test_simulation.py
 python -m unittest -v test_manus_phase1.py
+python -m unittest -v test_wilor.py
 ```
+
+WiLoR 模型受 `wilor/assets/WILOR_MODEL_LICENSE.txt` 约束，MANO 和 detector
+的来源见 `wilor/assets/THIRD_PARTY_NOTICES.md`；两个 ONNX 通过 Git LFS 管理。
 
 未安装 SAPIEN 时仿真测试自动跳过；安装后会加载当前 MMHand URDF，验证关节契约、
 随机圆柱范围、重置、关节限位以及上述抓取稳定设置。各组测试使用独立 Python

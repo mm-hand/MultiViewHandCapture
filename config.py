@@ -8,6 +8,8 @@ PARAMS_PATH = _ROOT / "vision/stereo_params.json"
 URDF_PATH = _ROOT / "assets/mmhand/urdf/hand.urdf"
 # MediaPipe Tasks HandLandmarker 模型路径。
 HAND_LANDMARKER_PATH = _ROOT / "vision/assets/hand_landmarker.task"
+# Minimal WiLoR ONNX runtime assets.
+WILOR_ASSET_DIR = _ROOT / "wilor/assets"
 
 
 # Camera ----------------------------------------------------------------------
@@ -30,6 +32,15 @@ ROTATE_LEFT, ROTATE_RIGHT = 180, -180
 # 普通双目标定板内角点数、格长（mm）和最少有效图像对数。
 BOARD_SIZE, SQUARE_SIZE = (9, 6), 23.5
 MIN_CALIBRATION_PAIRS = 10
+
+# WiLoR uses only the D435 color stream; it never opens stereo infrared streams.
+WILOR_CAMERA_INDEX = 0
+WILOR_WIDTH, WILOR_HEIGHT, WILOR_FPS = 640, 480, 30
+WILOR_DEVICE_ID = 0
+WILOR_CONFIDENCE = 0.30
+WILOR_IOU = 0.50
+WILOR_DETECT_EVERY = 3
+WILOR_CROP_FACTOR = 2.0
 
 # Hand calibration and filtering ----------------------------------------------
 

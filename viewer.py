@@ -14,6 +14,8 @@ ROBOT_CAMERA_DISTANCE = 0.42
 PALM_FRAME_AXIS_LENGTH = 0.04
 PALM_FRAME_AXIS_RADIUS = 0.0015
 PALM_FRAME_ORIGIN_RADIUS = 0.004
+PAD_DIRECTION_LENGTH = 0.025
+TIP_INDICES = np.array((4, 8, 12, 16, 20))
 LOSS_LABELS = (
     ("thumb_tip", "thumb tip"),
     ("thumb_mcp_ip", "thumb MCP-IP"),
@@ -110,6 +112,13 @@ class Viewer:
             empty_hand[np.asarray(SKELETON_EDGES)],
             (60, 170, 255),
             line_width=4,
+            visible=False,
+        )
+        self.pad_directions = normalized.scene.add_line_segments(
+            "/hand/pad_directions",
+            np.zeros((5, 2, 3), np.float32),
+            (255, 150, 70),
+            line_width=5,
             visible=False,
         )
         robot_server.scene.add_frame("/robot", show_axes=False)
@@ -220,12 +229,22 @@ fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000
             self.human_frame.wxyz = _human_view_wxyz(frame.handedness, points)
         visible = points is not None
         self.human_cloud.visible = self.human_bones.visible = visible
+        self.pad_directions.visible = False
         if not visible:
             self.human_retarget_frame.visible = False
         else:
             points = np.asarray(points, float)
             self.human_cloud.points = points.astype(np.float32)
             self.human_bones.points = points[np.asarray(SKELETON_EDGES)].astype(np.float32)
+            directions = frame.finger_pad_directions
+            if directions is not None:
+                directions = np.asarray(directions, float)
+                if directions.shape == (5, 3) and np.isfinite(directions).all():
+                    starts = points[TIP_INDICES]
+                    self.pad_directions.points = np.stack(
+                        (starts, starts + PAD_DIRECTION_LENGTH * directions), axis=1
+                    ).astype(np.float32)
+                    self.pad_directions.visible = True
             try:
                 origin, palm_frame = compute_cmc_frame(points)
             except ValueError:

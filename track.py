@@ -11,7 +11,7 @@ from viewer import Viewer
 
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("--source", choices=("vision", "manus"), default="vision")
+    parser.add_argument("--source", choices=("vision", "manus", "wilor"), default="vision")
     output = parser.add_mutually_exclusive_group()
     output.add_argument("--ros", action="store_true")
     output.add_argument("--sim", action="store_true")
@@ -27,6 +27,10 @@ def _source(source_name):
         from manus.source import ManusSource
 
         return ManusSource()
+    if source_name == "wilor":
+        from wilor.source import WilorSource
+
+        return WilorSource()
     raise ValueError(f"Unsupported source: {source_name}")
 
 

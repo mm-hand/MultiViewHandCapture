@@ -25,6 +25,9 @@ class HandFrame:
     handedness: str | None
     ready: bool
     status: str
+    # Outward unit normals for Thumb, Index, Middle, Ring, Little finger pads.
+    # Coordinates use the same palm-local tracking frame as points.
+    finger_pad_directions: np.ndarray | None = None
     # MANUS Thumb Tip Raw Skeleton node GLOBAL rotation, relative to the
     # configured MANUS WORLD coordinate system. Quaternion order is xyzw.
     # It is intentionally independent from points and is not CMC-normalized.
@@ -40,21 +43,36 @@ def _unit(vector, fallback=(1.0, 0.0, 0.0)):
     return fallback / max(np.linalg.norm(fallback), EPS)
 
 
-def relative_points(points):
-    """Return the input-independent normalized standard-21 tracking points.
-
-    The returned coordinates keep the historical wrist-origin frame used by
-    VisionSource and Retargeter. Both Vision and MANUS call this one helper.
-    """
+def relative_hand(points, directions=None):
+    """Normalize standard-21 points and optional directions to the tracking frame."""
     points = np.asarray(points, float)
     if points.shape != (21, 3) or not np.isfinite(points).all():
         raise ValueError("Hand landmarks must be finite with shape (21, 3)")
     centered = points - points[0]
     palm_size = np.mean([np.linalg.norm(centered[index]) for index in (5, 9, 13, 17)])
     if palm_size < EPS:
-        return None
-    points = centered * STANDARD_PALM_SIZE / palm_size
-    z_axis = _unit(points[9])
-    x_axis = _unit(np.cross(points[5] - points[17], z_axis))
+        return None, None
+    z_axis = _unit(centered[9])
+    x_axis = _unit(np.cross(centered[5] - centered[17], z_axis))
     y_axis = _unit(np.cross(z_axis, x_axis))
-    return points @ np.column_stack((x_axis, y_axis, z_axis))
+    rotation = np.column_stack((x_axis, y_axis, z_axis))
+    normalized = centered * STANDARD_PALM_SIZE / palm_size @ rotation
+    if directions is None:
+        return normalized, None
+    directions = np.asarray(directions, float)
+    if directions.shape != (5, 3) or not np.isfinite(directions).all():
+        raise ValueError("Finger-pad directions must be finite with shape (5, 3)")
+    local = directions @ rotation
+    lengths = np.linalg.norm(local, axis=1, keepdims=True)
+    if np.any(lengths < EPS):
+        raise ValueError("Finger-pad directions must be nonzero")
+    return normalized, local / lengths
+
+
+def relative_points(points):
+    """Return the input-independent normalized standard-21 tracking points.
+
+    The returned coordinates keep the historical wrist-origin frame used by
+    VisionSource and Retargeter. Both Vision and MANUS call this one helper.
+    """
+    return relative_hand(points)[0]

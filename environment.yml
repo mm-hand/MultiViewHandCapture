@@ -18,6 +18,7 @@ dependencies:
   - yourdfpy=0.0.60
   - opencv=5.0
   - scipy=1.14
+  - git-lfs
   - pip
   - pip:
       - --index-url=https://pypi.tuna.tsinghua.edu.cn/simple
