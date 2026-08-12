@@ -1,7 +1,10 @@
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
-URDF_PATH = _ROOT / "assets/mmhand/urdf/hand.urdf"
+# Experimental collision model: every collision uses the corresponding visual
+# STL with the same origin and scale. Switch back to hand.urdf to restore the
+# mixed convex-mesh/capsule collision model.
+URDF_PATH = _ROOT / "assets/mmhand/urdf/hand_visual_collision.urdf"
 WILOR_ASSET_DIR = _ROOT / "input/wilor/assets"
 
 

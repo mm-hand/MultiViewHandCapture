@@ -27,9 +27,9 @@ def main():
     simulation = None
     try:
         if args.sim:
-            from simulation.grasp import GraspSimulation
+            from simulation.process import GraspSimulationProcess
 
-            simulation = GraspSimulation()
+            simulation = GraspSimulationProcess()
         while True:
             frame = source.read()
             if frame is None:

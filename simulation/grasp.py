@@ -11,11 +11,18 @@ _DT = 0.01
 _HAND_CONTROL_DT = 0.05
 _HAND_RATE_LIMIT = 6.0
 _HAND_MAX_DELTA = _HAND_RATE_LIMIT * _HAND_CONTROL_DT
+_ROOT_LINEAR_SPEED = 0.12
+_ROOT_ANGULAR_SPEED = math.radians(45.0)
+_ROOT_POSITION_GAIN = 20.0
+_ROOT_ROTATION_GAIN = 20.0
+_ROOT_MAX_LINEAR_SPEED = 0.24
+_ROOT_MAX_ANGULAR_SPEED = math.radians(90.0)
 _HOME = np.array((0.0, 0.0, 0.20))
 _CONTACT_OFFSET = 0.003
 _SURFACE_FRICTION = 0.3
-_HAND_STATIC_FRICTION = 2.0
-_HAND_DYNAMIC_FRICTION = 1.0
+_HAND_STATIC_FRICTION = 0.8
+_HAND_DYNAMIC_FRICTION = 0.6
+_CONTACT_LOG_DT = 1.0
 _OBJECT_LINEAR_DAMPING = 2.0
 _OBJECT_ANGULAR_DAMPING = 2.0
 _JOINT_FRICTION = 0.0
@@ -40,6 +47,49 @@ def _key(window, method, *names):
         except Exception:
             pass
     return False
+
+
+def _quat_multiply(one, two):
+    """Multiply scalar-first quaternions."""
+    w1, x1, y1, z1 = np.asarray(one, float)
+    w2, x2, y2, z2 = np.asarray(two, float)
+    return np.array((
+        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
+        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
+        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
+        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
+    ))
+
+
+def _quat_rotate(quaternion, vector):
+    quaternion = np.asarray(quaternion, float)
+    vector_quaternion = np.r_[0.0, np.asarray(vector, float)]
+    conjugate = quaternion * np.array((1.0, -1.0, -1.0, -1.0))
+    return _quat_multiply(
+        _quat_multiply(quaternion, vector_quaternion), conjugate
+    )[1:]
+
+
+def _rotation_error(target, current):
+    """Return the shortest world-frame rotation vector current -> target."""
+    current_conjugate = np.asarray(current, float) * np.array(
+        (1.0, -1.0, -1.0, -1.0)
+    )
+    error = _quat_multiply(target, current_conjugate)
+    error /= max(np.linalg.norm(error), 1e-12)
+    if error[0] < 0:
+        error = -error
+    length = np.linalg.norm(error[1:])
+    if length < 1e-12:
+        return np.zeros(3)
+    angle = 2 * math.atan2(length, max(error[0], 0.0))
+    return error[1:] / length * angle
+
+
+def _clip_norm(vector, maximum):
+    vector = np.asarray(vector, float)
+    length = np.linalg.norm(vector)
+    return vector if length <= maximum else vector * (maximum / length)
 
 
 class GraspSimulation:
@@ -84,6 +134,9 @@ class GraspSimulation:
         )
         self.scene.add_ground(0.0, render=not headless, material=self.object_material)
         self.hand = self._load_hand()
+        # Contact bodies can be exposed through fresh Python wrappers, so
+        # object membership against ``self.hand.links`` is not reliable.
+        self.hand_link_names = {link.name for link in self.hand.links}
         self.object = None
         self.hand_control_accumulator = 0.0
         self._reset()
@@ -98,10 +151,14 @@ class GraspSimulation:
         self.last_time = time.monotonic()
         self.accumulator = 0.0
         self.last_contacts = None
+        self.last_contact_log = 0.0
 
     def _load_hand(self):
         loader = self.scene.create_urdf_loader()
-        loader.fix_root_link = True
+        # The root must remain dynamic so PhysX sees its commanded linear and
+        # angular velocities. Moving a fixed root by assigning ``hand.pose``
+        # teleports its collision shapes with zero physical velocity.
+        loader.fix_root_link = False
         build_link = loader._build_link
 
         # SAPIEN rejects the URDF's semidefinite inertia tensors.
@@ -142,6 +199,10 @@ class GraspSimulation:
 
     def _configure_hand_physics(self):
         """Reapply the contact and drive settings that make grasping stiff."""
+        for link in self.hand.links:
+            # The free root is explicitly velocity-controlled. Gravity remains
+            # enabled for the cylinder and ground, but not for the robot hand.
+            link.disable_gravity = True
         for joint in self.hand.active_joints:
             joint.set_friction(_JOINT_FRICTION)
             joint.set_drive_properties(
@@ -189,7 +250,12 @@ class GraspSimulation:
         return self.commanded_q.copy()
 
     def _reset_hand(self):
-        self.hand.pose = sapien.Pose(_HOME)
+        self.target_pose = sapien.Pose(_HOME)
+        self.target_linear_velocity = np.zeros(3)
+        self.target_angular_velocity = np.zeros(3)
+        self.hand.pose = self.target_pose
+        self.hand.set_root_linear_velocity(np.zeros(3))
+        self.hand.set_root_angular_velocity(np.zeros(3))
         self.hand.set_qpos(self.neutral_qpos.copy())
         self.hand.set_qvel(np.zeros(21))
         self.hand.set_qf(np.zeros(21))
@@ -224,7 +290,11 @@ class GraspSimulation:
             raise RuntimeError("Cylinder has no dynamic PhysX body")
         self.object_body.set_linear_damping(_OBJECT_LINEAR_DAMPING)
         self.object_body.set_angular_damping(_OBJECT_ANGULAR_DAMPING)
-        print(f"cylinder radius={self.radius * 1000:.1f}mm height={self.height * 1000:.1f}mm")
+        print(
+            f"cylinder radius={self.radius * 1000:.1f}mm "
+            f"height={self.height * 1000:.1f}mm",
+            flush=True,
+        )
         return cylinder
 
     def _reset(self):
@@ -245,31 +315,60 @@ class GraspSimulation:
             _key(window, "key_down", "o") - _key(window, "key_down", "l"),
             _key(window, "key_down", "p") - _key(window, "key_down", "m"),
         ), float)
-        pose = self.hand.pose
+        pose = self.target_pose
         norm = np.linalg.norm(move)
-        position = np.asarray(pose.p) + (move / norm * 0.12 * elapsed if norm else 0)
+        self.target_linear_velocity = (
+            move / norm * _ROOT_LINEAR_SPEED if norm else np.zeros(3)
+        )
+        position = np.asarray(pose.p) + self.target_linear_velocity * elapsed
         norm = np.linalg.norm(turn)
         if norm:
-            axis, angle = turn / norm, math.radians(45) * elapsed
+            axis, angle = turn / norm, _ROOT_ANGULAR_SPEED * elapsed
+            self.target_angular_velocity = (
+                _quat_rotate(pose.q, axis) * _ROOT_ANGULAR_SPEED
+            )
             pose = sapien.Pose(position, pose.q) * sapien.Pose(
                 q=np.r_[math.cos(angle / 2), axis * math.sin(angle / 2)]
             )
         else:
+            self.target_angular_velocity = np.zeros(3)
             pose = sapien.Pose(position, pose.q)
-        self.hand.pose = pose
+        self.target_pose = pose
+
+    def _apply_root_velocity(self):
+        pose = self.hand.pose
+        linear = (
+            self.target_linear_velocity
+            + _ROOT_POSITION_GAIN * (np.asarray(self.target_pose.p) - np.asarray(pose.p))
+        )
+        angular = (
+            self.target_angular_velocity
+            + _ROOT_ROTATION_GAIN * _rotation_error(self.target_pose.q, pose.q)
+        )
+        linear = _clip_norm(linear, _ROOT_MAX_LINEAR_SPEED)
+        angular = _clip_norm(angular, _ROOT_MAX_ANGULAR_SPEED)
+        self.hand.set_root_linear_velocity(linear)
+        self.hand.set_root_angular_velocity(angular)
+        return linear, angular
 
     def _contacts(self):
         fingers = set()
+        point_count = 0
         for contact in self.scene.get_contacts():
             entities = (contact.bodies[0].entity, contact.bodies[1].entity)
             if self.object not in entities:
                 continue
             other = entities[1] if entities[0] is self.object else entities[0]
-            if other is not None and other.name in _FINGERTIPS and any(
-                np.linalg.norm(point.impulse) > 1e-8 for point in contact.points
-            ):
+            if other is None or other.name not in self.hand_link_names:
+                continue
+            active_points = sum(
+                1 for point in contact.points
+                if np.linalg.norm(point.impulse) > 1e-8
+            )
+            point_count += active_points
+            if other.name in _FINGERTIPS and active_points:
                 fingers.add(other.name)
-        return len(fingers)
+        return len(fingers), point_count
 
     def update(self, robot_joints=None):
         if self.viewer is not None and self.viewer.closed:
@@ -300,10 +399,16 @@ class GraspSimulation:
         while self.accumulator >= _DT:
             self.step_physics()
             self.accumulator -= _DT
-        contacts = self._contacts()
-        if contacts != self.last_contacts:
-            print(f"contacts={contacts}")
-            self.last_contacts = contacts
+        contact_state = self._contacts()
+        if (contact_state != self.last_contacts
+                or now - self.last_contact_log >= _CONTACT_LOG_DT):
+            fingertip_count, point_count = contact_state
+            print(
+                f"contacts={fingertip_count} contact_points={point_count}",
+                flush=True,
+            )
+            self.last_contacts = contact_state
+            self.last_contact_log = now
         if self.viewer is not None:
             self.scene.update_render()
             self.viewer.render()
@@ -313,8 +418,9 @@ class GraspSimulation:
         if not isinstance(steps, int) or steps < 0:
             raise ValueError("steps must be a non-negative integer")
         for _ in range(steps):
+            self._apply_root_velocity()
             self.hand.set_qf(self.hand.compute_passive_force(
-                gravity=True,
+                gravity=False,
                 coriolis_and_centrifugal=True,
             ))
             self.scene.step()

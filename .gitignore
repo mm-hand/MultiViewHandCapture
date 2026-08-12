@@ -1,6 +1,9 @@
 /test/
 /test_data/
 .venv/
+.codex/
+.agents/
+.python/
 __pycache__/
 *.egg-info/
 log.txt

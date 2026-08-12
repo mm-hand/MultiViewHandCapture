@@ -259,11 +259,24 @@ previewImage=document.getElementById("preview"),lossText=document.getElementById
 humanAngles=document.getElementById("humanAngles"),robotAngles=document.getElementById("robotAngles");
 for(const [id,port] of [["normalized",{normalized_port}],["robot",{robot_port}]])
   document.getElementById(id).src=`http://${{host}}:${{port}}`;
-setInterval(()=>{{previewImage.src="/preview.jpg?t="+Date.now();
-fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x);
-fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x);
-fetch("/human_angles").then(r=>r.text()).then(x=>humanAngles.textContent=x);
-fetch("/robot_angles").then(r=>r.text()).then(x=>robotAngles.textContent=x)}},{round(1000 / WEB_FPS)});
+let previewUrl=null;
+async function refresh(){{
+  try{{
+    const responses=await Promise.all([
+      fetch("/preview.jpg?t="+Date.now()),fetch("/status"),fetch("/losses"),
+      fetch("/human_angles"),fetch("/robot_angles")]);
+    const [previewBlob,status,losses,human,robot]=await Promise.all([
+      responses[0].blob(),...responses.slice(1).map(response=>response.text())]);
+    const nextUrl=URL.createObjectURL(previewBlob);
+    previewImage.src=nextUrl;
+    if(previewUrl!==null) URL.revokeObjectURL(previewUrl);
+    previewUrl=nextUrl;
+    statusText.textContent=status;lossText.textContent=losses;
+    humanAngles.textContent=human;robotAngles.textContent=robot;
+  }}catch(error){{console.debug("dashboard refresh failed",error)}}
+  setTimeout(refresh,{round(1000 / WEB_FPS)});
+}}
+refresh();
 </script></body></html>""".encode()
 
         class Handler(BaseHTTPRequestHandler):
@@ -289,7 +302,10 @@ fetch("/robot_angles").then(r=>r.text()).then(x=>robotAngles.textContent=x)}},{r
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
-                self.wfile.write(body)
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
 
             def log_message(self, *_):
                 pass
