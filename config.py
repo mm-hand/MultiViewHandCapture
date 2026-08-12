@@ -8,7 +8,7 @@ WILOR_ASSET_DIR = _ROOT / "input/wilor/assets"
 # Input -----------------------------------------------------------------------
 
 INPUT_SOURCE = "wilor"  # "wilor" or "manus"
-CAMERA_DEVICE = "/dev/video4"  # OpenCV index, device path, or stream URL
+CAMERA_DEVICE = "/dev/video4"  # V4L2 index or /dev/videoN path
 CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS = 640, 480, 30
 WILOR_DEVICE_ID = 0
 WILOR_CONFIDENCE = 0.30

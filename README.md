@@ -4,10 +4,9 @@
 21-landmark hand representation, retargets a left hand to the 21 joints of
 MMHand, and exposes a browser dashboard and optional ROS 2 output.
 
-The default input is a regular OpenCV camera running the CUDA ONNX version of
-WiLoR. A camera may be a USB/UVC device, an integrated webcam, a device path,
-or a stream URL supported by OpenCV. No depth or multi-camera calibration is
-required.
+The default input is a V4L2 camera running the CUDA ONNX version of WiLoR. A
+camera may be a USB/UVC device or an integrated webcam exposed as
+`/dev/videoN`. No depth or multi-camera calibration is required.
 
 ## Installation
 
@@ -41,7 +40,7 @@ INPUT_SOURCE = "wilor"  # "wilor" or "manus"
 For WiLoR, configure any OpenCV source and its requested mode:
 
 ```python
-CAMERA_DEVICE = 0       # 0, "/dev/video2", or a stream URL
+CAMERA_DEVICE = 0       # V4L2 index or "/dev/videoN"
 CAMERA_WIDTH = 640
 CAMERA_HEIGHT = 480
 CAMERA_FPS = 30
