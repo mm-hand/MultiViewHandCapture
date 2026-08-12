@@ -232,11 +232,13 @@ stale 帧只更新状态和输入预览，不输出标准手姿态，也不进�
 `WilorSource` 只打开 D435 color stream，不读取红外双目或
 `vision/stereo_params.json`。FP16 detector 与 WiLoR ONNX 在 CUDA 上运行；
 MANO mesh 回归为标准 21 点，指腹面片的面积加权外法线产生五个指腹方向。
-左手镜像同时作用于点和向量，避免法线翻转。输入预览将 MANO mesh 投影叠加到
-RGB 图像，Normalized hand 用箭头显示五个指腹外法线；没有手时结果为 `None`。
+拇指方向再绕 IP→TIP 轴向掌心旋转 `45°`。
+左手镜像同时作用于点和向量，避免法线翻转。输入预览在完整 RGB 上叠加黄色
+MANO mesh；Normalized hand 用箭头显示五个指腹外法线，没有手时结果为 `None`。
 
 MMHand 面板无论使用 Vision、MANUS 或 WiLoR，都从当前机器人 FK 的五个 tip link
-计算并显示指腹外法线箭头；等待新 retarget 结果时保持当前机器人姿态和箭头。
+计算并显示指腹外法线箭头；五个 tip link 的原点定义为 STL 指腹中心，局部 `-z`
+定义为指腹外法线。等待新 retarget 结果时保持当前机器人姿态和箭头。
 
 ### MMHand retarget
 

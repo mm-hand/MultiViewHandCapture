@@ -904,35 +904,35 @@
 
 <link name="1-tip_Link"/>
 <joint name="1-tip" type="fixed">
-  <origin xyz="0.023001459 0.010424364 -0.004367931" rpy="0 0 0"/>
+  <origin xyz="0.01536449 0.004452079 -0.008175908" rpy="0 0 0"/>
   <parent link="finger_1_fingertip_1"/>
   <child link="1-tip_Link"/>
 </joint>
 
 <link name="2-tip_Link"/>
 <joint name="2-tip" type="fixed">
-  <origin xyz="0.021343147 0.013505685 -0.004311705" rpy="0 0 0"/>
+  <origin xyz="0.015364505 0.004452078 -0.008175907" rpy="0 0 0"/>
   <parent link="finger_2_fingertip_1"/>
   <child link="2-tip_Link"/>
 </joint>
 
 <link name="3-tip_Link"/>
 <joint name="3-tip" type="fixed">
-  <origin xyz="0.020106421 0.015325961 -0.004336191" rpy="0 0 0"/>
+  <origin xyz="0.01536449 0.004452078 -0.008175908" rpy="0 0 0"/>
   <parent link="finger_3_fingertip_1"/>
   <child link="3-tip_Link"/>
 </joint>
 
 <link name="4-tip_Link"/>
 <joint name="4-tip" type="fixed">
-  <origin xyz="0.020105907 0.015325727 -0.004336522" rpy="0 0 0"/>
+  <origin xyz="0.015315325 0.004282186 -0.008356225" rpy="0 0 0"/>
   <parent link="finger_4_fingertip_1"/>
   <child link="4-tip_Link"/>
 </joint>
 
 <link name="5-tip_Link"/>
 <joint name="5-tip" type="fixed">
-  <origin xyz="0.012366569 -0.000590601 -0.022397383" rpy="0 0 0"/>
+  <origin xyz="0.006628915 -0.000976518 -0.017136225" rpy="1.531486234 -0.730633954 -0.704777306"/>
   <parent link="mmhand_thumb_1_finger_7_fingertip_1"/>
   <child link="5-tip_Link"/>
 </joint>

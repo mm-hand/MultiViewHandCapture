@@ -16,6 +16,8 @@ from wilor.source import (
     Tracker,
     draw_mesh,
     mesh_hand,
+    preview,
+    rotate_toward,
 )
 
 
@@ -37,7 +39,7 @@ def synthetic_mesh():
     raw[JOINT_ORDER] = standard_hand()
     vertices[:16] = raw[:16]
     vertices[TIP_VERTICES] = raw[16:]
-    faces = np.zeros((int(PAD_FACE_ROWS.max()) + 1, 3), np.int32)
+    faces = np.zeros((max(map(np.max, PAD_FACE_ROWS)) + 1, 3), np.int32)
     vertex = 100
     for finger, rows in enumerate(PAD_FACE_ROWS):
         for row in rows:
@@ -74,6 +76,19 @@ class FakeReconstructorSession:
 
 
 class WilorTests(unittest.TestCase):
+    def test_rotation_uses_thumb_axis_and_turns_toward_palm(self):
+        root = np.sqrt(0.5)
+        np.testing.assert_allclose(
+            rotate_toward(np.array((1., 0, 0)), np.array((0., 0, 1)),
+                          np.array((0., 1, 0)), np.pi / 4),
+            (root, root, 0), atol=1e-8,
+        )
+        np.testing.assert_allclose(
+            rotate_toward(np.array((1., 0, 0)), np.array((0., 0, 1)),
+                          np.array((0., -1, 0)), np.pi / 4),
+            (root, -root, 0), atol=1e-8,
+        )
+
     def test_cli_and_source_factory(self):
         self.assertEqual(_parse_args(["--source", "wilor"]).source, "wilor")
         selected = object()
@@ -103,6 +118,13 @@ class WilorTests(unittest.TestCase):
         np.testing.assert_allclose(actual_directions, expected_directions, atol=1e-7)
 
     def test_mesh_to_standard21_and_pad_directions(self):
+        self.assertEqual(len(PAD_FACE_ROWS[0]), 28)
+        np.testing.assert_array_equal(
+            PAD_FACE_ROWS[0],
+            (1376, 1377, 1378, 1358, 1357, 1373, 1374, 1375, 1301, 1302,
+             1306, 1305, 1379, 1380, 1363, 1364, 1365, 1366, 1353, 1354,
+             1304, 1339, 1340, 1355, 1356, 1303, 1351, 1352),
+        )
         vertices, regressor, faces = synthetic_mesh()
         points, directions, handedness = mesh_hand(vertices, 1, regressor, faces)
         self.assertEqual(handedness, "Right")
@@ -122,7 +144,7 @@ class WilorTests(unittest.TestCase):
         vertices, regressor, faces = synthetic_mesh()
         with self.assertRaisesRegex(ValueError, "shape"):
             mesh_hand(vertices[:10], 1, regressor, faces)
-        vertices[faces[PAD_FACE_ROWS].ravel()] = 0
+        vertices[faces[np.concatenate(PAD_FACE_ROWS)].ravel()] = 0
         with self.assertRaisesRegex(ValueError, "Degenerate"):
             mesh_hand(vertices, 1, regressor, faces)
 
@@ -158,11 +180,21 @@ class WilorTests(unittest.TestCase):
         vertices = np.array(((-0.01, -0.01, 0), (0.01, -0.01, 0),
                              (0, 0.01, 0)), np.float32)
         faces = np.array(((0, 1, 2),), np.int32)
-        right_image, left_image = frame.copy(), frame.copy()
-        draw_mesh(right_image, vertices, (0, 0, 1), 1, faces)
-        draw_mesh(left_image, vertices, (0, 0, 1), 0, faces)
-        self.assertGreater(right_image[240, 320, 2], right_image[240, 320, 0])
-        self.assertGreater(left_image[240, 320, 0], left_image[240, 320, 2])
+        image = frame.copy()
+        draw_mesh(image, vertices, (0, 0, 1), 1, faces)
+        self.assertGreater(image[240, 320, 1], image[240, 320, 0])
+        self.assertGreater(image[240, 320, 2], image[240, 320, 0])
+
+    def test_preview_contains_centered_full_frame(self):
+        frame = np.zeros((480, 640, 3), np.uint8)
+        frame[180:300, 260:380] = (10, 80, 200)
+        track = Track(np.array((270, 190, 370, 290), np.float32), 1, .9,
+                      np.zeros(4))
+        canvas = preview(frame, [track])
+        self.assertEqual(canvas.shape, (360, 1280, 3))
+        self.assertEqual(np.count_nonzero(canvas[:, :400]), 0)
+        self.assertGreater(np.count_nonzero(canvas[:, 400:880]), 0)
+        self.assertEqual(np.count_nonzero(canvas[:, 880:]), 0)
 
     def test_tracker_predicts_then_expires(self):
         tracker = Tracker()

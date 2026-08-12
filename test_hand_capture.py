@@ -358,32 +358,37 @@ class RetargetTests(unittest.TestCase):
             "1-tip": (
                 "finger_1_fingertip_1",
                 "1-tip_Link",
-                (0.023001459, 0.010424364, -0.004367931),
+                (0.01536449, 0.004452079, -0.008175908),
+                (0, 0, 0),
             ),
             "2-tip": (
                 "finger_2_fingertip_1",
                 "2-tip_Link",
-                (0.021343147, 0.013505685, -0.004311705),
+                (0.015364505, 0.004452078, -0.008175907),
+                (0, 0, 0),
             ),
             "3-tip": (
                 "finger_3_fingertip_1",
                 "3-tip_Link",
-                (0.020106421, 0.015325961, -0.004336191),
+                (0.01536449, 0.004452078, -0.008175908),
+                (0, 0, 0),
             ),
             "4-tip": (
                 "finger_4_fingertip_1",
                 "4-tip_Link",
-                (0.020105907, 0.015325727, -0.004336522),
+                (0.015315325, 0.004282186, -0.008356225),
+                (0, 0, 0),
             ),
             "5-tip": (
                 "mmhand_thumb_1_finger_7_fingertip_1",
                 "5-tip_Link",
-                (0.012366569, -0.000590601, -0.022397383),
+                (0.006628915, -0.000976518, -0.017136225),
+                (1.531486234, -0.730633954, -0.704777306),
             ),
         }
         joints = {joint.get("name"): joint for joint in root.findall("joint")}
         links = {link.get("name") for link in root.findall("link")}
-        for name, (parent, child, xyz) in expected_tips.items():
+        for name, (parent, child, xyz, rpy) in expected_tips.items():
             joint = joints[name]
             self.assertEqual(joint.get("type"), "fixed")
             self.assertEqual(joint.find("parent").get("link"), parent)
@@ -391,6 +396,9 @@ class RetargetTests(unittest.TestCase):
             self.assertIn(child, links)
             np.testing.assert_allclose(
                 np.fromstring(joint.find("origin").get("xyz"), sep=" "), xyz, atol=0
+            )
+            np.testing.assert_allclose(
+                np.fromstring(joint.find("origin").get("rpy"), sep=" "), rpy, atol=0
             )
         transforms = self.model.fk(self.model.seed)
         np.testing.assert_allclose(
@@ -405,6 +413,17 @@ class RetargetTests(unittest.TestCase):
             np.asarray([-transforms[name][:3, 2] for name in ROBOT_TIPS]),
         )
         np.testing.assert_allclose(np.linalg.norm(pad_directions, axis=1), 1)
+        np.testing.assert_allclose(
+            pad_directions[0], (0.667341907, 0.744176136, -0.029268711),
+            atol=1e-9,
+        )
+        np.testing.assert_allclose(
+            pad_directions[1:], np.tile((0, 0, -1), (4, 1)), atol=1e-12
+        )
+        self.assertGreater(
+            np.degrees(np.arccos(np.clip(pad_directions[0] @ (0, 0, -1), -1, 1))),
+            85,
+        )
         arrows = _arrow_points(pad_points, pad_directions)
         np.testing.assert_allclose(arrows[:, 0], pad_points)
         np.testing.assert_allclose(

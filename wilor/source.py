@@ -26,12 +26,17 @@ STD = np.array((0.229, 0.224, 0.225), np.float32)[:, None, None]
 TIP_VERTICES = np.array((744, 320, 443, 554, 671))
 JOINT_ORDER = np.array((0, 13, 14, 15, 16, 1, 2, 3, 17, 4, 5, 6, 18,
                         10, 11, 12, 19, 7, 8, 9, 20))
-# Four outward-facing volar triangles per distal phalanx, Thumb to Little.
-PAD_FACE_ROWS = np.array(((1298, 1303, 1304, 1297),
-                          (500, 464, 497, 498),
-                          (698, 697, 731, 732),
-                          (950, 951, 952, 972),
-                          (1184, 1183, 1182, 1204)))
+# Outward-facing volar triangles, Thumb to Little. Thumb was manually selected.
+PAD_FACE_ROWS = (
+    np.array((1376, 1377, 1378, 1358, 1357, 1373, 1374, 1375, 1301, 1302,
+              1306, 1305, 1379, 1380, 1363, 1364, 1365, 1366, 1353, 1354,
+              1304, 1339, 1340, 1355, 1356, 1303, 1351, 1352)),
+    np.array((500, 464, 497, 498)),
+    np.array((698, 697, 731, 732)),
+    np.array((950, 951, 952, 972)),
+    np.array((1184, 1183, 1182, 1204)),
+)
+THUMB_PAD_ROTATION = np.pi / 4
 
 
 class LatestColorFrame:
@@ -276,9 +281,11 @@ def mesh_hand(vertices, right, regressor, faces):
     if vertices.shape != (778, 3) or not np.isfinite(vertices).all():
         raise ValueError("WiLoR vertices must be finite with shape (778, 3)")
     joints = np.vstack((regressor @ vertices, vertices[TIP_VERTICES]))[JOINT_ORDER]
-    triangles = vertices[faces[PAD_FACE_ROWS]]
-    normals = np.cross(triangles[:, :, 1] - triangles[:, :, 0],
-                       triangles[:, :, 2] - triangles[:, :, 0]).sum(1)
+    triangles = (vertices[faces[rows]] for rows in PAD_FACE_ROWS)
+    normals = np.asarray([
+        np.cross(group[:, 1] - group[:, 0], group[:, 2] - group[:, 0]).sum(0)
+        for group in triangles
+    ])
     lengths = np.linalg.norm(normals, axis=1, keepdims=True)
     if np.any(lengths < 1e-8):
         raise ValueError("Degenerate WiLoR finger-pad surface")
@@ -289,7 +296,22 @@ def mesh_hand(vertices, right, regressor, faces):
     points, directions = relative_hand(joints, normals)
     if points is None:
         raise ValueError("Degenerate WiLoR hand")
+    directions[0] = rotate_toward(
+        directions[0], points[4] - points[3],
+        points[[0, 5, 9, 13, 17]].mean(0) - points[4],
+        THUMB_PAD_ROTATION,
+    )
     return points, directions, "Right" if right else "Left"
+
+
+def rotate_toward(vector, axis, target, angle):
+    axis = axis / np.linalg.norm(axis)
+    cosine, sine = np.cos(angle), np.sin(angle)
+    parallel = axis * np.dot(axis, vector) * (1 - cosine)
+    base = vector * cosine + parallel
+    turn = np.cross(axis, vector) * sine
+    candidates = np.asarray((base + turn, base - turn))
+    return candidates[np.argmax(candidates @ target)] / np.linalg.norm(candidates[0])
 
 
 def draw_mesh(frame, vertices, translation, right, faces):
@@ -302,10 +324,9 @@ def draw_mesh(frame, vertices, translation, right, faces):
                        focal * points_3d[:, 1] / depth + frame.shape[0] / 2), axis=1)
     triangles = np.clip(points[faces], -32768, 32767).astype(np.int32)
     overlay = frame.copy()
-    color = (92, 150, 255) if right else (255, 145, 92)
-    cv2.fillPoly(overlay, triangles, color, lineType=cv2.LINE_AA)
-    cv2.polylines(overlay, triangles, True, (45, 55, 80), 1, cv2.LINE_AA)
-    cv2.addWeighted(overlay, 0.67, frame, 0.33, 0, dst=frame)
+    cv2.fillPoly(overlay, triangles, (0, 235, 255), lineType=cv2.LINE_AA)
+    cv2.polylines(overlay, triangles, True, (0, 90, 130), 1, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, dst=frame)
 
 
 def preview(frame, tracks, mesh=None):
