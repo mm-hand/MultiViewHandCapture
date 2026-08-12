@@ -16,6 +16,7 @@ from config import (
     WILOR_DETECT_EVERY,
     WILOR_DEVICE_ID,
     WILOR_IOU,
+    WILOR_THUMB_PAD_ROTATION_DEG,
     WILOR_DIRECTION_FILTER,
     WILOR_POINT_FILTER,
 )
@@ -38,7 +39,6 @@ PAD_FACE_ROWS = (
     np.array((950, 951, 952, 972)),
     np.array((1184, 1183, 1182, 1204)),
 )
-THUMB_PAD_ROTATION = np.pi / 4
 
 
 def make_session(path, device_id):
@@ -114,7 +114,7 @@ class Detector:
         valid = scores >= self.confidence
         values, scores, labels = values[valid], scores[valid], labels[valid]
         if not len(values):
-            return []
+            return None
         boxes = np.c_[values[:, :2] - values[:, 2:4] / 2,
                       values[:, :2] + values[:, 2:4] / 2]
         selected = []
@@ -122,76 +122,43 @@ class Detector:
             indices = np.flatnonzero(labels == label)
             selected.extend(indices[nms(boxes[indices], scores[indices], self.iou)])
         height, width = frame.shape[:2]
-        detections = []
-        for index in sorted(selected, key=lambda item: scores[item], reverse=True)[:1]:
-            box = boxes[index].astype(np.float32)
-            box[[0, 2]] = (box[[0, 2]] - pad_x) / scale
-            box[[1, 3]] = (box[[1, 3]] - pad_y) / scale
-            box[[0, 2]] = np.clip(box[[0, 2]], 0, width - 1)
-            box[[1, 3]] = np.clip(box[[1, 3]], 0, height - 1)
-            if np.all(box[2:] - box[:2] >= 4):
-                detections.append((box, int(labels[index]), float(scores[index])))
-        return detections
+        if not selected:
+            return None
+        index = max(selected, key=lambda item: scores[item])
+        box = boxes[index].astype(np.float32)
+        box[[0, 2]] = (box[[0, 2]] - pad_x) / scale
+        box[[1, 3]] = (box[[1, 3]] - pad_y) / scale
+        box[[0, 2]] = np.clip(box[[0, 2]], 0, width - 1)
+        box[[1, 3]] = np.clip(box[[1, 3]], 0, height - 1)
+        return None if np.any(box[2:] - box[:2] < 4) else Detection(
+            box, int(labels[index]), float(scores[index])
+        )
 
 
 @dataclass
-class Track:
+class Detection:
     box: np.ndarray
     handedness: int
     score: float
-    velocity: np.ndarray
-    missed: int = 0
 
 
-class Tracker:
-    def __init__(self):
-        self.track = None
-
-    def update(self, detections=None):
-        if detections is None:
-            if self.track is not None:
-                self.track.box += self.track.velocity
-            return [] if self.track is None else [self.track]
-        if not detections:
-            if self.track is not None:
-                self.track.missed += 1
-                self.track.box += self.track.velocity
-                if self.track.missed > 2:
-                    self.track = None
-            return [] if self.track is None else [self.track]
-        box, handedness, score = detections[0]
-        if self.track is None or self.track.handedness != handedness:
-            self.track = Track(box.copy(), handedness, score, np.zeros(4, np.float32))
-        else:
-            delta = box - self.track.box
-            self.track.velocity = 0.55 * self.track.velocity + 0.45 * delta
-            self.track.box = 0.35 * self.track.box + 0.65 * box
-            self.track.score, self.track.missed = score, 0
-        return [self.track]
-
-
-def crop_hands(frame, tracks, factor, dtype):
-    crops, centers, box_sizes = [], [], []
+def crop_hand(frame, detection, factor, dtype):
     height, width = frame.shape[:2]
-    for track in tracks:
-        center = (track.box[:2] + track.box[2:]) / 2
-        box_width, box_height = factor * (track.box[2:] - track.box[:2])
-        box_height = max(box_height, box_width * 256 / 192)
-        box_width = max(box_width, box_height * 192 / 256)
-        box_size = max(box_width, box_height, 1)
-        image, center_x = frame, center[0]
-        if track.handedness == 0:
-            image, center_x = frame[:, ::-1], width - center_x - 1
-        scale = 256 / box_size
-        transform = np.array(((scale, 0, 128 - scale * center_x),
-                              (0, scale, 128 - scale * center[1])), np.float32)
-        patch = cv2.warpAffine(image, transform, (256, 256))
-        rgb = patch[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) / 255
-        crops.append(((rgb - MEAN) / STD)[:, :, 32:-32].astype(dtype))
-        centers.append(center)
-        box_sizes.append(box_size)
-    return (np.ascontiguousarray(np.stack(crops)), np.asarray(centers),
-            np.asarray(box_sizes))
+    center = (detection.box[:2] + detection.box[2:]) / 2
+    box_width, box_height = factor * (detection.box[2:] - detection.box[:2])
+    box_height = max(box_height, box_width * 256 / 192)
+    box_width = max(box_width, box_height * 192 / 256)
+    box_size = max(box_width, box_height, 1)
+    image, center_x = frame, center[0]
+    if not detection.handedness:
+        image, center_x = frame[:, ::-1], width - center_x - 1
+    scale = 256 / box_size
+    transform = np.array(((scale, 0, 128 - scale * center_x),
+                          (0, scale, 128 - scale * center[1])), np.float32)
+    patch = cv2.warpAffine(image, transform, (256, 256))
+    rgb = patch[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) / 255
+    crop = ((rgb - MEAN) / STD)[:, :, 32:-32].astype(dtype)
+    return np.ascontiguousarray(crop[None]), center, box_size
 
 
 class Reconstructor:
@@ -199,26 +166,27 @@ class Reconstructor:
         self.session, self.factor = session, factor
         self.dtype = np.float16 if "float16" in session.get_inputs()[0].type else np.float32
 
-    def __call__(self, frame, tracks):
-        crops, centers, box_sizes = crop_hands(frame, tracks, self.factor, self.dtype)
-        vertices, camera = self.session.run(None, {"images": crops})
+    def __call__(self, frame, detection):
+        crop, center, box_size = crop_hand(
+            frame, detection, self.factor, self.dtype
+        )
+        vertices, camera = self.session.run(None, {"images": crop})
         vertices, camera = vertices.astype(np.float32), camera.astype(np.float32)
-        count = len(tracks)
-        if (vertices.shape != (count, 778, 3) or camera.shape != (count, 3)
+        if (vertices.shape != (1, 778, 3) or camera.shape != (1, 3)
                 or not np.isfinite(vertices).all() or not np.isfinite(camera).all()):
             raise ValueError("Invalid WiLoR model output")
-        multiplier = 2 * np.asarray([track.handedness for track in tracks]) - 1
-        camera[:, 1] *= multiplier
+        vertices, camera = vertices[0], camera[0]
+        camera[1] *= 1 if detection.handedness else -1
         width, height = frame.shape[1], frame.shape[0]
         focal = 5000 / 256 * max(width, height)
-        scaled_box = box_sizes * camera[:, 0] + 1e-9
-        if np.any(scaled_box <= 0):
+        scaled_box = box_size * camera[0]
+        if scaled_box <= 0:
             raise ValueError("Invalid WiLoR camera scale")
-        translation = np.stack((
-            2 * (centers[:, 0] - width / 2) / scaled_box + camera[:, 1],
-            2 * (centers[:, 1] - height / 2) / scaled_box + camera[:, 2],
+        translation = np.array((
+            2 * (center[0] - width / 2) / scaled_box + camera[1],
+            2 * (center[1] - height / 2) / scaled_box + camera[2],
             2 * focal / scaled_box,
-        ), axis=1)
+        ), np.float32)
         return vertices, translation.astype(np.float32)
 
 
@@ -242,22 +210,19 @@ def mesh_hand(vertices, right, regressor, faces):
     points, directions = relative_hand(joints, normals)
     if points is None:
         raise ValueError("Degenerate WiLoR hand")
-    directions[0] = rotate_toward(
+    directions[0] = rotate(
         directions[0], points[4] - points[3],
-        points[[0, 5, 9, 13, 17]].mean(0) - points[4],
-        THUMB_PAD_ROTATION,
+        np.radians(WILOR_THUMB_PAD_ROTATION_DEG) * (-1 if right else 1),
     )
     return points, directions, "Right" if right else "Left"
 
 
-def rotate_toward(vector, axis, target, angle):
-    axis = axis / np.linalg.norm(axis)
+def rotate(vector, axis, angle):
+    axis = axis / max(np.linalg.norm(axis), 1e-8)
     cosine, sine = np.cos(angle), np.sin(angle)
-    parallel = axis * np.dot(axis, vector) * (1 - cosine)
-    base = vector * cosine + parallel
-    turn = np.cross(axis, vector) * sine
-    candidates = np.asarray((base + turn, base - turn))
-    return candidates[np.argmax(candidates @ target)] / np.linalg.norm(candidates[0])
+    result = (vector * cosine + np.cross(axis, vector) * sine
+              + axis * np.dot(axis, vector) * (1 - cosine))
+    return result / max(np.linalg.norm(result), 1e-8)
 
 
 def draw_mesh(frame, vertices, translation, right, faces):
@@ -275,14 +240,14 @@ def draw_mesh(frame, vertices, translation, right, faces):
     cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, dst=frame)
 
 
-def preview(frame, tracks, mesh=None):
+def preview(frame, detection=None, mesh=None):
     frame = frame.copy()
     if mesh is not None:
         draw_mesh(frame, *mesh)
-    for track in tracks:
-        x1, y1, x2, y2 = track.box.astype(int)
+    if detection is not None:
+        x1, y1, x2, y2 = detection.box.astype(int)
         cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 230, 255), 2)
-        cv2.putText(frame, "R" if track.handedness else "L", (x1, max(20, y1)),
+        cv2.putText(frame, "R" if detection.handedness else "L", (x1, max(20, y1)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.55, (80, 230, 255), 2)
     canvas = np.zeros((360, 1280, 3), np.uint8)
     canvas[:, 400:880] = cv2.resize(frame, (480, 360))
@@ -306,20 +271,21 @@ class WilorSource:
         self.faces = np.load(paths["mano_faces.npy"], allow_pickle=False)
         if self.regressor.shape != (16, 778) or self.faces.ndim != 2 or self.faces.shape[1] != 3:
             raise ValueError("Invalid WiLoR geometry assets")
-        self.tracker = Tracker()
+        self.detection = None
         self.camera = OpenCVCamera(
             CAMERA_DEVICE, CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS
         )
         self.point_filter = OneEuro(*WILOR_POINT_FILTER)
         self.direction_filter = OneEuro(*WILOR_DIRECTION_FILTER)
         self.handedness = None
+        self.fps = self.fps_timestamp = None
         self.sequence = self.frame_index = 0
         print(f"Input: WiLoR {self.camera.description}; CUDA")
 
     def _reset_filters(self):
         self.point_filter.reset()
         self.direction_filter.reset()
-        self.handedness = None
+        self.handedness = self.fps = self.fps_timestamp = None
 
     def _filter(self, points, directions, handedness, timestamp):
         if handedness != self.handedness:
@@ -332,24 +298,32 @@ class WilorSource:
             raise ValueError("degenerate filtered direction")
         return points, directions / lengths
 
+    def _update_fps(self, timestamp):
+        if self.fps_timestamp is not None:
+            current = 1 / max(timestamp - self.fps_timestamp, 1e-6)
+            self.fps = current if self.fps is None else .9 * self.fps + .1 * current
+        self.fps_timestamp = timestamp
+        return 0.0 if self.fps is None else self.fps
+
     def read(self):
         self.sequence, frame, timestamp = self.camera.read(self.sequence)
-        detect = self.frame_index % WILOR_DETECT_EVERY == 0 or self.tracker.track is None
-        tracks = self.tracker.update(self.detector(frame) if detect else None)
+        detect = self.frame_index % WILOR_DETECT_EVERY == 0 or self.detection is None
+        if detect:
+            self.detection = self.detector(frame)
         self.frame_index += 1
-        if not tracks:
+        if self.detection is None:
             self._reset_filters()
-            image = preview(frame, tracks)
+            image = preview(frame)
             return InputFrame(timestamp, None, None, False, "WILOR WAITING",
                              finger_pad_directions=None, preview=image)
         try:
-            vertices, translations = self.reconstructor(frame, tracks)
+            vertices, translation = self.reconstructor(frame, self.detection)
             points, directions, handedness = mesh_hand(
-                vertices[0], tracks[0].handedness, self.regressor, self.faces
+                vertices, self.detection.handedness, self.regressor, self.faces
             )
         except ValueError as error:
             self._reset_filters()
-            image = preview(frame, tracks)
+            image = preview(frame, self.detection)
             return InputFrame(timestamp, None, None, False, f"WILOR INVALID: {error}",
                              finger_pad_directions=None, preview=image)
         try:
@@ -359,13 +333,14 @@ class WilorSource:
         except ValueError:
             self._reset_filters()
             return InputFrame(timestamp, None, None, False, "WILOR INVALID: direction filter",
-                              finger_pad_directions=None, preview=preview(frame, tracks))
-        image = preview(frame, tracks, (
-            vertices[0], translations[0], tracks[0].handedness, self.faces
+                              finger_pad_directions=None, preview=preview(frame, self.detection))
+        image = preview(frame, self.detection, (
+            vertices, translation, self.detection.handedness, self.faces
         ))
+        fps = self._update_fps(timestamp)
         return InputFrame(
             timestamp, points, handedness, True,
-            f"WILOR {handedness} {tracks[0].score:.2f}",
+            f"WILOR {handedness} {self.detection.score:.2f} · {fps:.1f} FPS",
             finger_pad_directions=directions, preview=image,
         )
 

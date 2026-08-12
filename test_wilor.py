@@ -12,18 +12,17 @@ from input.wilor.camera import OpenCVCamera
 from one_euro import OneEuro
 from track import _parse_args
 from input.wilor.source import (
+    Detection,
     Detector,
     JOINT_ORDER,
     PAD_FACE_ROWS,
     Reconstructor,
     TIP_VERTICES,
-    Track,
-    Tracker,
     WilorSource,
     draw_mesh,
     mesh_hand,
     preview,
-    rotate_toward,
+    rotate,
 )
 
 
@@ -128,16 +127,14 @@ class WilorTests(unittest.TestCase):
         ):
             self.assertIs(create_source(), selected)
 
-    def test_rotation_uses_thumb_axis_and_turns_toward_palm(self):
+    def test_fixed_thumb_rotation(self):
         root = np.sqrt(0.5)
         np.testing.assert_allclose(
-            rotate_toward(np.array((1., 0, 0)), np.array((0., 0, 1)),
-                          np.array((0., 1, 0)), np.pi / 4),
+            rotate(np.array((1., 0, 0)), np.array((0., 0, 1)), np.pi / 4),
             (root, root, 0), atol=1e-8,
         )
         np.testing.assert_allclose(
-            rotate_toward(np.array((1., 0, 0)), np.array((0., 0, 1)),
-                          np.array((0., -1, 0)), np.pi / 4),
+            rotate(np.array((1., 0, 0)), np.array((0., 0, 1)), -np.pi / 4),
             (root, -root, 0), atol=1e-8,
         )
 
@@ -172,6 +169,9 @@ class WilorTests(unittest.TestCase):
              1304, 1339, 1340, 1355, 1356, 1303, 1351, 1352),
         )
         vertices, regressor, faces = synthetic_mesh()
+        with patch("input.wilor.source.WILOR_THUMB_PAD_ROTATION_DEG", 0.0):
+            right_points, raw_right, _ = mesh_hand(vertices, 1, regressor, faces)
+            left_points, raw_left, _ = mesh_hand(vertices, 0, regressor, faces)
         points, directions, handedness = mesh_hand(vertices, 1, regressor, faces)
         self.assertEqual(handedness, "Right")
         self.assertEqual(points.shape, (21, 3))
@@ -185,6 +185,12 @@ class WilorTests(unittest.TestCase):
         self.assertEqual(handedness, "Left")
         self.assertTrue(np.isfinite(left_points).all())
         np.testing.assert_allclose(np.linalg.norm(left_directions, axis=1), 1, atol=1e-7)
+        np.testing.assert_allclose(
+            directions[0], rotate(raw_right[0], right_points[4] - right_points[3], -np.pi / 4)
+        )
+        np.testing.assert_allclose(
+            left_directions[0], rotate(raw_left[0], left_points[4] - left_points[3], np.pi / 4)
+        )
 
     def test_mesh_rejects_bad_vertices_and_faces(self):
         vertices, regressor, faces = synthetic_mesh()
@@ -198,12 +204,10 @@ class WilorTests(unittest.TestCase):
         raw = np.array([[[320, 100], [320, 100], [100, 20], [100, 20],
                          [0.1, 0.2], [0.9, 0.1]]], np.float16)
         detector = Detector(FakeDetectorSession(raw), 0.3, 0.5)
-        detections = detector(np.zeros((480, 640, 3), np.uint8))
-        self.assertEqual(len(detections), 1)
-        box, handedness, score = detections[0]
-        np.testing.assert_allclose(box, (270, 190, 370, 290), atol=1)
-        self.assertEqual(handedness, 1)
-        self.assertAlmostEqual(score, 0.9, places=2)
+        detection = detector(np.zeros((480, 640, 3), np.uint8))
+        np.testing.assert_allclose(detection.box, (270, 190, 370, 290), atol=1)
+        self.assertEqual(detection.handedness, 1)
+        self.assertAlmostEqual(detection.score, 0.9, places=2)
 
     def test_detector_fp16_extremes_do_not_overflow(self):
         raw = np.full((1, 6, 8400), np.float16(65504), np.float16)
@@ -226,22 +230,29 @@ class WilorTests(unittest.TestCase):
         np.testing.assert_array_equal(switched, points + 2)
         np.testing.assert_allclose(np.linalg.norm(vectors, axis=1), 1)
 
+    def test_tracking_fps_is_smoothed(self):
+        source = object.__new__(WilorSource)
+        source.fps = source.fps_timestamp = None
+        self.assertEqual(source._update_fps(1.0), 0.0)
+        self.assertEqual(source._update_fps(1.5), 2.0)
+        self.assertAlmostEqual(source._update_fps(1.75), 2.2)
+
     def test_reconstruction_camera_translation_and_mesh_overlay(self):
         frame = np.zeros((480, 640, 3), np.uint8)
         box = np.array((270, 190, 370, 290), np.float32)
         for right, expected_x in ((1, 0.25), (0, -0.25)):
             session = FakeReconstructorSession((2, 0.25, -0.1))
             vertices, translation = Reconstructor(session, 2)(
-                frame, [Track(box.copy(), right, 0.9, np.zeros(4))]
+                frame, Detection(box.copy(), right, 0.9)
             )
-            self.assertEqual(vertices.shape, (1, 778, 3))
+            self.assertEqual(vertices.shape, (778, 3))
             self.assertEqual(session.input.shape, (1, 3, 256, 192))
             np.testing.assert_allclose(
-                translation[0], (expected_x, -0.1, 46.875), atol=1e-5
+                translation, (expected_x, -0.1, 46.875), atol=1e-5
             )
         with self.assertRaisesRegex(ValueError, "camera scale"):
             Reconstructor(FakeReconstructorSession((-1, 0, 0)), 2)(
-                frame, [Track(box.copy(), 1, 0.9, np.zeros(4))]
+                frame, Detection(box.copy(), 1, 0.9)
             )
 
         vertices = np.array(((-0.01, -0.01, 0), (0.01, -0.01, 0),
@@ -255,23 +266,12 @@ class WilorTests(unittest.TestCase):
     def test_preview_contains_centered_full_frame(self):
         frame = np.zeros((480, 640, 3), np.uint8)
         frame[180:300, 260:380] = (10, 80, 200)
-        track = Track(np.array((270, 190, 370, 290), np.float32), 1, .9,
-                      np.zeros(4))
-        canvas = preview(frame, [track])
+        detection = Detection(np.array((270, 190, 370, 290), np.float32), 1, .9)
+        canvas = preview(frame, detection)
         self.assertEqual(canvas.shape, (360, 1280, 3))
         self.assertEqual(np.count_nonzero(canvas[:, :400]), 0)
         self.assertGreater(np.count_nonzero(canvas[:, 400:880]), 0)
         self.assertEqual(np.count_nonzero(canvas[:, 880:]), 0)
-
-    def test_tracker_predicts_then_expires(self):
-        tracker = Tracker()
-        detection = [(np.array((1, 2, 3, 4), np.float32), 0, 0.8)]
-        self.assertEqual(len(tracker.update(detection)), 1)
-        self.assertEqual(len(tracker.update()), 1)
-        self.assertEqual(len(tracker.update([])), 1)
-        self.assertEqual(len(tracker.update([])), 1)
-        self.assertEqual(tracker.update([]), [])
-
 
 if __name__ == "__main__":
     unittest.main()

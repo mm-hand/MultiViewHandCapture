@@ -53,10 +53,16 @@ and finger-pad directions have independent One Euro settings:
 ```python
 WILOR_POINT_FILTER = (0.5, 1.0, 1.0)
 WILOR_DIRECTION_FILTER = (0.5, 0.25, 1.0)
+WILOR_THUMB_PAD_ROTATION_DEG = 45.0
 ```
 
 Each tuple is `(min_cutoff, beta, derivative_cutoff)`. Filters reset when the
 hand disappears, an inference result is invalid, or handedness changes.
+Thumb-pad retarget alignment is configured independently:
+
+```python
+RETARGET_THUMB_PAD_WEIGHT = 0.25
+```
 
 For MANUS, place/build the bundled Core SDK bridge as described in
 `input/manus/assets/README.md`, then set `INPUT_SOURCE = "manus"`. If the SDK
@@ -75,8 +81,8 @@ python track.py --sim
 
 Open <http://localhost:8080>. The dashboard contains the input preview, the
 normalized hand, and the retargeted MMHand. WiLoR overlays the detected box and
-yellow MANO mesh on the camera image. Both hand views show their available
-finger-pad directions.
+yellow MANO mesh on the camera image. Its status shows confidence followed by
+smoothed tracking FPS. Both hand views show their available finger-pad directions.
 
 Only a ready left hand enters retargeting. A right hand can still be displayed
 and published.
@@ -109,12 +115,13 @@ alone cannot determine rotation around each finger bone.
 
 `timestamp` is the monotonic acquisition time. Invalid or missing data uses
 `points=None` and `ready=False`. Device-specific data never crosses this input
-boundary. Retargeting receives only `points` and `timestamp`.
+boundary. Retargeting receives the common points, optional pad directions, and
+timestamp from the same frame.
 
 ## Processing
 
 ```text
-OpenCV frame -> detector -> tracked crop -> WiLoR MANO mesh
+OpenCV frame -> detector/cached crop -> WiLoR MANO mesh
              -> 21 points + 5 pad normals -> palm-local normalization
              -> One Euro filters -> InputFrame
 
@@ -128,13 +135,17 @@ InputFrame -> direct four-finger mapping + thumb SLSQP -> MMHand J00-J20
 WiLoR runs its detector and reconstruction models in FP16, then performs box
 and NMS arithmetic in FP32. The MANO mesh is regressed to standard landmarks.
 Pad-face normals are averaged, mirrored for handedness, transformed into the
-palm frame, and normalized. The thumb normal is rotated 45 degrees around its
-IP-to-TIP axis toward the palm.
+palm frame, and normalized. The thumb normal is rotated by the configured fixed
+angle around its IP-to-TIP axis: positive for Left and negative for Right.
 
 Four MMHand fingers are mapped analytically. Five thumb joints are solved with
 bounded SLSQP using analytic Jacobians and the previous solution as a warm
-start. Final robot angles have a separate One Euro filter and are clipped to
-the limits read from the MMHand URDF.
+start. Its weighted objectives align the thumb tip position, MCP-to-IP and
+IP-to-TIP directions, and—when available—the human thumb-pad direction with
+the local `-Z` direction of MMHand's `5-tip_Link`. The dashboard reports every
+weighted term in real time; `thumb pad` is `N/A` for inputs without reliable
+pad directions. Final robot angles have a separate One Euro filter and are
+clipped to the limits read from the MMHand URDF.
 
 ## ROS 2
 
@@ -162,7 +173,7 @@ input/
   frame.py              common frame, topology, and palm normalization
   wilor/
     camera.py           latest-frame OpenCV capture
-    source.py           ONNX inference, mesh geometry, tracking, filtering
+    source.py           ONNX inference, mesh geometry, box caching, filtering
     assets/              ONNX/MANO data and license notices
   manus/
     adapter.py          semantic/fallback 25-to-21 position mapping

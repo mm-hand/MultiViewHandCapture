@@ -74,11 +74,6 @@ def compute_cmc_frame(points_world):
     return points[1].copy(), np.column_stack((x_axis, y_axis, z_axis))
 
 
-def human_palm_frame(points):
-    """Backward-compatible name for :func:`compute_cmc_frame`."""
-    return compute_cmc_frame(points)
-
-
 def human_retarget_points(points):
     """Express tracking landmarks in the independent CMC retarget frame."""
     points = np.asarray(points, float)
@@ -259,7 +254,15 @@ class RobotModel:
         )
 
         directions, direction_jacobians = _directions(points, point_jacobians)
-        return (points[-1:], directions), (point_jacobians[-1:], direction_jacobians)
+        pad_world = -transforms[ROBOT_TIPS[0]][:3, 2]
+        pad = pad_world @ self.palm_frame
+        pad_jacobian = np.cross(axes, pad_world) * influence[-1]
+        pad_jacobian = np.einsum("ij,nj->in", self.palm_frame.T, pad_jacobian)
+        return (
+            points[-1:], directions, pad,
+        ), (
+            point_jacobians[-1:], direction_jacobians, pad_jacobian,
+        )
 
 
 class Retargeter:
@@ -272,14 +275,21 @@ class Retargeter:
         self.loss_terms = None
         self.options = {"ftol": C.RETARGET_FTOL, "disp": False}
 
-    def _targets(self, points, previous=None):
+    def _targets(self, points, previous=None, finger_pad_directions=None):
         try:
-            local = human_retarget_points(points)
+            origin, rotation = compute_cmc_frame(points)
+            local = (np.asarray(points, float) - origin) @ rotation
             thumb_shape = _directions(local[HUMAN_THUMB])
             fingers = self.model.finger_angles(local, previous)
+            thumb_pad = None
+            if finger_pad_directions is not None:
+                directions = np.asarray(finger_pad_directions, float)
+                if directions.shape != (5, 3) or not np.isfinite(directions).all():
+                    raise ValueError("Invalid finger-pad directions")
+                thumb_pad = _checked_unit(directions[0] @ rotation)
         except ValueError:
             return None
-        return local[4:5], thumb_shape, fingers
+        return local[4:5], thumb_shape, thumb_pad, fingers
 
     @staticmethod
     def _term(value, jacobian, target, scale, weight, normalizer=1.0):
@@ -309,29 +319,39 @@ class Retargeter:
             )
             for i, weight in enumerate(weights)
         )
+        pad_term = None
+        if targets[2] is not None:
+            pad_term = self._term(
+                values[2][None], jacobians[2][None], targets[2][None],
+                1.0, C.RETARGET_THUMB_PAD_WEIGHT / 3,
+            )
         total = tip_loss + sum(loss for loss, _ in thumb_terms)
         gradient = tip_gradient + sum(
             (term[1] for term in thumb_terms), np.zeros(len(self.model.thumb))
         )
+        if pad_term is not None:
+            total += pad_term[0]
+            gradient += pad_term[1]
         return (
             total,
             gradient,
             {
                 "thumb_tip": tip_loss,
                 **dict(zip(THUMB_DIRECTION_NAMES, (term[0] for term in thumb_terms))),
+                "thumb_pad": None if pad_term is None else pad_term[0],
                 "total": total,
             },
         )
 
-    def solve(self, points, timestamp=None):
+    def solve(self, points, timestamp=None, finger_pad_directions=None):
         points = np.asarray(points, float)
         if points.shape != (21, 3) or not np.isfinite(points).all():
             return None
         previous = self.q.copy() if self.has_previous else None
-        targets = self._targets(points, previous)
+        targets = self._targets(points, previous, finger_pad_directions)
         if targets is None:
             return None
-        fixed, thumb = targets[2], self.model.thumb
+        fixed, thumb = targets[3], self.model.thumb
         cached_q, cached_value, evaluations, best = None, None, 0, None
 
         def evaluate(x):
@@ -374,7 +394,10 @@ class Retargeter:
         output = np.radians(self.output_filter(np.degrees(candidate), timestamp))
         output = np.clip(output, self.model.lower, self.model.upper)
         losses = self._losses(output, targets)[2]
-        self.loss_terms = {name: float(value) for name, value in losses.items()}
+        self.loss_terms = {
+            name: None if value is None else float(value)
+            for name, value in losses.items()
+        }
         return output
 
     def pause(self):
@@ -394,9 +417,15 @@ class RetargetWorker:
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
-    def submit(self, points, timestamp=None):
+    def submit(self, points, timestamp=None, finger_pad_directions=None):
         with self.condition:
-            self.pending = self.generation, np.asarray(points, float).copy(), timestamp
+            directions = (
+                None if finger_pad_directions is None
+                else np.asarray(finger_pad_directions, float).copy()
+            )
+            self.pending = (
+                self.generation, np.asarray(points, float).copy(), timestamp, directions
+            )
             self.condition.notify()
 
     def poll(self):
@@ -419,13 +448,13 @@ class RetargetWorker:
                 self.condition.wait_for(lambda: not self.running or self.pending is not None)
                 if not self.running:
                     return
-                current, points, timestamp = self.pending
+                current, points, timestamp, directions = self.pending
                 self.pending = None
             try:
                 if current != generation:
                     self.retargeter.pause()
                     generation = current
-                result = self.retargeter.solve(points, timestamp)
+                result = self.retargeter.solve(points, timestamp, directions)
             except Exception as error:
                 with self.condition:
                     self.error, self.running = error, False

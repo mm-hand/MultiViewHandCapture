@@ -27,7 +27,7 @@ def main():
     simulation = None
     try:
         if args.sim:
-            from simulation import GraspSimulation
+            from simulation.grasp import GraspSimulation
 
             simulation = GraspSimulation()
         while True:
@@ -40,7 +40,9 @@ def main():
             if frame.points is not None and ros is not None:
                 ros.hand(frame)
             if frame.ready and frame.handedness == "Left":
-                worker.submit(frame.points, frame.timestamp)
+                worker.submit(
+                    frame.points, frame.timestamp, frame.finger_pad_directions
+                )
             else:
                 worker.pause()
             output = worker.poll()

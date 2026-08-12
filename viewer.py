@@ -23,6 +23,7 @@ LOSS_LABELS = (
     ("thumb_tip", "thumb tip"),
     ("thumb_mcp_ip", "thumb MCP-IP"),
     ("thumb_ip_tip", "thumb IP-TIP"),
+    ("thumb_pad", "thumb pad"),
     ("total", "total"),
 )
 
@@ -31,11 +32,12 @@ def _loss_text(losses=None):
     lines = ["Weighted retarget loss"]
     if losses:
         total = losses["total"]
-        lines += [
-            f"{label:<18}{losses[name]:.3e}  "
-            f"{(100 * losses[name] / total if total else 0):5.1f}%"
-            for name, label in LOSS_LABELS
-        ]
+        for name, label in LOSS_LABELS:
+            value = losses.get(name)
+            text = "N/A" if value is None else (
+                f"{value:.3e}  {(100 * value / total if total else 0):5.1f}%"
+            )
+            lines.append(f"{label:<18}{text}")
     else:
         lines.append("waiting")
     return "\n".join(lines)
