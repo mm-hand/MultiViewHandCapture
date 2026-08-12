@@ -7,7 +7,7 @@ import numpy as np
 from scipy.spatial.transform import Rotation
 
 from config import URDF_PATH, WEB_FPS, WEB_PORT, VIEW_PORTS
-from hand import SKELETON_EDGES
+from input.frame import SKELETON_EDGES
 from retarget import compute_cmc_frame
 
 ROBOT_CAMERA_DISTANCE = 0.42
@@ -177,7 +177,7 @@ class Viewer:
         owner = self
         normalized_port, robot_port = [server.get_port() for server in self.servers]
         page = f"""<!doctype html><html><head><meta charset="utf-8">
-<title>MultiView Hand Capture</title><style>
+<title>mmhand_teleop</title><style>
 *{{box-sizing:border-box}} body{{margin:0;height:100vh;background:#101318;color:#eef;
 font:15px sans-serif;display:grid;grid-template:40vh 60vh/repeat(2,1fr);gap:6px}}
 .panel{{position:relative;overflow:hidden;background:#181d25;border:1px solid #343b48}}

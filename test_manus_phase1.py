@@ -1,19 +1,17 @@
 import unittest
 from unittest.mock import patch
-
 import numpy as np
 
-from hand import relative_points
-from manus.adapter import (
+from input import create_source
+from input.frame import relative_points
+from input.manus.adapter import (
     MANUS_TO_STANDARD21,
     adapt_raw_skeleton,
     convert_manus25_to_standard21,
-    sdk_quaternion_wxyz_to_xyzw,
     semantic_standard21_mapping,
 )
-from manus.source import ManusSource, _SdkFrame, _sdk_frame_to_packet, parse_legacy_bridge_message
+from input.manus.source import ManusSource, _SdkFrame, _sdk_frame_to_packet, parse_legacy_bridge_message
 from retarget import compute_cmc_frame, human_retarget_points
-from track import _parse_args, _source
 
 
 def standard_hand_world():
@@ -28,13 +26,9 @@ def raw_packet(received_at=1.0):
     positions = np.zeros((25, 3), float)
     positions[MANUS_TO_STANDARD21] = standard_hand_world()
     positions[[5, 10, 15, 20]] = ((0.015, -0.03, 0), (0.02, -0.01, 0), (0.02, 0.01, 0), (0.015, 0.03, 0))
-    rotations = np.tile((0.0, 0.0, 0.0, 1.0), (25, 1))
-    rotations[4] = (0.1, 0.2, 0.3, 0.9)
     return {
         "glove_id": "abc123",
         "positions": positions,
-        "rotations": rotations,
-        "quaternion_convention": "xyzw",
         "received_at": received_at,
         "coordinate_mode": "WORLD/GLOBAL",
     }
@@ -53,17 +47,12 @@ class FakeTransport:
 
 
 class ManusPhase1Tests(unittest.TestCase):
-    def test_cli_matrix_and_source_factory(self):
-        self.assertEqual(_parse_args([]).source, "vision")
-        for source_name in ("vision", "manus"):
-            args = _parse_args(["--source", source_name, "--ros"])
-            self.assertEqual(args.source, source_name)
-            self.assertTrue(args.ros)
-        with patch("sys.stderr"), self.assertRaises(SystemExit):
-            _parse_args(["--source", "xxx"])
+    def test_configured_manus_source(self):
         selected = object()
-        with patch("manus.source.ManusSource", return_value=selected):
-            self.assertIs(_source("manus"), selected)
+        with patch("input.INPUT_SOURCE", "manus"), patch(
+            "input.manus.source.ManusSource", return_value=selected
+        ):
+            self.assertIs(create_source(), selected)
 
     def test_manus_25_to_standard21_mapping(self):
         points = np.repeat(np.arange(25, dtype=float)[:, None], 3, axis=1)
@@ -84,14 +73,7 @@ class ManusPhase1Tests(unittest.TestCase):
                 convert_manus25_to_standard21(points)
         self.assertEqual(convert_manus25_to_standard21(np.zeros((25, 3))).shape, (21, 3))
 
-    def test_sdk_quaternion_component_convention(self):
-        # SDK ManusQuaternion fields are w,x,y,z -- each component is distinct.
-        np.testing.assert_array_equal(
-            sdk_quaternion_wxyz_to_xyzw((11.0, 22.0, 33.0, 44.0)),
-            (22.0, 33.0, 44.0, 11.0),
-        )
-
-    def test_official_sdk_c_abi_keeps_raw_wxyz_until_adapter(self):
+    def test_official_sdk_packet_ignores_rotations(self):
         frame = _SdkFrame()
         frame.glove_id = 42
         frame.node_count = 25
@@ -100,14 +82,8 @@ class ManusPhase1Tests(unittest.TestCase):
         for row in range(25):
             frame.nodes[row].node_id = row
             frame.nodes[row].position[:] = (row, row + 0.25, row + 0.5)
-            frame.nodes[row].rotation_wxyz[:] = (11, 22, 33, 44)
         packet = _sdk_frame_to_packet(frame, 8.0)
-        np.testing.assert_array_equal(packet["rotations"][4], (11, 22, 33, 44))
-        self.assertEqual(packet["quaternion_convention"], "wxyz")
-        np.testing.assert_array_equal(
-            sdk_quaternion_wxyz_to_xyzw(packet["rotations"][4]),
-            (22, 33, 44, 11),
-        )
+        self.assertNotIn("rotations", packet)
 
     def test_node_info_semantics_are_preferred(self):
         info = [{"nodeId": 0, "parentId": 0, "chainType": 13, "side": 1, "fingerJointType": 0}]
@@ -121,16 +97,11 @@ class ManusPhase1Tests(unittest.TestCase):
         self.assertEqual(row, 25)
         np.testing.assert_array_equal(semantic_standard21_mapping(info), MANUS_TO_STANDARD21)
         packet = raw_packet()
-        adapted = adapt_raw_skeleton(packet["positions"], packet["rotations"], node_info=info)
+        adapted = adapt_raw_skeleton(packet["positions"], node_info=info)
         self.assertEqual(adapted.mapping_source, "NodeInfo")
-        self.assertEqual(adapted.thumb_tip_row, 4)
 
-    def test_orientation_passthrough_adapter_source_handframe(self):
+    def test_source_returns_common_frame_without_pad_directions(self):
         packet = raw_packet(received_at=5.0)
-        # Model the official ManusQuaternion memory/field order w,x,y,z.
-        packet["rotations"][4] = (0.9, 0.1, 0.2, 0.3)
-        packet["quaternion_convention"] = "wxyz"
-        expected = np.array((0.1, 0.2, 0.3, 0.9))
         source = ManusSource(
             FakeTransport(packet),
             glove_id_to_handedness={"abc123": "Left"},
@@ -141,10 +112,10 @@ class ManusPhase1Tests(unittest.TestCase):
         self.assertTrue(frame.ready)
         self.assertEqual(frame.handedness, "Left")
         self.assertEqual(frame.points.shape, (21, 3))
-        np.testing.assert_array_equal(frame.thumb_tip_orientation_world_xyzw, expected)
+        self.assertIsNone(frame.finger_pad_directions)
         source.close()
 
-    def test_stale_clears_points_and_orientation(self):
+    def test_stale_clears_points(self):
         source = ManusSource(
             FakeTransport(raw_packet(received_at=1.0)),
             glove_id_to_handedness={"abc123": "Left"},
@@ -153,17 +124,15 @@ class ManusPhase1Tests(unittest.TestCase):
         )
         frame = source.read()
         self.assertIsNone(frame.points)
-        self.assertIsNone(frame.thumb_tip_orientation_world_xyzw)
         self.assertFalse(frame.ready)
 
-    def test_legacy_bridge_protocol_keeps_xyzw(self):
+    def test_legacy_bridge_ignores_rotations(self):
         values = np.zeros((25, 7), float)
         values[:, 6] = 1.0
         values[4, 3:7] = (0.1, 0.2, 0.3, 0.9)
         message = "abc123," + ",".join(map(str, values.ravel()))
         packet = parse_legacy_bridge_message(message, received_at=3.0)[0]
-        np.testing.assert_array_equal(packet["rotations"][4], (0.1, 0.2, 0.3, 0.9))
-        self.assertEqual(packet["quaternion_convention"], "xyzw")
+        self.assertNotIn("rotations", packet)
 
     def test_cmc_helper_refactor_regression(self):
         points = relative_points(standard_hand_world())

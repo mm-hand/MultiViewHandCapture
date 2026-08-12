@@ -1,12 +1,16 @@
 import types
 import unittest
+import warnings
 from unittest.mock import patch
 
 import numpy as np
 
-from hand import HandFrame, relative_hand
-from track import _parse_args, _source
-from wilor.source import (
+from input import create_source
+from input.frame import InputFrame, relative_hand
+from input.wilor.camera import OpenCVCamera
+from one_euro import OneEuro
+from track import _parse_args
+from input.wilor.source import (
     Detector,
     JOINT_ORDER,
     PAD_FACE_ROWS,
@@ -14,6 +18,7 @@ from wilor.source import (
     TIP_VERTICES,
     Track,
     Tracker,
+    WilorSource,
     draw_mesh,
     mesh_hand,
     preview,
@@ -76,6 +81,51 @@ class FakeReconstructorSession:
 
 
 class WilorTests(unittest.TestCase):
+    def test_opencv_camera_reports_actual_mode_and_closes(self):
+        class Capture:
+            def __init__(self):
+                self.open = True
+
+            def isOpened(self):
+                return self.open
+
+            def set(self, *_):
+                return True
+
+            def get(self, prop):
+                return {3: 800, 4: 600, 5: 25}.get(prop, 0)
+
+            def read(self):
+                return True, np.zeros((600, 800, 3), np.uint8)
+
+            def release(self):
+                self.open = False
+
+        capture = Capture()
+        with patch("input.wilor.camera.cv2.VideoCapture", return_value=capture):
+            camera = OpenCVCamera("/dev/video4", 640, 480, 30)
+            sequence, frame, timestamp = camera.read(0)
+            camera.close()
+        self.assertGreater(sequence, 0)
+        self.assertEqual(frame.shape, (600, 800, 3))
+        self.assertGreater(timestamp, 0)
+        self.assertIn("800x600@25", camera.description)
+        self.assertFalse(capture.open)
+
+    def test_cli_and_configured_source(self):
+        args = _parse_args([])
+        self.assertFalse(args.ros)
+        self.assertFalse(args.sim)
+        self.assertTrue(_parse_args(["--ros"]).ros)
+        self.assertTrue(_parse_args(["--sim"]).sim)
+        with patch("sys.stderr"), self.assertRaises(SystemExit):
+            _parse_args(["--source", "wilor"])
+        selected = object()
+        with patch("input.INPUT_SOURCE", "wilor"), patch(
+            "input.wilor.source.WilorSource", return_value=selected
+        ):
+            self.assertIs(create_source(), selected)
+
     def test_rotation_uses_thumb_axis_and_turns_toward_palm(self):
         root = np.sqrt(0.5)
         np.testing.assert_allclose(
@@ -89,14 +139,8 @@ class WilorTests(unittest.TestCase):
             (root, -root, 0), atol=1e-8,
         )
 
-    def test_cli_and_source_factory(self):
-        self.assertEqual(_parse_args(["--source", "wilor"]).source, "wilor")
-        selected = object()
-        with patch("wilor.source.WilorSource", return_value=selected):
-            self.assertIs(_source("wilor"), selected)
-
     def test_hand_frame_direction_default_and_validation(self):
-        frame = HandFrame(0, None, None, False, "waiting")
+        frame = InputFrame(0, None, None, False, "waiting")
         self.assertIsNone(frame.finger_pad_directions)
         with self.assertRaisesRegex(ValueError, "shape"):
             relative_hand(standard_hand(), np.zeros((4, 3)))
@@ -158,6 +202,27 @@ class WilorTests(unittest.TestCase):
         np.testing.assert_allclose(box, (270, 190, 370, 290), atol=1)
         self.assertEqual(handedness, 1)
         self.assertAlmostEqual(score, 0.9, places=2)
+
+    def test_detector_fp16_extremes_do_not_overflow(self):
+        raw = np.full((1, 6, 8400), np.float16(65504), np.float16)
+        detector = Detector(FakeDetectorSession(raw), 0.3, 0.5)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", RuntimeWarning)
+            detector(np.zeros((480, 640, 3), np.uint8))
+
+    def test_point_and_direction_filters_reset_on_hand_switch(self):
+        source = object.__new__(WilorSource)
+        source.point_filter = OneEuro(0.5, 1.0, 1.0)
+        source.direction_filter = OneEuro(0.5, 0.25, 1.0)
+        source.handedness = None
+        points = np.zeros((21, 3))
+        directions = np.tile((0.0, 0.0, 1.0), (5, 1))
+        first, vectors = source._filter(points, directions, "Left", 1.0)
+        moved, _ = source._filter(points + 1, directions, "Left", 1.1)
+        switched, _ = source._filter(points + 2, directions, "Right", 1.2)
+        self.assertTrue(np.all(moved > first))
+        np.testing.assert_array_equal(switched, points + 2)
+        np.testing.assert_allclose(np.linalg.norm(vectors, axis=1), 1)
 
     def test_reconstruction_camera_translation_and_mesh_overlay(self):
         frame = np.zeros((480, 640, 3), np.uint8)

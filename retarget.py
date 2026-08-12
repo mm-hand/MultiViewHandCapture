@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 from collections import defaultdict
 import threading
 import time
+import warnings
 
 import numpy as np
 from scipy.optimize import Bounds, minimize
@@ -351,10 +352,17 @@ class Retargeter:
 
         try:
             evaluate(fixed[thumb])
-            minimize(
-                evaluate, fixed[thumb], method="SLSQP", jac=True,
-                bounds=self.bounds, options=self.options,
-            )
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore",
+                    message="Values in x were outside bounds during a minimize step, clipping to bounds",
+                    category=RuntimeWarning,
+                    module=r"scipy\.optimize\._slsqp_py",
+                )
+                minimize(
+                    evaluate, fixed[thumb], method="SLSQP", jac=True,
+                    bounds=self.bounds, options=self.options,
+                )
         except _EvaluationLimit:
             pass
         if best is None:

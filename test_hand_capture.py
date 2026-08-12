@@ -1,4 +1,3 @@
-import json
 import sys
 import threading
 import time
@@ -9,35 +8,18 @@ from unittest.mock import patch
 
 import numpy as np
 
-from hand import FINGER_CHAINS, HandFrame
-from vision import calibrate
-from vision.camera import split_stereo
+from input.frame import InputFrame, relative_points
 from config import (
-    HAND_LANDMARKER_PATH,
     KEYPOINT_LAYOUT,
     KEYPOINT_TOPIC,
-    MAX_DEPTH_MM,
-    MIN_CALIBRATION_PAIRS,
-    POINT_2D_FILTER,
-    POINT_3D_FILTER,
+    PAD_DIRECTION_LAYOUT,
+    PAD_DIRECTION_TOPIC,
     RETARGET_MAX_EVALUATIONS,
     ROBOT_JOINT_NAMES,
     ROBOT_LAYOUT,
     ROBOT_TOPIC,
     URDF_PATH,
 )
-from vision.source import (
-    HandDetector,
-    Kinematics,
-    StableHandedness,
-    StereoProcessor,
-    VisionSource,
-    apply_angles,
-    extract_angles,
-    geometry_error,
-    relative_points,
-)
-from one_euro import OneEuro
 from retarget import (
     ROBOT_FINGERS,
     ROBOT_TIPS,
@@ -48,7 +30,6 @@ from retarget import (
     human_retarget_points,
 )
 from ros import RosOutput
-from track import _parse_args, _source
 from viewer import Viewer, _arrow_points, _frame_wxyz, _loss_text
 
 
@@ -72,259 +53,55 @@ def straight_hand(handedness):
     return points
 
 
-class CoreTests(unittest.TestCase):
-    def test_stereo_split_and_calibration_guard(self):
-        frame = np.arange(2 * 8 * 3, dtype=np.uint8).reshape(2, 8, 3)
-        with patch("vision.camera.FULL_WIDTH", 8), patch(
-            "vision.camera.ROTATE_LEFT", 0
-        ), patch(
-            "vision.camera.ROTATE_RIGHT", 180
-        ):
-            left, right = split_stereo(frame)
-            np.testing.assert_array_equal(left, frame[:, :4])
-            np.testing.assert_array_equal(right, np.rot90(frame[:, 4:], 2))
-            self.assertEqual(split_stereo(frame[:, :-1]), (None, None))
+def _unit(vector):
+    return vector / max(np.linalg.norm(vector), 1e-9)
 
-        samples = [None] * (MIN_CALIBRATION_PAIRS - 1)
-        with patch.object(calibrate, "collect", return_value=(samples, [], [], (1, 1))):
-            with self.assertRaisesRegex(RuntimeError, str(MIN_CALIBRATION_PAIRS)):
-                calibrate.main()
 
-    def test_stereo_params_and_camera_mode_selection(self):
-        params = {
-            "K1": np.eye(3).tolist(),
-            "D1": np.zeros(5).tolist(),
-            "K2": np.eye(3).tolist(),
-            "D2": np.zeros(5).tolist(),
-            "R": np.eye(3).tolist(),
-            "T": [60, 0, 0],
-        }
-        path = types.SimpleNamespace(
-            is_file=lambda: True, read_text=lambda: json.dumps(params)
-        )
-        detector = types.SimpleNamespace(close=lambda: None)
-        with patch("vision.source.PARAMS_PATH", path), patch(
-            "vision.source.HandDetector", return_value=detector
-        ):
-            processor = StereoProcessor()
-        np.testing.assert_array_equal(processor.K1, np.eye(3))
-        np.testing.assert_array_equal(processor.P2[:, 3], (60, 0, 0))
+def _rotate(vector, axis, degrees):
+    angle, axis = np.radians(degrees), _unit(axis)
+    return (vector * np.cos(angle) + np.cross(axis, vector) * np.sin(angle)
+            + axis * np.dot(axis, vector) * (1 - np.cos(angle)))
 
-        missing = types.SimpleNamespace(is_file=lambda: False)
-        with patch("vision.source.PARAMS_PATH", missing), self.assertRaisesRegex(
-            FileNotFoundError, "vision.calibrate"
-        ):
-            StereoProcessor()
 
-        d435 = types.SimpleNamespace(params=params)
-        with patch("vision.source.RealSenseCamera", return_value=d435), patch(
-            "vision.source.StereoProcessor", return_value="processor"
-        ) as constructor:
-            source = VisionSource("d435")
-        self.assertIs(source.camera, d435)
-        constructor.assert_called_once_with(params)
+def _project(vector, axis, fallback):
+    projected = vector - axis * np.dot(vector, axis)
+    return _unit(projected) if np.linalg.norm(projected) > 1e-9 else _unit(fallback)
 
-        camera = object()
-        with patch("vision.source.StereoCamera", return_value=camera), patch(
-            "vision.source.StereoProcessor", return_value="processor"
-        ) as constructor:
-            source = VisionSource("stereo")
-        self.assertIs(source.camera, camera)
-        constructor.assert_called_once_with(None)
 
-        selected = object()
-        with patch("track.CAMERA_TYPE", "stereo"), patch(
-            "vision.source.VisionSource", return_value=selected
-        ) as constructor:
-            self.assertIs(_source("vision"), selected)
-        constructor.assert_called_once_with("stereo")
+def _angle(start, end, axis):
+    start, end = _project(start, axis, start), _project(end, axis, start)
+    return np.degrees(np.arctan2(np.dot(np.cross(start, end), axis),
+                                 np.clip(np.dot(start, end), -1, 1)))
 
-        with self.assertRaisesRegex(ValueError, "Unsupported source"):
-            _source("unknown")
 
-    def test_cli_source_and_optional_outputs(self):
-        args = _parse_args([])
-        self.assertEqual(args.source, "vision")
-        self.assertFalse(args.ros)
-        self.assertFalse(args.sim)
-        self.assertEqual(_parse_args(["--source", "vision"]).source, "vision")
-        self.assertEqual(_parse_args(["--source", "manus"]).source, "manus")
-        self.assertTrue(_parse_args(["--ros"]).ros)
-        self.assertTrue(_parse_args(["--sim"]).sim)
-        self.assertTrue(_parse_args(["--source", "vision", "--ros"]).ros)
-        self.assertTrue(_parse_args(["--source", "manus", "--ros"]).ros)
-        with patch("sys.stderr"), self.assertRaises(SystemExit):
-            _parse_args(["--ros", "--sim"])
-        with patch("sys.stderr"), self.assertRaises(SystemExit):
-            _parse_args(["--source", "xxx"])
-        with patch("sys.stderr"), self.assertRaises(SystemExit):
-            _parse_args(["--mode", "points"])
+def _finger_frames(points, handedness):
+    forward = _unit(points[9] - points[0])
+    normal = _unit(np.cross(_unit(points[5] - points[17]), forward))
+    normal = -normal if handedness == "Left" else normal
+    parent = _unit(points[2] - points[1])
+    palmward = points[9] - points[2]
+    palmward -= parent * np.dot(palmward, parent)
+    frames = [((2, 3, 4), parent, _unit(np.cross(parent, _unit(palmward))))]
+    for mcp in (5, 9, 13, 17):
+        proximal = _unit(points[mcp + 1] - points[mcp])
+        neutral = _project(proximal, normal, points[mcp] - points[0])
+        frames.append(((mcp, mcp + 1, mcp + 2, mcp + 3), neutral,
+                       _unit(np.cross(neutral, normal))))
+    return frames
 
-    def test_vision_source_emits_simple_hand_frames(self):
-        points = straight_hand("Left") / 1000
-        result = StereoProcessor._empty()
-        result.update(
-            found=True,
-            handedness="Left",
-            keypoint_relative=points,
-            image_left=np.zeros((8, 8, 3), np.uint8),
-            image_right=np.zeros((8, 8, 3), np.uint8),
-            px_left=np.zeros((21, 2)),
-            px_right=np.zeros((21, 2)),
-            phase="CALIBRATION (1/10) - Left Hand",
-        )
-        source = object.__new__(VisionSource)
-        source.camera = types.SimpleNamespace(
-            read=lambda: (True, np.empty(0), np.empty(0), 1.0)
-        )
-        source.processor = types.SimpleNamespace(process=lambda *_: result)
-        source.last_timestamp = None
 
-        frame = source.read()
-        self.assertIsInstance(frame, HandFrame)
-        np.testing.assert_array_equal(frame.points, points)
-        self.assertFalse(frame.ready)
-        self.assertEqual(frame.preview.shape, (360, 1280, 3))
-
-        result["phase"] = "GESTURE TRACKING - Left Hand"
-        source.last_timestamp = None
-        self.assertTrue(source.read().ready)
-
-        result.update(stale=True, phase="STALE (1/3)")
-        source.last_timestamp = None
-        stale = source.read()
-        self.assertIsNone(stale.points)
-        self.assertFalse(stale.ready)
-
-    def test_unsigned_flexion_angles_for_both_hands(self):
-        expected = np.array((20, 30, 25, 130, 40, 15, 70, 25, 20, 80, 35, 10, 60, 20))
-        for handedness in ("Left", "Right"):
-            points = apply_angles(straight_hand(handedness), handedness, expected)
-            actual = extract_angles(points, handedness)
-            np.testing.assert_allclose(actual, expected, atol=1e-8)
-            self.assertTrue(np.all((actual >= 0) & (actual <= 180)))
-
-            reverse = apply_angles(
-                straight_hand(handedness), handedness, np.full(14, -25.0)
-            )
-            np.testing.assert_allclose(
-                extract_angles(reverse, handedness), 25.0, atol=1e-8
-            )
-
-    def test_filters_bone_lengths_and_kinematics(self):
-        filter_ = OneEuro(*POINT_3D_FILTER)
-        zeros, ones = np.zeros((21, 3)), np.ones((21, 3))
-        np.testing.assert_array_equal(filter_(zeros, 0), zeros)
-        self.assertTrue(np.all((filter_(ones, 1 / 30) > 0) & (filter_.value < 1)))
-        filter_.reset()
-        np.testing.assert_array_equal(filter_(ones, 1), ones)
-
-        expected = np.array((15, 25, 20, 100, 35, 10, 80, 20, 15, 90, 30, 5, 70, 20))
-        points = apply_angles(straight_hand("Left"), "Left", expected)
-        model = Kinematics(calibration_frames=1)
-        model.update(points, "Left", 0.0)
-        corrected, phase = model.update(points, "Left", 1 / 30)
-        self.assertEqual(phase, "GESTURE TRACKING")
-        angles = extract_angles(corrected, "Left")
-        self.assertTrue(np.all((angles >= 0) & (angles <= 180)))
-        for chain in FINGER_CHAINS:
-            for start, end in zip(chain[:-1], chain[1:]):
-                self.assertAlmostEqual(
-                    np.linalg.norm(corrected[end] - corrected[start]),
-                    model.lengths[(start, end)],
-                )
-
-    def test_tracking_frame_stays_at_wrist_and_retarget_frame_uses_cmc(self):
-        local_hands = []
-        for handedness in ("Left", "Right"):
-            tracked = relative_points(straight_hand(handedness))
-            original = tracked.copy()
-            origin, frame = human_palm_frame(tracked)
-            local = human_retarget_points(tracked)
-
-            np.testing.assert_allclose(tracked[0], 0, atol=1e-12)
-            np.testing.assert_allclose(origin, tracked[1], atol=1e-12)
-            np.testing.assert_allclose(local[1], 0, atol=1e-12)
-            np.testing.assert_allclose(tracked, original, atol=0)
-            np.testing.assert_allclose(frame.T @ frame, np.eye(3), atol=1e-12)
-            self.assertAlmostEqual(np.linalg.det(frame), 1.0)
-            self.assertGreater(local[9, 0] - local[0, 0], 0)
-            np.testing.assert_allclose(local[9, 1:] - local[0, 1:], 0, atol=1e-12)
-            self.assertGreater(local[17, 1] - local[5, 1], 0)
-            self.assertEqual(tuple(_frame_wxyz(np.eye(3))), (1.0, 0.0, 0.0, 0.0))
-            local_hands.append(local)
-        np.testing.assert_allclose(local_hands[0], local_hands[1], atol=1e-12)
-
-    def test_left_and_right_2d_filters_are_independent(self):
-        left_filter = OneEuro(*POINT_2D_FILTER)
-        right_filter = OneEuro(*POINT_2D_FILTER)
-        self.assertIsNot(left_filter, right_filter)
-
-        left_first = np.zeros((21, 2))
-        right_first = np.full((21, 2), 10.0)
-        np.testing.assert_array_equal(left_filter(left_first, 0.0), left_first)
-        np.testing.assert_array_equal(right_filter(right_first, 0.0), right_first)
-
-        left_second = left_filter(np.full((21, 2), 20.0), 1 / 30)
-        right_second = right_filter(np.full((21, 2), 30.0), 1 / 30)
-        self.assertTrue(np.all((left_second > 0) & (left_second < 20)))
-        self.assertTrue(np.all((right_second > 10) & (right_second < 30)))
-        np.testing.assert_allclose(right_second - left_second, 10.0)
-
-    def test_handedness_geometry_and_bad_frame_hold(self):
-        handedness = StableHandedness(3)
-        self.assertEqual(handedness.update("Right"), "Right")
-        self.assertEqual(handedness.update("Left"), "Right")
-        self.assertEqual(handedness.update("Left"), "Right")
-        self.assertEqual(handedness.update("Left"), "Left")
-
-        points = np.zeros((21, 3))
-        points[:, 2] = 400
-        self.assertIsNone(geometry_error(points, 30))
-        self.assertEqual(geometry_error(points, 31), "reprojection")
-        points[1, 2] = MAX_DEPTH_MM + 1
-        self.assertEqual(geometry_error(points, 1), "depth")
-        points[:, 2] = 400
-        points[1] = (400, 0, 400)
-        self.assertEqual(geometry_error(points, 1), "hand-size")
-
-        processor = object.__new__(StereoProcessor)
-        processor.bad_frames = 0
-        processor.kinematics = Kinematics(1)
-        processor.left_points_filter = OneEuro(*POINT_2D_FILTER)
-        processor.right_points_filter = OneEuro(*POINT_2D_FILTER)
-        processor.left_points_filter(np.zeros((21, 2)), 0.0)
-        processor.right_points_filter(np.ones((21, 2)), 0.0)
-        processor.kinematics.points_filter(np.zeros((21, 3)), 0.0)
-        processor.kinematics.angle_filter(np.zeros(14), 0.0)
-        processor.last = {
-            "handedness": "Right",
-            "keypoint_absolute": np.zeros((21, 3)),
-            "keypoint_relative": np.zeros((21, 3)),
-        }
-        for _ in range(3):
-            result = processor._reject(processor._empty(), "detection")
-            self.assertTrue(result["found"] and result["stale"])
-            self.assertIsNotNone(processor.left_points_filter.value)
-            self.assertIsNotNone(processor.right_points_filter.value)
-        result = processor._reject(processor._empty(), "detection")
-        self.assertFalse(result["found"])
-        self.assertIsNone(processor.last)
-        self.assertIsNone(processor.left_points_filter.value)
-        self.assertIsNone(processor.right_points_filter.value)
-        self.assertIsNone(processor.kinematics.points_filter.value)
-        self.assertIsNone(processor.kinematics.angle_filter.value)
-
-    def test_mediapipe_model_and_configuration(self):
-        self.assertTrue(HAND_LANDMARKER_PATH.is_file())
-        detector = HandDetector()
-        try:
-            image = np.zeros((64, 64, 3), np.uint8)
-            self.assertEqual(detector.detect(image, 0.0), (None, None))
-            self.assertEqual(detector.detect(image, 0.0), (None, None))
-            self.assertEqual(detector.last_timestamp_ms, 1)
-        finally:
-            detector.close()
+def apply_angles(points, handedness, angles):
+    result, offset = points.copy(), 0
+    for chain, direction, axis in _finger_frames(points, handedness):
+        for position, (start, end) in enumerate(zip(chain[:-1], chain[1:])):
+            measured = _project(result[end] - result[start], axis, direction)
+            change = angles[offset] - _angle(direction, measured, axis)
+            origin = result[start].copy()
+            for child in chain[position + 1:]:
+                result[child] = origin + _rotate(result[child] - origin, axis, change)
+            direction = _project(result[end] - result[start], axis, direction)
+            offset += 1
+    return result
 
 
 class RetargetTests(unittest.TestCase):
@@ -502,7 +279,7 @@ class RetargetTests(unittest.TestCase):
         viewer.urdf_names, viewer.robot_index = self.model.names, self.model.index
         updates = []
         viewer.urdf = types.SimpleNamespace(update_cfg=lambda q: updates.append(q))
-        frame = HandFrame(0, None, None, False, "WAITING")
+        frame = InputFrame(0, None, None, False, "WAITING")
         robot = (self.model.lower + self.model.upper) / 3
 
         viewer.update(frame, robot)
@@ -868,18 +645,28 @@ class RetargetTests(unittest.TestCase):
             {"rclpy": rclpy, "std_msgs": std_msgs, "std_msgs.msg": messages},
         ):
             output = RosOutput()
-            output.points(np.zeros((21, 3)), "Left")
+            frame = InputFrame(
+                1.0, np.zeros((21, 3)), "Left", True, "TRACKING",
+                finger_pad_directions=np.ones((5, 3)),
+            )
+            output.hand(frame)
+            output.hand(InputFrame(2.0, np.zeros((21, 3)), "Left", True, "TRACKING"))
             output.joints(np.arange(21))
             output.close()
 
         self.assertEqual([publisher.topic for publisher in node.publishers],
-                         [KEYPOINT_TOPIC, ROBOT_TOPIC])
+                         [KEYPOINT_TOPIC, PAD_DIRECTION_TOPIC, ROBOT_TOPIC])
         point_message = node.publishers[0].messages[0]
-        robot_message = node.publishers[1].messages[0]
+        direction_message = node.publishers[1].messages[0]
+        robot_message = node.publishers[2].messages[0]
         self.assertEqual(len(point_message.data), 63)
+        self.assertEqual(len(direction_message.data), 15)
+        self.assertEqual(len(node.publishers[1].messages), 1)
         self.assertEqual(len(robot_message.data), 21)
         self.assertEqual(point_message.layout.dim[0].label,
                          f"{KEYPOINT_LAYOUT}:hand=Left")
+        self.assertEqual(direction_message.layout.dim[0].label,
+                         f"{PAD_DIRECTION_LAYOUT}:hand=Left")
         self.assertEqual(robot_message.layout.dim[0].label, ROBOT_LAYOUT)
         self.assertTrue(node.destroyed)
         self.assertTrue(rclpy.shutdown_called)

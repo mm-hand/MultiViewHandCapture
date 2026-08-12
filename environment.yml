@@ -23,9 +23,7 @@ dependencies:
   - pip:
       - --index-url=https://pypi.tuna.tsinghua.edu.cn/simple
       - --no-deps
-      - mediapipe
-      - pyrealsense2==2.58.3.10794
 variables:
   PYTHONNOUSERSITE: "1"
-  MPLCONFIGDIR: /tmp/mvhc-matplotlib
+  MPLCONFIGDIR: /tmp/mmhand-teleop-matplotlib
   RMW_IMPLEMENTATION: rmw_cyclonedds_cpp

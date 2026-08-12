@@ -1,98 +1,22 @@
 from pathlib import Path
 
-# 仓库根目录；仅用于生成下面的资源路径。
 _ROOT = Path(__file__).resolve().parent
-# 普通双目棋盘标定结果；由 vision/calibrate.py 生成。
-PARAMS_PATH = _ROOT / "vision/stereo_params.json"
-# 正式 MMHand URDF 路径；FK、关节限位和 Viser 显示都读取该文件。
 URDF_PATH = _ROOT / "assets/mmhand/urdf/hand.urdf"
-# MediaPipe Tasks HandLandmarker 模型路径。
-HAND_LANDMARKER_PATH = _ROOT / "vision/assets/hand_landmarker.task"
-# Minimal WiLoR ONNX runtime assets.
-WILOR_ASSET_DIR = _ROOT / "wilor/assets"
+WILOR_ASSET_DIR = _ROOT / "input/wilor/assets"
 
 
-# Camera ----------------------------------------------------------------------
+# Input -----------------------------------------------------------------------
 
-# VisionSource 内部相机类型。一级输入源由 track.py 的 --source 决定。
-CAMERA_TYPE = "stereo"
-# 普通相机的 OpenCV 编号，或 D435 的设备枚举序号。
-CAMERA_INDEX = 2
-# D435 单路红外图像宽度，单位 pixel。
-D435_WIDTH = 1280
-# D435 单路红外图像高度，单位 pixel。
-D435_HEIGHT = 720
-# D435 双红外流目标帧率，单位 frame/s。
-D435_FPS = 30
-# 普通双目单路尺寸；相机输出左右横向拼接的 MJPEG 图像。
-SINGLE_WIDTH, HEIGHT = 1280, 720
-FULL_WIDTH = SINGLE_WIDTH * 2
-# 拆分后左右图像的顺时针旋转角度，单位 degree。
-ROTATE_LEFT, ROTATE_RIGHT = 180, -180
-# 普通双目标定板内角点数、格长（mm）和最少有效图像对数。
-BOARD_SIZE, SQUARE_SIZE = (9, 6), 23.5
-MIN_CALIBRATION_PAIRS = 10
-
-# WiLoR uses only the D435 color stream; it never opens stereo infrared streams.
-WILOR_CAMERA_INDEX = 0
-WILOR_WIDTH, WILOR_HEIGHT, WILOR_FPS = 640, 480, 30
+INPUT_SOURCE = "wilor"  # "wilor" or "manus"
+CAMERA_DEVICE = 0       # OpenCV index, device path, or stream URL
+CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS = 640, 480, 30
 WILOR_DEVICE_ID = 0
 WILOR_CONFIDENCE = 0.30
 WILOR_IOU = 0.50
 WILOR_DETECT_EVERY = 3
 WILOR_CROP_FACTOR = 2.0
-
-# Hand calibration and filtering ----------------------------------------------
-
-# 启动时用于估计人手骨长中位数的有效样本数量。
-CALIBRATION_FRAMES = 10 # TODO
-# 骨长标定的最大采样频率，单位 Hz。
-CALIBRATION_HZ = 10
-# 每根骨相对标定长度允许变化的比例；0.20 表示允许 ±20%。
-BONE_TOLERANCE = 0.20
-
-# 二维像素点 One Euro 参数：
-# (最低截止频率 Hz, 速度自适应系数 Hz/(pixel/s), 速度截止频率 Hz)。
-POINT_2D_FILTER = (
-    1.0,   # min_cutoff：静止时的平滑强度，越小越稳定但延迟越大。
-    0.01,  # beta：像素运动越快时增加截止频率的幅度，越大越灵敏。
-    1.0,   # derivative_cutoff：像素速度估计的低通截止频率。
-)
-# 三维毫米点 One Euro 参数：
-# (最低截止频率 Hz, 速度自适应系数 Hz/(mm/s), 速度截止频率 Hz)。
-POINT_3D_FILTER = (
-    0.5,    # min_cutoff：静止三维点的平滑强度。
-    0.001,  # beta：三维点运动时提高响应速度的系数。
-    1.0,    # derivative_cutoff：三维点速度估计的低通截止频率。
-)
-# 屈曲角 One Euro 参数：
-# (最低截止频率 Hz, 速度自适应系数 Hz/(degree/s), 速度截止频率 Hz)。
-ANGLE_FILTER = (
-    1.0,   # min_cutoff：静止关节角的平滑强度。
-    0.02,  # beta：关节运动时提高响应速度的系数。
-    1.0,   # derivative_cutoff：角速度估计的低通截止频率。
-)
-
-
-# MediaPipe and geometry gates ------------------------------------------------
-
-# MediaPipe 初次手掌检测最低置信度，范围 0～1。
-MP_DETECTION_CONFIDENCE = 0.5
-# MediaPipe 判断当前 ROI 中仍存在手的最低置信度，范围 0～1。
-MP_PRESENCE_CONFIDENCE = 0.6
-# MediaPipe 跟踪框最低 IoU 置信度，范围 0～1；低于它会重新检测手掌。
-MP_TRACKING_CONFIDENCE = 0.6
-# 左右三角化点的最大平均重投影误差，单位 pixel。
-MAX_REPROJECTION_ERROR = 30.0
-# 任一三维点允许的最大相机 Z 坐标，单位 mm；当前不设置近距离下限。
-MAX_DEPTH_MM = 1500.0
-# 任一关键点距离腕点允许的最大半径，单位 mm。
-MAX_HAND_RADIUS = 300.0
-# 连续坏帧期间最多保留上一有效结果的帧数；下一帧会清空并重置滤波器。
-STALE_FRAMES = 3
-# 切换稳定 Left/Right 手性标签所需的连续一致帧数。
-HAND_SWITCH_FRAMES = 5
-# 标准化人手的目标掌尺寸，单位 m；用于 keypoint_relative 和 retarget。
+WILOR_POINT_FILTER = (0.5, 1.0, 1.0)
+WILOR_DIRECTION_FILTER = (0.5, 0.25, 1.0)
 STANDARD_PALM_SIZE = 0.086
 
 
@@ -100,12 +24,12 @@ STANDARD_PALM_SIZE = 0.086
 
 # 官方 MANUS Core SDK 3.1.1 Integrated runtime 及本项目薄封装。
 MANUS_SDK_VERSION = "3.1.1"
-MANUS_SDK_BRIDGE_PATH = _ROOT / "manus/assets/libmanus_sdk_bridge.so"
+MANUS_SDK_BRIDGE_PATH = _ROOT / "input/manus/assets/libmanus_sdk_bridge.so"
 # 可选兼容旧 MANUS ZMQ sender；默认输入不再使用它。
 MANUS_ENDPOINT = "tcp://127.0.0.1:8000"
 # bridge 的 CoordinateSystemVUH.unitScale=1.0，官方定义为 meter。
 MANUS_POSITION_SCALE_TO_M = 1.0
-# 超过该接收间隔后，MANUS frame 视为 stale，绝不复用上一帧四元数。
+# Maximum age of a MANUS frame, in seconds.
 MANUS_STALE_SECONDS = 0.20
 # legacy bridge 只发送 gloveId，不发送 Side。按实际设备 ID 填写，例如：
 # MANUS_GLOVE_ID_TO_HANDEDNESS = {"60f3738b": "Left", "8569617b": "Right"}
@@ -162,7 +86,9 @@ RETARGET_FTOL = 3e-5
 # 标准化 21 点 ROS 2 topic 名称。
 KEYPOINT_TOPIC = "/hand/keypoints"
 # 关键点 Float32MultiArray layout 标签：掌局部坐标、单位 m、掌尺寸 0.086 m。
-KEYPOINT_LAYOUT = "mvhc:keypoints:v1:palm_local_m:size=0.086"
+KEYPOINT_LAYOUT = "mmhand_teleop:keypoints:v1:palm_local_m:size=0.086"
+PAD_DIRECTION_TOPIC = "/hand/finger_pad_directions"
+PAD_DIRECTION_LAYOUT = "mmhand_teleop:finger_pad_directions:v1:palm_local_unit"
 # MMHand 21 关节原始 IK 目标 ROS 2 topic 名称。
 ROBOT_TOPIC = "/raw_ik_target"
 # 机器人 Float32MultiArray layout 标签：J00～J20 顺序、单位 degree。

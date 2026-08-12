@@ -3,6 +3,8 @@ import numpy as np
 from config import (
     KEYPOINT_LAYOUT,
     KEYPOINT_TOPIC,
+    PAD_DIRECTION_LAYOUT,
+    PAD_DIRECTION_TOPIC,
     ROBOT_LAYOUT,
     ROBOT_TOPIC,
 )
@@ -15,10 +17,13 @@ class RosOutput:
 
         rclpy.init(args=None)
         self.rclpy, self.message = rclpy, Float32MultiArray
-        self.node = rclpy.create_node("multiview_hand_capture")
+        self.node = rclpy.create_node("mmhand_teleop")
         self.point_publisher = self.node.create_publisher(Float32MultiArray, KEYPOINT_TOPIC, 1)
+        self.direction_publisher = self.node.create_publisher(
+            Float32MultiArray, PAD_DIRECTION_TOPIC, 1
+        )
         self.robot_publisher = self.node.create_publisher(Float32MultiArray, ROBOT_TOPIC, 1)
-        print(f"ROS 2: publishing {KEYPOINT_TOPIC} and {ROBOT_TOPIC}")
+        print(f"ROS 2: {KEYPOINT_TOPIC}, {PAD_DIRECTION_TOPIC}, {ROBOT_TOPIC}")
 
     def publish(self, publisher, values, label, shape):
         from std_msgs.msg import MultiArrayDimension, MultiArrayLayout
@@ -39,13 +44,20 @@ class RosOutput:
         message.data = np.asarray(values, np.float32).ravel().tolist()
         publisher.publish(message)
 
-    def points(self, points, handedness):
+    def hand(self, frame):
         self.publish(
             self.point_publisher,
-            points,
-            f"{KEYPOINT_LAYOUT}:hand={handedness}",
+            frame.points,
+            f"{KEYPOINT_LAYOUT}:hand={frame.handedness}",
             (21, 3),
         )
+        if frame.finger_pad_directions is not None:
+            self.publish(
+                self.direction_publisher,
+                frame.finger_pad_directions,
+                f"{PAD_DIRECTION_LAYOUT}:hand={frame.handedness}",
+                (5, 3),
+            )
 
     def joints(self, degrees):
         self.publish(self.robot_publisher, degrees, ROBOT_LAYOUT, (21,))
