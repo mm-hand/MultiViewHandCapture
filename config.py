@@ -6,8 +6,8 @@ URDF_PATH = ROOT / "assets/mmhand/urdf/hand.urdf"
 HAND_LANDMARKER_PATH = ROOT / "assets/mediapipe/hand_landmarker.task"
 
 # Camera: "d435" uses factory-calibrated stereo IR; "stereo" uses stereo_params.json.
-CAMERA_TYPE = "d435"
-CAMERA_INDEX = 0
+CAMERA_TYPE = "stereo"
+CAMERA_INDEX = 2
 D435_WIDTH, D435_HEIGHT, D435_FPS = 1280, 720, 30
 
 # Legacy side-by-side stereo camera and human-hand reconstruction.
