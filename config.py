@@ -36,6 +36,8 @@ MANUS_STALE_SECONDS = 0.20
 # MANUS_GLOVE_ID_TO_HANDEDNESS = {"60f3738b": "Left", "8569617b": "Right"}
 # 若 transport 提供 NodeInfo，则代码优先使用 NodeInfo.side，不查此表。
 MANUS_GLOVE_ID_TO_HANDEDNESS = {}
+# Outward finger-pad axis in every MANUS Tip node's local frame.
+MANUS_PAD_LOCAL_AXIS = (0.0, 0.0, -1.0)
 
 
 # MMHand joint mapping ---------------------------------------------------------
@@ -70,12 +72,15 @@ ROBOT_JOINT_NAMES = (
 RETARGET_THUMB_TIP_SCALE = 1.0
 # 掌原点到拇指尖位置误差的损失权重。
 RETARGET_THUMB_TIP_WEIGHT = 1.0
-# 人手 MCP→IP 对应 MMHand 拇指中节单位方向误差权重。
-RETARGET_THUMB_MCP_IP_WEIGHT = 20.0
-# 人手 IP→TIP 对应 MMHand 拇指远节单位方向误差权重。
-RETARGET_THUMB_IP_TIP_WEIGHT = 20.0
+# 人手拇指 MCP/IP 无符号正角的独立缩放及 MMHand J18/J19 损失权重。
+RETARGET_THUMB_MCP_ANGLE_SCALE = 2.0
+RETARGET_THUMB_IP_ANGLE_SCALE = 3.0
+RETARGET_THUMB_MCP_ANGLE_WEIGHT = 1.0
+RETARGET_THUMB_IP_ANGLE_WEIGHT = 1.0
+# 拇指尖到食指、中指、无名指、小指尖四条完整相对向量的损失权重。
+RETARGET_THUMB_TO_FINGERTIPS_WEIGHT = 2.0
 # Human-to-MMHand thumb pad direction loss weight.
-RETARGET_THUMB_PAD_WEIGHT = 0.25
+RETARGET_THUMB_PAD_WEIGHT = 2.0
 # 最终 21 个 MMHand 输出角的 One Euro 参数，角度单位 degree。
 RETARGET_ANGLE_FILTER = (1.0, 0.02, 1.0)
 # 每帧最多计算的不同 SLSQP 关节候选数；超限时采用最低损失候选。

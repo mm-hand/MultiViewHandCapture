@@ -4,7 +4,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from input.frame import relative_points
+from config import MANUS_PAD_LOCAL_AXIS
+from input.frame import relative_hand
 
 
 # Official/legacy 25-node layout fallback. Non-thumb metacarpals 5/10/15/20
@@ -28,6 +29,7 @@ _SIDE_NAMES = {1: "Left", 2: "Right"}
 @dataclass(frozen=True, slots=True)
 class AdaptedManusFrame:
     points: np.ndarray
+    directions: np.ndarray
     mapping: np.ndarray
     mapping_source: str
 
@@ -130,9 +132,25 @@ def convert_manus25_to_standard21(points25, mapping=None, scale_to_m=1.0):
     return points[indices].copy() * scale
 
 
+def _rotate_wxyz(quaternions, vector):
+    quaternions = np.asarray(quaternions, float)
+    if quaternions.shape != (5, 4) or not np.isfinite(quaternions).all():
+        raise ValueError("MANUS tip rotations must be finite with shape (5, 4)")
+    lengths = np.linalg.norm(quaternions, axis=1, keepdims=True)
+    if np.any(lengths < 1e-8):
+        raise ValueError("MANUS tip rotations must be nonzero")
+    normalized = quaternions / lengths
+    w, xyz = normalized[:, :1], normalized[:, 1:]
+    vectors = np.broadcast_to(np.asarray(vector, float), (5, 3))
+    return vectors + 2 * w * np.cross(xyz, vectors) + 2 * np.cross(
+        xyz, np.cross(xyz, vectors)
+    )
+
+
 def adapt_raw_skeleton(
     positions25,
     *,
+    rotations_wxyz,
     node_info=None,
     node_ids=None,
     scale_to_m=1.0,
@@ -145,11 +163,18 @@ def adapt_raw_skeleton(
         mapping, mapping_source = MANUS_TO_STANDARD21, "official-25 fallback"
 
     standard_world = convert_manus25_to_standard21(positions25, mapping, scale_to_m)
-    normalized = relative_points(standard_world)
+    rotations = np.asarray(rotations_wxyz, float)
+    if rotations.shape != (25, 4):
+        raise ValueError("MANUS rotations must have shape (25, 4)")
+    tip_directions = _rotate_wxyz(
+        rotations[np.asarray(mapping)[[4, 8, 12, 16, 20]]], MANUS_PAD_LOCAL_AXIS
+    )
+    normalized, directions = relative_hand(standard_world, tip_directions)
     if normalized is None:
         raise ValueError("MANUS hand geometry has a degenerate palm size")
     return AdaptedManusFrame(
         points=normalized,
+        directions=directions,
         mapping=np.asarray(mapping).copy(),
         mapping_source=mapping_source,
     )

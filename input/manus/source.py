@@ -55,12 +55,13 @@ def _sdk_frame_to_packet(frame, received_at):
     count = int(frame.node_count)
     if count <= 0 or count > _MAX_SDK_NODES:
         raise ValueError(f"Invalid MANUS SDK node count: {count}")
-    positions = np.empty((count, 3), dtype=float)
+    positions, rotations = np.empty((count, 3)), np.empty((count, 4))
     node_ids = []
     node_info = []
     for row in range(count):
         node = frame.nodes[row]
         positions[row] = node.position
+        rotations[row] = node.rotation_wxyz
         node_ids.append(int(node.node_id))
         node_info.append(
             {
@@ -74,6 +75,7 @@ def _sdk_frame_to_packet(frame, received_at):
     return {
         "glove_id": str(frame.glove_id),
         "positions": positions,
+        "rotations_wxyz": rotations,
         "node_ids": node_ids,
         "node_info": node_info,
         "handedness": {1: "Left", 2: "Right"}.get(int(frame.side)),
@@ -177,6 +179,7 @@ def parse_legacy_bridge_message(message, received_at=None):
             {
                 "glove_id": glove_id,
                 "positions": values[:, :3],
+                "rotations_wxyz": values[:, (6, 3, 4, 5)],
                 "received_at": received_at,
                 "coordinate_mode": "WORLD/GLOBAL",
             }
@@ -334,6 +337,7 @@ class ManusSource:
         try:
             adapted = adapt_raw_skeleton(
                 packet["positions"],
+                rotations_wxyz=packet["rotations_wxyz"],
                 node_info=packet.get("node_info"),
                 node_ids=packet.get("node_ids"),
                 scale_to_m=packet.get("position_scale_to_m", MANUS_POSITION_SCALE_TO_M),
@@ -361,7 +365,7 @@ class ManusSource:
             handedness=handedness,
             ready=ready,
             status=status,
-            finger_pad_directions=None,
+            finger_pad_directions=adapted.directions,
             preview=None,
         )
 

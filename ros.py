@@ -51,13 +51,12 @@ class RosOutput:
             f"{KEYPOINT_LAYOUT}:hand={frame.handedness}",
             (21, 3),
         )
-        if frame.finger_pad_directions is not None:
-            self.publish(
-                self.direction_publisher,
-                frame.finger_pad_directions,
-                f"{PAD_DIRECTION_LAYOUT}:hand={frame.handedness}",
-                (5, 3),
-            )
+        self.publish(
+            self.direction_publisher,
+            frame.finger_pad_directions,
+            f"{PAD_DIRECTION_LAYOUT}:hand={frame.handedness}",
+            (5, 3),
+        )
 
     def joints(self, degrees):
         self.publish(self.robot_publisher, degrees, ROBOT_LAYOUT, (21,))

@@ -141,6 +141,8 @@ class WilorTests(unittest.TestCase):
     def test_hand_frame_direction_default_and_validation(self):
         frame = InputFrame(0, None, None, False, "waiting")
         self.assertIsNone(frame.finger_pad_directions)
+        with self.assertRaisesRegex(ValueError, "required"):
+            InputFrame(0, standard_hand(), "Left", True, "tracking")
         with self.assertRaisesRegex(ValueError, "shape"):
             relative_hand(standard_hand(), np.zeros((4, 3)))
         with self.assertRaisesRegex(ValueError, "nonzero"):

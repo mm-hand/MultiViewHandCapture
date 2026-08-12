@@ -8,7 +8,7 @@ from scipy.spatial.transform import Rotation
 
 from config import URDF_PATH, WEB_FPS, WEB_PORT, VIEW_PORTS
 from input.frame import SKELETON_EDGES
-from retarget import compute_cmc_frame
+from retarget import compute_cmc_frame, human_thumb_geometry
 
 ROBOT_CAMERA_DISTANCE = 0.42
 PALM_FRAME_AXIS_LENGTH = 0.04
@@ -21,11 +21,13 @@ ARROW_HEAD_LENGTH = 0.006
 TIP_INDICES = np.array((4, 8, 12, 16, 20))
 LOSS_LABELS = (
     ("thumb_tip", "thumb tip"),
-    ("thumb_mcp_ip", "thumb MCP-IP"),
-    ("thumb_ip_tip", "thumb IP-TIP"),
+    ("thumb_mcp_angle", "thumb MCP angle"),
+    ("thumb_ip_angle", "thumb IP angle"),
+    ("thumb_to_fingertips", "thumb-fingertips"),
     ("thumb_pad", "thumb pad"),
     ("total", "total"),
 )
+ANGLE_COLORS = ((80, 230, 120), (190, 100, 255))
 
 
 def _loss_text(losses=None):
@@ -65,6 +67,46 @@ def _arrow_points(starts, directions):
     return np.stack(
         (starts, starts + PAD_DIRECTION_LENGTH * directions), axis=1
     ).astype(np.float32)
+
+
+def _rotate(vector, axis, angle):
+    axis = axis / np.linalg.norm(axis)
+    return (vector * np.cos(angle) + np.cross(axis, vector) * np.sin(angle)
+            + axis * np.dot(axis, vector) * (1 - np.cos(angle)))
+
+
+def _angle_segments(origin, start, axis, angle, radius, end=None):
+    start, axis = np.asarray(start, float), np.asarray(axis, float)
+    axis /= np.linalg.norm(axis)
+    start -= axis * np.dot(start, axis)
+    start /= np.linalg.norm(start)
+    values = np.linspace(0, angle, 25)
+    curve = origin + radius * np.asarray([_rotate(start, axis, value) for value in values])
+    end = _rotate(start, axis, angle) if end is None else end / np.linalg.norm(end)
+    curve[-1] = origin + radius * end
+    rays = np.asarray(((origin, origin + radius * start),
+                       (origin, origin + radius * end)))
+    return np.concatenate((rays, np.stack((curve[:-1], curve[1:]), axis=1))).astype(np.float32)
+
+
+def _human_angle_segments(points):
+    points = np.asarray(points, float)
+    lengths = np.linalg.norm(np.diff(points[1:5], axis=0), axis=1)
+    segments, angles, axes = human_thumb_geometry(points)
+    return angles, tuple(
+        _angle_segments(points[joint], segments[index], axes[index], angles[index],
+                        .35 * min(lengths[index:index + 2]), segments[index + 1])
+        for index, joint in enumerate((2, 3))
+    )
+
+
+def _angle_text(title, labels, angles=None):
+    if angles is None:
+        return f"{title}\nwaiting"
+    return title + "\n" + "\n".join(
+        f"{label:<8}{np.degrees(value):+6.1f}°"
+        for label, value in zip(labels, angles)
+    )
 
 
 def _robot_camera_pose(model):
@@ -135,6 +177,13 @@ class Viewer:
             head_length=ARROW_HEAD_LENGTH,
             visible=False,
         )
+        self.human_angle_arcs = tuple(
+            normalized.scene.add_line_segments(
+                f"/hand/thumb_{name}_angle", np.zeros((26, 2, 3), np.float32),
+                color, line_width=4, visible=False,
+            )
+            for name, color in zip(("mcp", "ip"), ANGLE_COLORS)
+        )
         robot_server.scene.add_frame("/robot", show_axes=False)
         self.urdf = ViserUrdf(robot_server, URDF_PATH, root_node_name="/robot")
         self.robot_palm_frame = robot_server.scene.add_frame(
@@ -160,8 +209,17 @@ class Viewer:
             head_radius=ARROW_HEAD_RADIUS,
             head_length=ARROW_HEAD_LENGTH,
         )
+        self.robot_angle_arcs = tuple(
+            robot_server.scene.add_line_segments(
+                f"/robot/thumb_{name}_angle", np.zeros((26, 2, 3), np.float32),
+                color, line_width=4, visible=False,
+            )
+            for name, color in zip(("pip", "dip"), ANGLE_COLORS)
+        )
         self.last_update, self.status = 0.0, "WAITING"
         self.loss_text = _loss_text()
+        self.human_angle_text = _angle_text("Human thumb", (), None)
+        self.robot_angle_text = _angle_text("MMHand thumb", (), None)
         self.preview = cv2.imencode(".jpg", np.zeros((360, 1280, 3), np.uint8))[1].tobytes()
         self._start_dashboard()
         print(f"Dashboard: http://localhost:{WEB_PORT}")
@@ -188,19 +246,24 @@ font-size:15px;background:#101318cc;border-radius:0 0 6px 0}}
 img,iframe{{width:100%;height:100%;display:block;border:0;object-fit:contain}}
 #status{{color:#9bd;margin-left:12px;font-weight:normal}}
 #losses{{position:absolute;z-index:2;right:0;top:0;margin:0;padding:9px 12px;
-background:#101318dd;color:#bde2ff;font:13px/1.35 monospace;pointer-events:none}}</style></head><body>
+background:#101318dd;color:#bde2ff;font:13px/1.35 monospace;pointer-events:none}}
+.angles{{position:absolute;z-index:3;right:0;top:0;margin:0;padding:9px 12px;
+background:#101318dd;color:#dff;font:13px/1.4 monospace;pointer-events:none}}</style></head><body>
 <section class="panel input"><h2>Input <span id="status">WAITING</span></h2>
 <pre id="losses">Weighted retarget loss\nwaiting</pre><img id="preview"></section>
-<section class="panel"><h2>Normalized hand</h2><iframe id="normalized"></iframe></section>
-<section class="panel"><h2>Retargeted MMHand</h2><iframe id="robot"></iframe></section>
+<section class="panel"><h2>Normalized hand</h2><pre class="angles" id="humanAngles">Human thumb\nwaiting</pre><iframe id="normalized"></iframe></section>
+<section class="panel"><h2>Retargeted MMHand</h2><pre class="angles" id="robotAngles">MMHand thumb\nwaiting</pre><iframe id="robot"></iframe></section>
 <script>
 const host=location.hostname, statusText=document.getElementById("status"),
-previewImage=document.getElementById("preview"),lossText=document.getElementById("losses");
+previewImage=document.getElementById("preview"),lossText=document.getElementById("losses"),
+humanAngles=document.getElementById("humanAngles"),robotAngles=document.getElementById("robotAngles");
 for(const [id,port] of [["normalized",{normalized_port}],["robot",{robot_port}]])
   document.getElementById(id).src=`http://${{host}}:${{port}}`;
 setInterval(()=>{{previewImage.src="/preview.jpg?t="+Date.now();
 fetch("/status").then(r=>r.text()).then(x=>statusText.textContent=x);
-fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000 / WEB_FPS)});
+fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x);
+fetch("/human_angles").then(r=>r.text()).then(x=>humanAngles.textContent=x);
+fetch("/robot_angles").then(r=>r.text()).then(x=>robotAngles.textContent=x)}},{round(1000 / WEB_FPS)});
 </script></body></html>""".encode()
 
         class Handler(BaseHTTPRequestHandler):
@@ -212,6 +275,10 @@ fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000
                     body, content_type = owner.status.encode(), "text/plain; charset=utf-8"
                 elif path == "/losses":
                     body, content_type = owner.loss_text.encode(), "text/plain; charset=utf-8"
+                elif path == "/human_angles":
+                    body, content_type = owner.human_angle_text.encode(), "text/plain; charset=utf-8"
+                elif path == "/robot_angles":
+                    body, content_type = owner.robot_angle_text.encode(), "text/plain; charset=utf-8"
                 elif path == "/":
                     body, content_type = page, "text/html; charset=utf-8"
                 else:
@@ -253,19 +320,22 @@ fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000
         visible = points is not None
         self.human_cloud.visible = self.human_bones.visible = visible
         self.pad_directions.visible = False
+        for arc in self.human_angle_arcs:
+            arc.visible = False
         if not visible:
             self.human_retarget_frame.visible = False
+            self.human_angle_text = _angle_text("Human thumb", (), None)
         else:
             points = np.asarray(points, float)
             self.human_cloud.points = points.astype(np.float32)
             self.human_bones.points = points[np.asarray(SKELETON_EDGES)].astype(np.float32)
-            directions = frame.finger_pad_directions
-            if directions is not None:
-                directions = np.asarray(directions, float)
-                if directions.shape == (5, 3) and np.isfinite(directions).all():
-                    starts = points[TIP_INDICES]
-                    self.pad_directions.points = _arrow_points(starts, directions)
-                    self.pad_directions.visible = True
+            directions = np.asarray(frame.finger_pad_directions, float)
+            self.pad_directions.points = _arrow_points(points[TIP_INDICES], directions)
+            self.pad_directions.visible = True
+            angles, arcs = _human_angle_segments(points)
+            for handle, segments in zip(self.human_angle_arcs, arcs):
+                handle.points, handle.visible = segments, True
+            self.human_angle_text = _angle_text("Human thumb", ("MCP", "IP"), angles)
             try:
                 origin, palm_frame = compute_cmc_frame(points)
             except ValueError:
@@ -280,6 +350,20 @@ fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000
             )
             starts, directions = self.model.fingertip_pads(robot)
             self.robot_pad_directions.points = _arrow_points(starts, directions)
+            origins, axes, incoming = self.model.thumb_joint_frames(robot)
+            for row, handle in enumerate(self.robot_angle_arcs):
+                length = .35 * np.linalg.norm(incoming[row])
+                handle.points = _angle_segments(
+                    origins[row], incoming[row], axes[row], robot[18 + row], length
+                )
+                handle.visible = True
+            self.robot_angle_text = _angle_text(
+                "MMHand thumb", ("J18/PIP", "J19/DIP"), robot[18:20]
+            )
+        elif not visible or frame.handedness != "Left":
+            for arc in self.robot_angle_arcs:
+                arc.visible = False
+            self.robot_angle_text = _angle_text("MMHand thumb", (), None)
 
     def close(self):
         self.http.shutdown()

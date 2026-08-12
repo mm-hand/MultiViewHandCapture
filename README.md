@@ -58,15 +58,21 @@ WILOR_THUMB_PAD_ROTATION_DEG = 45.0
 
 Each tuple is `(min_cutoff, beta, derivative_cutoff)`. Filters reset when the
 hand disappears, an inference result is invalid, or handedness changes.
-Thumb-pad retarget alignment is configured independently:
+Thumb-pad alignment and the two independent human-to-robot thumb angle scales
+are configured separately:
 
 ```python
 RETARGET_THUMB_PAD_WEIGHT = 0.25
+RETARGET_THUMB_MCP_ANGLE_SCALE = 1.0
+RETARGET_THUMB_IP_ANGLE_SCALE = 1.0
+RETARGET_THUMB_TO_FINGERTIPS_WEIGHT = 1.0
 ```
 
 For MANUS, place/build the bundled Core SDK bridge as described in
 `input/manus/assets/README.md`, then set `INPUT_SOURCE = "manus"`. If the SDK
 does not provide handedness, map glove IDs in `MANUS_GLOVE_ID_TO_HANDEDNESS`.
+`MANUS_PAD_LOCAL_AXIS` selects the outward pad axis in every Tip node's local
+frame and defaults to `(0, 0, -1)`.
 
 ## Running
 
@@ -82,7 +88,9 @@ python track.py --sim
 Open <http://localhost:8080>. The dashboard contains the input preview, the
 normalized hand, and the retargeted MMHand. WiLoR overlays the detected box and
 yellow MANO mesh on the camera image. Its status shows confidence followed by
-smoothed tracking FPS. Both hand views show their available finger-pad directions.
+smoothed tracking FPS. Both hand views show finger-pad directions, thumb angle
+arcs, and live angle values in degrees. Human values are the original measured
+angles; the scale coefficients affect only retargeting.
 
 Only a ready left hand enters retargeting. A right hand can still be displayed
 and published.
@@ -110,13 +118,14 @@ from wrist to the four MCP joints is normalized to `0.086 m`.
 
 `finger_pad_directions` is a finite `5 x 3` array in Thumb-to-Little order. Each
 row is an outward unit vector in the same palm-local frame. WiLoR produces this
-field from selected MANO pad faces. MANUS leaves it `None` because positions
-alone cannot determine rotation around each finger bone.
+field from selected MANO pad faces. MANUS rotates `MANUS_PAD_LOCAL_AXIS` by the
+five Tip-node WORLD quaternions before transforming it into the palm frame.
 
 `timestamp` is the monotonic acquisition time. Invalid or missing data uses
-`points=None` and `ready=False`. Device-specific data never crosses this input
-boundary. Retargeting receives the common points, optional pad directions, and
-timestamp from the same frame.
+`points=None`, `finger_pad_directions=None`, and `ready=False`. Every frame with
+points must also contain five finite unit pad directions; malformed frames raise
+an error. Device-specific data never crosses this input boundary. Retargeting
+receives the common points, pad directions, and timestamp from the same frame.
 
 ## Processing
 
@@ -126,6 +135,7 @@ OpenCV frame -> detector/cached crop -> WiLoR MANO mesh
              -> One Euro filters -> InputFrame
 
 MANUS Raw Skeleton -> semantic/fallback 25-to-21 mapping
+                   + Tip-node WORLD rotations -> 5 pad directions
                    -> palm-local normalization -> InputFrame
 
 InputFrame -> direct four-finger mapping + thumb SLSQP -> MMHand J00-J20
@@ -140,12 +150,14 @@ angle around its IP-to-TIP axis: positive for Left and negative for Right.
 
 Four MMHand fingers are mapped analytically. Five thumb joints are solved with
 bounded SLSQP using analytic Jacobians and the previous solution as a warm
-start. Its weighted objectives align the thumb tip position, MCP-to-IP and
-IP-to-TIP directions, and—when available—the human thumb-pad direction with
-the local `-Z` direction of MMHand's `5-tip_Link`. The dashboard reports every
-weighted term in real time; `thumb pad` is `N/A` for inputs without reliable
-pad directions. Final robot angles have a separate One Euro filter and are
-clipped to the limits read from the MMHand URDF.
+start. The human MCP and IP flexion angles are unsigned 3D angles in `[0, pi]`,
+independently scaled, and matched directly to MMHand J18/PIP and J19/DIP. Pad
+direction and handedness do not affect these angles. Four complete vectors from
+the thumb tip to the other fingertips are matched in the palm-local frames. The
+other objectives align the thumb tip position and thumb-pad
+direction with the local `-Z` direction of MMHand's `5-tip_Link`. The dashboard
+reports every weighted term in real time. Final robot angles have a separate
+One Euro filter and are clipped to the limits read from the MMHand URDF.
 
 ## ROS 2
 
@@ -157,8 +169,8 @@ clipped to the limits read from the MMHand URDF.
 | `/hand/finger_pad_directions` | `5 x 3` | palm-local outward unit vectors |
 | `/raw_ik_target` | `21` | MMHand J00-J20 in degrees |
 
-The direction topic is published only when the selected input provides valid
-directions. Keypoint and direction layouts include handedness. The layouts are:
+Every frame published on the keypoint topic has a matching direction message.
+Keypoint and direction layouts include handedness. The layouts are:
 
 ```text
 mmhand_teleop:keypoints:v1:palm_local_m:size=0.086
@@ -176,7 +188,7 @@ input/
     source.py           ONNX inference, mesh geometry, box caching, filtering
     assets/              ONNX/MANO data and license notices
   manus/
-    adapter.py          semantic/fallback 25-to-21 position mapping
+    adapter.py          25-to-21 mapping and quaternion pad directions
     source.py           official SDK and optional legacy transport
     assets/              SDK bridge, headers, library, and documentation
 assets/mmhand/           MMHand URDF, meshes, and licenses

@@ -30,6 +30,20 @@ class InputFrame:
     finger_pad_directions: np.ndarray | None = None
     preview: np.ndarray | None = None
 
+    def __post_init__(self):
+        if self.points is None:
+            if self.finger_pad_directions is not None:
+                raise ValueError("Finger-pad directions require hand landmarks")
+            return
+        points = np.asarray(self.points, float)
+        directions = np.asarray(self.finger_pad_directions, float)
+        if points.shape != (21, 3) or not np.isfinite(points).all():
+            raise ValueError("Hand landmarks must be finite with shape (21, 3)")
+        if directions.shape != (5, 3) or not np.isfinite(directions).all():
+            raise ValueError("Finger-pad directions are required with shape (5, 3)")
+        if not np.allclose(np.linalg.norm(directions, axis=1), 1, atol=1e-5):
+            raise ValueError("Finger-pad directions must be unit vectors")
+
 
 def _unit(vector, fallback=(1.0, 0.0, 0.0)):
     norm = np.linalg.norm(vector)

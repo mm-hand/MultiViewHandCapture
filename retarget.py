@@ -11,16 +11,11 @@ import config as C
 from one_euro import OneEuro
 
 EPS = 1e-9
-HUMAN_THUMB = np.array((2, 3, 4))
 HUMAN_FINGERS = np.array(
     ((5, 6, 7, 8), (9, 10, 11, 12), (13, 14, 15, 16), (17, 18, 19, 20))
 )
 ROBOT_TIPS = ("5-tip_Link", "1-tip_Link", "2-tip_Link", "3-tip_Link", "4-tip_Link")
-ROBOT_THUMB = (
-    "mmhand_thumb_1_finger_7_distal_phalanx_1",
-    "mmhand_thumb_1_finger_7_fingertip_1",
-    "5-tip_Link",
-)
+ROBOT_THUMB = ("5-tip_Link",)
 ROBOT_FINGERS = tuple(
     (
         f"finger_{finger}_proximal_phalanx_1",
@@ -39,7 +34,7 @@ ROBOT_FINGER_JOINTS = tuple(
     )
     for name, finger in zip(("Index", "Middle", "Ring", "Little"), range(1, 5))
 )
-THUMB_DIRECTION_NAMES = ("thumb_mcp_ip", "thumb_ip_tip")
+THUMB_ANGLE_NAMES = ("thumb_mcp_angle", "thumb_ip_angle")
 
 
 class _EvaluationLimit(Exception):
@@ -59,6 +54,31 @@ def _checked_unit(vector):
     if norm <= EPS:
         raise ValueError("Degenerate human palm frame")
     return vector / norm
+
+
+def _orthogonal(vector):
+    basis = np.eye(3)[np.argmin(np.abs(vector))]
+    return _checked_unit(np.cross(vector, basis))
+
+
+def human_thumb_geometry(points):
+    """Return thumb segments, unsigned 3D bend angles, and matching arc axes."""
+    points = np.asarray(points, float)
+    if points.shape != (21, 3) or not np.isfinite(points).all():
+        raise ValueError("Thumb angles require 21 finite points")
+    segments = _directions(points[1:5])
+    angles, axes = [], []
+    for first, second in zip(segments[:-1], segments[1:]):
+        cross = np.cross(first, second)
+        norm = np.linalg.norm(cross)
+        angles.append(np.arctan2(norm, np.clip(np.dot(first, second), -1, 1)))
+        axes.append(_orthogonal(first) if norm <= EPS else cross / norm)
+    return segments, np.asarray(angles), np.asarray(axes)
+
+
+def human_thumb_angles(points):
+    """Return unsigned MCP and IP flexion angles in radians."""
+    return human_thumb_geometry(points)[1]
 
 
 def compute_cmc_frame(points_world):
@@ -216,6 +236,13 @@ class RobotModel:
         directions = np.asarray([-transforms[name][:3, 2] for name in ROBOT_TIPS])
         return positions, directions / np.linalg.norm(directions, axis=1, keepdims=True)
 
+    def thumb_joint_frames(self, q):
+        """Return J18/J19 origins, axes, and incoming bone directions."""
+        _, origins, axes = self._forward(np.asarray(q, float), True)
+        indices = np.array((18, 19))
+        incoming = origins[indices] - origins[indices - 1]
+        return origins[indices], axes[indices], incoming
+
     def finger_angles(self, points, previous=None):
         q = self.seed.copy() if previous is None else np.asarray(previous, float).copy()
         for row, (chain, indices) in enumerate(zip(HUMAN_FINGERS, self.finger_joints)):
@@ -252,16 +279,23 @@ class RobotModel:
         point_jacobians = np.einsum(
             "ij,knj->kin", self.palm_frame.T, world_jacobians
         )
+        fingertips = np.asarray([transforms[name][:3, 3] for name in ROBOT_TIPS])
+        relative = (fingertips[1:] - fingertips[0]) @ self.palm_frame
+        relative_jacobians = np.broadcast_to(
+            -point_jacobians[0], (4, *point_jacobians[0].shape)
+        ).copy()
 
-        directions, direction_jacobians = _directions(points, point_jacobians)
+        angles = np.asarray(q, float)[[18, 19], None]
+        angle_jacobians = np.zeros((2, 1, len(self.thumb)))
+        angle_jacobians[0, 0, 2] = angle_jacobians[1, 0, 3] = 1
         pad_world = -transforms[ROBOT_TIPS[0]][:3, 2]
         pad = pad_world @ self.palm_frame
         pad_jacobian = np.cross(axes, pad_world) * influence[-1]
         pad_jacobian = np.einsum("ij,nj->in", self.palm_frame.T, pad_jacobian)
         return (
-            points[-1:], directions, pad,
+            points, angles, relative, pad,
         ), (
-            point_jacobians[-1:], direction_jacobians, pad_jacobian,
+            point_jacobians, angle_jacobians, relative_jacobians, pad_jacobian,
         )
 
 
@@ -274,22 +308,24 @@ class Retargeter:
         self.has_previous = False
         self.loss_terms = None
         self.options = {"ftol": C.RETARGET_FTOL, "disp": False}
+        scales = np.asarray((C.RETARGET_THUMB_MCP_ANGLE_SCALE,
+                             C.RETARGET_THUMB_IP_ANGLE_SCALE), float)
+        if not np.isfinite(scales).all() or np.any(scales < 0):
+            raise ValueError("Thumb angle scales must be finite and non-negative")
 
     def _targets(self, points, previous=None, finger_pad_directions=None):
-        try:
-            origin, rotation = compute_cmc_frame(points)
-            local = (np.asarray(points, float) - origin) @ rotation
-            thumb_shape = _directions(local[HUMAN_THUMB])
-            fingers = self.model.finger_angles(local, previous)
-            thumb_pad = None
-            if finger_pad_directions is not None:
-                directions = np.asarray(finger_pad_directions, float)
-                if directions.shape != (5, 3) or not np.isfinite(directions).all():
-                    raise ValueError("Invalid finger-pad directions")
-                thumb_pad = _checked_unit(directions[0] @ rotation)
-        except ValueError:
-            return None
-        return local[4:5], thumb_shape, thumb_pad, fingers
+        if finger_pad_directions is None:
+            raise ValueError("Finger-pad directions are required for retargeting")
+        directions = np.asarray(finger_pad_directions, float)
+        if directions.shape != (5, 3) or not np.isfinite(directions).all():
+            raise ValueError("Invalid finger-pad directions")
+        origin, rotation = compute_cmc_frame(points)
+        local = (np.asarray(points, float) - origin) @ rotation
+        angles = human_thumb_angles(points)[:, None]
+        fingers = self.model.finger_angles(local, previous)
+        relative = local[[8, 12, 16, 20]] - local[4]
+        thumb_pad = _checked_unit(directions[0] @ rotation)
+        return local[4:5], angles, relative, thumb_pad, fingers
 
     @staticmethod
     def _term(value, jacobian, target, scale, weight, normalizer=1.0):
@@ -308,37 +344,43 @@ class Retargeter:
             C.RETARGET_THUMB_TIP_SCALE, C.RETARGET_THUMB_TIP_WEIGHT,
             C.STANDARD_PALM_SIZE,
         )
+        scales = (
+            C.RETARGET_THUMB_MCP_ANGLE_SCALE,
+            C.RETARGET_THUMB_IP_ANGLE_SCALE,
+        )
         weights = (
-            C.RETARGET_THUMB_MCP_IP_WEIGHT,
-            C.RETARGET_THUMB_IP_TIP_WEIGHT,
+            C.RETARGET_THUMB_MCP_ANGLE_WEIGHT,
+            C.RETARGET_THUMB_IP_ANGLE_WEIGHT,
         )
         thumb_terms = tuple(
             self._term(
                 values[1][i:i + 1], jacobians[1][i:i + 1], targets[1][i:i + 1],
-                1.0, weight / 3,
+                scale, weight,
             )
-            for i, weight in enumerate(weights)
+            for i, (scale, weight) in enumerate(zip(scales, weights))
         )
-        pad_term = None
-        if targets[2] is not None:
-            pad_term = self._term(
-                values[2][None], jacobians[2][None], targets[2][None],
-                1.0, C.RETARGET_THUMB_PAD_WEIGHT / 3,
-            )
-        total = tip_loss + sum(loss for loss, _ in thumb_terms)
+        relative_term = self._term(
+            values[2], jacobians[2], targets[2], 1.0,
+            C.RETARGET_THUMB_TO_FINGERTIPS_WEIGHT, C.STANDARD_PALM_SIZE,
+        )
+        pad_term = self._term(
+            values[3][None], jacobians[3][None], targets[3][None],
+            1.0, C.RETARGET_THUMB_PAD_WEIGHT / 3,
+        )
+        total = tip_loss + relative_term[0] + pad_term[0] + sum(
+            loss for loss, _ in thumb_terms
+        )
         gradient = tip_gradient + sum(
             (term[1] for term in thumb_terms), np.zeros(len(self.model.thumb))
-        )
-        if pad_term is not None:
-            total += pad_term[0]
-            gradient += pad_term[1]
+        ) + relative_term[1] + pad_term[1]
         return (
             total,
             gradient,
             {
                 "thumb_tip": tip_loss,
-                **dict(zip(THUMB_DIRECTION_NAMES, (term[0] for term in thumb_terms))),
-                "thumb_pad": None if pad_term is None else pad_term[0],
+                **dict(zip(THUMB_ANGLE_NAMES, (term[0] for term in thumb_terms))),
+                "thumb_to_fingertips": relative_term[0],
+                "thumb_pad": pad_term[0],
                 "total": total,
             },
         )
@@ -349,9 +391,7 @@ class Retargeter:
             return None
         previous = self.q.copy() if self.has_previous else None
         targets = self._targets(points, previous, finger_pad_directions)
-        if targets is None:
-            return None
-        fixed, thumb = targets[3], self.model.thumb
+        fixed, thumb = targets[4], self.model.thumb
         cached_q, cached_value, evaluations, best = None, None, 0, None
 
         def evaluate(x):

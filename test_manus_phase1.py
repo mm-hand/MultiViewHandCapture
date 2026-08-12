@@ -3,7 +3,7 @@ from unittest.mock import patch
 import numpy as np
 
 from input import create_source
-from input.frame import relative_points
+from input.frame import relative_hand, relative_points
 from input.manus.adapter import (
     MANUS_TO_STANDARD21,
     adapt_raw_skeleton,
@@ -29,6 +29,7 @@ def raw_packet(received_at=1.0):
     return {
         "glove_id": "abc123",
         "positions": positions,
+        "rotations_wxyz": np.tile((1.0, 0.0, 0.0, 0.0), (25, 1)),
         "received_at": received_at,
         "coordinate_mode": "WORLD/GLOBAL",
     }
@@ -73,7 +74,7 @@ class ManusPhase1Tests(unittest.TestCase):
                 convert_manus25_to_standard21(points)
         self.assertEqual(convert_manus25_to_standard21(np.zeros((25, 3))).shape, (21, 3))
 
-    def test_official_sdk_packet_ignores_rotations(self):
+    def test_official_sdk_packet_keeps_rotations(self):
         frame = _SdkFrame()
         frame.glove_id = 42
         frame.node_count = 25
@@ -82,8 +83,10 @@ class ManusPhase1Tests(unittest.TestCase):
         for row in range(25):
             frame.nodes[row].node_id = row
             frame.nodes[row].position[:] = (row, row + 0.25, row + 0.5)
+            frame.nodes[row].rotation_wxyz[0] = 1
         packet = _sdk_frame_to_packet(frame, 8.0)
-        self.assertNotIn("rotations", packet)
+        self.assertEqual(packet["rotations_wxyz"].shape, (25, 4))
+        np.testing.assert_array_equal(packet["rotations_wxyz"][:, 0], 1)
 
     def test_node_info_semantics_are_preferred(self):
         info = [{"nodeId": 0, "parentId": 0, "chainType": 13, "side": 1, "fingerJointType": 0}]
@@ -97,10 +100,12 @@ class ManusPhase1Tests(unittest.TestCase):
         self.assertEqual(row, 25)
         np.testing.assert_array_equal(semantic_standard21_mapping(info), MANUS_TO_STANDARD21)
         packet = raw_packet()
-        adapted = adapt_raw_skeleton(packet["positions"], node_info=info)
+        adapted = adapt_raw_skeleton(
+            packet["positions"], rotations_wxyz=packet["rotations_wxyz"], node_info=info
+        )
         self.assertEqual(adapted.mapping_source, "NodeInfo")
 
-    def test_source_returns_common_frame_without_pad_directions(self):
+    def test_source_returns_common_frame_with_pad_directions(self):
         packet = raw_packet(received_at=5.0)
         source = ManusSource(
             FakeTransport(packet),
@@ -112,8 +117,22 @@ class ManusPhase1Tests(unittest.TestCase):
         self.assertTrue(frame.ready)
         self.assertEqual(frame.handedness, "Left")
         self.assertEqual(frame.points.shape, (21, 3))
-        self.assertIsNone(frame.finger_pad_directions)
+        self.assertEqual(frame.finger_pad_directions.shape, (5, 3))
+        np.testing.assert_allclose(np.linalg.norm(frame.finger_pad_directions, axis=1), 1)
         source.close()
+
+    def test_tip_quaternions_define_pad_directions(self):
+        packet = raw_packet()
+        root = np.sqrt(.5)
+        packet["rotations_wxyz"][MANUS_TO_STANDARD21[[4, 8, 12, 16, 20]]] = (
+            root, root, 0, 0
+        )
+        adapted = adapt_raw_skeleton(
+            packet["positions"], rotations_wxyz=packet["rotations_wxyz"]
+        )
+        standard = convert_manus25_to_standard21(packet["positions"])
+        expected = relative_hand(standard, np.tile((0, 1., 0), (5, 1)))[1]
+        np.testing.assert_allclose(adapted.directions, expected, atol=1e-7)
 
     def test_stale_clears_points(self):
         source = ManusSource(
@@ -126,13 +145,13 @@ class ManusPhase1Tests(unittest.TestCase):
         self.assertIsNone(frame.points)
         self.assertFalse(frame.ready)
 
-    def test_legacy_bridge_ignores_rotations(self):
+    def test_legacy_bridge_converts_xyzw_rotations(self):
         values = np.zeros((25, 7), float)
         values[:, 6] = 1.0
         values[4, 3:7] = (0.1, 0.2, 0.3, 0.9)
         message = "abc123," + ",".join(map(str, values.ravel()))
         packet = parse_legacy_bridge_message(message, received_at=3.0)[0]
-        self.assertNotIn("rotations", packet)
+        np.testing.assert_allclose(packet["rotations_wxyz"][4], (.9, .1, .2, .3))
 
     def test_cmc_helper_refactor_regression(self):
         points = relative_points(standard_hand_world())
