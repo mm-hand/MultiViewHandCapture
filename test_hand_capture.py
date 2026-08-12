@@ -49,7 +49,7 @@ from retarget import (
 )
 from ros import RosOutput
 from track import _parse_args, _source
-from viewer import _frame_wxyz, _loss_text
+from viewer import Viewer, _arrow_points, _frame_wxyz, _loss_text
 
 
 def straight_hand(handedness):
@@ -398,6 +398,27 @@ class RetargetTests(unittest.TestCase):
             np.asarray([transforms[name][:3, 3] for name in ROBOT_TIPS]),
             atol=0,
         )
+        pad_points, pad_directions = self.model.fingertip_pads(self.model.seed)
+        np.testing.assert_allclose(pad_points, self.model.fingertips(self.model.seed))
+        np.testing.assert_allclose(
+            pad_directions,
+            np.asarray([-transforms[name][:3, 2] for name in ROBOT_TIPS]),
+        )
+        np.testing.assert_allclose(np.linalg.norm(pad_directions, axis=1), 1)
+        arrows = _arrow_points(pad_points, pad_directions)
+        np.testing.assert_allclose(arrows[:, 0], pad_points)
+        np.testing.assert_allclose(
+            np.linalg.norm(np.diff(arrows, axis=1)[:, 0], axis=1), 0.025,
+            atol=1e-8,
+        )
+        bent = (self.model.lower + self.model.upper) / 3
+        bent_transforms = self.model.fk(bent)
+        bent_points, bent_directions = self.model.fingertip_pads(bent)
+        np.testing.assert_allclose(
+            bent_directions,
+            np.asarray([-bent_transforms[name][:3, 2] for name in ROBOT_TIPS]),
+        )
+        self.assertFalse(np.allclose(bent_points, pad_points))
 
         limits = {
             joint.get("name"): (
@@ -448,6 +469,32 @@ class RetargetTests(unittest.TestCase):
             mcp = transforms[self.model.joints["Thumb_MCP_AA"]["child"]][:3, 3]
             projection = cmc_origin + axis * np.dot(mcp - cmc_origin, axis)
             np.testing.assert_allclose(projection, self.model.palm_position, atol=1e-10)
+
+    def test_viewer_updates_and_retains_robot_pad_arrows(self):
+        viewer = object.__new__(Viewer)
+        viewer.model = self.model
+        viewer.last_update, viewer.status = 0.0, "WAITING"
+        viewer.loss_text, viewer.preview = _loss_text(), b""
+        viewer.human_cloud = types.SimpleNamespace(visible=False)
+        viewer.human_bones = types.SimpleNamespace(visible=False)
+        viewer.pad_directions = types.SimpleNamespace(visible=False)
+        viewer.human_retarget_frame = types.SimpleNamespace(visible=False)
+        viewer.robot_pad_directions = types.SimpleNamespace(points=None)
+        viewer.urdf_names, viewer.robot_index = self.model.names, self.model.index
+        updates = []
+        viewer.urdf = types.SimpleNamespace(update_cfg=lambda q: updates.append(q))
+        frame = HandFrame(0, None, None, False, "WAITING")
+        robot = (self.model.lower + self.model.upper) / 3
+
+        viewer.update(frame, robot)
+        expected = _arrow_points(*self.model.fingertip_pads(robot))
+        np.testing.assert_allclose(viewer.robot_pad_directions.points, expected)
+        self.assertEqual(len(updates), 1)
+
+        retained = viewer.robot_pad_directions.points.copy()
+        viewer.last_update = 0
+        viewer.update(frame, None)
+        np.testing.assert_array_equal(viewer.robot_pad_directions.points, retained)
 
     def test_analytic_retarget_jacobians_and_loss_gradients(self):
         q = (self.model.lower + self.model.upper) / 2

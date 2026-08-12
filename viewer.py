@@ -15,6 +15,9 @@ PALM_FRAME_AXIS_LENGTH = 0.04
 PALM_FRAME_AXIS_RADIUS = 0.0015
 PALM_FRAME_ORIGIN_RADIUS = 0.004
 PAD_DIRECTION_LENGTH = 0.025
+ARROW_SHAFT_RADIUS = 0.0008
+ARROW_HEAD_RADIUS = 0.0025
+ARROW_HEAD_LENGTH = 0.006
 TIP_INDICES = np.array((4, 8, 12, 16, 20))
 LOSS_LABELS = (
     ("thumb_tip", "thumb tip"),
@@ -56,6 +59,12 @@ def _frame_wxyz(frame):
     return quaternion[[3, 0, 1, 2]]
 
 
+def _arrow_points(starts, directions):
+    return np.stack(
+        (starts, starts + PAD_DIRECTION_LENGTH * directions), axis=1
+    ).astype(np.float32)
+
+
 def _robot_camera_pose(model):
     tips = model.fingertips(model.seed)
     look_at = np.vstack((model.palm_position, tips)).mean(0)
@@ -80,6 +89,7 @@ class Viewer:
         from viser.extras import ViserUrdf
 
         self.servers = [viser.ViserServer(port=port) for port in VIEW_PORTS]
+        self.model = model
         normalized, robot_server = self.servers
         self._camera(
             normalized,
@@ -114,11 +124,13 @@ class Viewer:
             line_width=4,
             visible=False,
         )
-        self.pad_directions = normalized.scene.add_line_segments(
+        self.pad_directions = normalized.scene.add_arrows(
             "/hand/pad_directions",
             np.zeros((5, 2, 3), np.float32),
             (255, 150, 70),
-            line_width=5,
+            shaft_radius=ARROW_SHAFT_RADIUS,
+            head_radius=ARROW_HEAD_RADIUS,
+            head_length=ARROW_HEAD_LENGTH,
             visible=False,
         )
         robot_server.scene.add_frame("/robot", show_axes=False)
@@ -136,6 +148,15 @@ class Viewer:
         self.robot_index = model.index
         self.urdf.update_cfg(
             np.asarray([model.seed[self.robot_index[name]] for name in self.urdf_names])
+        )
+        starts, directions = model.fingertip_pads(model.seed)
+        self.robot_pad_directions = robot_server.scene.add_arrows(
+            "/robot/pad_directions",
+            _arrow_points(starts, directions),
+            (255, 150, 70),
+            shaft_radius=ARROW_SHAFT_RADIUS,
+            head_radius=ARROW_HEAD_RADIUS,
+            head_length=ARROW_HEAD_LENGTH,
         )
         self.last_update, self.status = 0.0, "WAITING"
         self.loss_text = _loss_text()
@@ -241,9 +262,7 @@ fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000
                 directions = np.asarray(directions, float)
                 if directions.shape == (5, 3) and np.isfinite(directions).all():
                     starts = points[TIP_INDICES]
-                    self.pad_directions.points = np.stack(
-                        (starts, starts + PAD_DIRECTION_LENGTH * directions), axis=1
-                    ).astype(np.float32)
+                    self.pad_directions.points = _arrow_points(starts, directions)
                     self.pad_directions.visible = True
             try:
                 origin, palm_frame = compute_cmc_frame(points)
@@ -257,6 +276,8 @@ fetch("/losses").then(r=>r.text()).then(x=>lossText.textContent=x)}},{round(1000
             self.urdf.update_cfg(
                 np.asarray([robot[self.robot_index[name]] for name in self.urdf_names])
             )
+            starts, directions = self.model.fingertip_pads(robot)
+            self.robot_pad_directions.points = _arrow_points(starts, directions)
 
     def close(self):
         self.http.shutdown()

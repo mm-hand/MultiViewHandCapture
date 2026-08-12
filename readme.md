@@ -90,7 +90,7 @@ python track.py --source wilor --ros
 
 - 上方显示当前 Source 的输入预览；加权 retarget 损失及占比浮动在右上角。
 - 左下显示 `Normalized hand`，包含人手 retarget 坐标轴和原点。
-- 右下显示 MMHand URDF，包含 MMHand 掌坐标轴和原点。
+- 右下显示 MMHand URDF，包含 MMHand 掌坐标轴、原点和五指指腹外法线箭头。
 
 右手可以跟踪、显示和发布关键点，但 MMHand retarget 只处理完成骨长标定的稳定左手。
 
@@ -232,7 +232,11 @@ stale 帧只更新状态和输入预览，不输出标准手姿态，也不进�
 `WilorSource` 只打开 D435 color stream，不读取红外双目或
 `vision/stereo_params.json`。FP16 detector 与 WiLoR ONNX 在 CUDA 上运行；
 MANO mesh 回归为标准 21 点，指腹面片的面积加权外法线产生五个指腹方向。
-左手镜像同时作用于点和向量，避免法线翻转。没有手时两项结果都是 `None`。
+左手镜像同时作用于点和向量，避免法线翻转。输入预览将 MANO mesh 投影叠加到
+RGB 图像，Normalized hand 用箭头显示五个指腹外法线；没有手时结果为 `None`。
+
+MMHand 面板无论使用 Vision、MANUS 或 WiLoR，都从当前机器人 FK 的五个 tip link
+计算并显示指腹外法线箭头；等待新 retarget 结果时保持当前机器人姿态和箭头。
 
 ### MMHand retarget
 

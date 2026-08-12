@@ -10,8 +10,11 @@ from wilor.source import (
     Detector,
     JOINT_ORDER,
     PAD_FACE_ROWS,
+    Reconstructor,
     TIP_VERTICES,
+    Track,
     Tracker,
+    draw_mesh,
     mesh_hand,
 )
 
@@ -55,6 +58,19 @@ class FakeDetectorSession:
 
     def run(self, *_):
         return [self.output]
+
+
+class FakeReconstructorSession:
+    def __init__(self, camera):
+        self.camera = np.asarray(camera, np.float32)[None]
+        self.input = None
+
+    def get_inputs(self):
+        return [types.SimpleNamespace(type="tensor(float16)")]
+
+    def run(self, _, inputs):
+        self.input = inputs["images"]
+        return [np.zeros((1, 778, 3), np.float16), self.camera.copy()]
 
 
 class WilorTests(unittest.TestCase):
@@ -120,6 +136,33 @@ class WilorTests(unittest.TestCase):
         np.testing.assert_allclose(box, (270, 190, 370, 290), atol=1)
         self.assertEqual(handedness, 1)
         self.assertAlmostEqual(score, 0.9, places=2)
+
+    def test_reconstruction_camera_translation_and_mesh_overlay(self):
+        frame = np.zeros((480, 640, 3), np.uint8)
+        box = np.array((270, 190, 370, 290), np.float32)
+        for right, expected_x in ((1, 0.25), (0, -0.25)):
+            session = FakeReconstructorSession((2, 0.25, -0.1))
+            vertices, translation = Reconstructor(session, 2)(
+                frame, [Track(box.copy(), right, 0.9, np.zeros(4))]
+            )
+            self.assertEqual(vertices.shape, (1, 778, 3))
+            self.assertEqual(session.input.shape, (1, 3, 256, 192))
+            np.testing.assert_allclose(
+                translation[0], (expected_x, -0.1, 46.875), atol=1e-5
+            )
+        with self.assertRaisesRegex(ValueError, "camera scale"):
+            Reconstructor(FakeReconstructorSession((-1, 0, 0)), 2)(
+                frame, [Track(box.copy(), 1, 0.9, np.zeros(4))]
+            )
+
+        vertices = np.array(((-0.01, -0.01, 0), (0.01, -0.01, 0),
+                             (0, 0.01, 0)), np.float32)
+        faces = np.array(((0, 1, 2),), np.int32)
+        right_image, left_image = frame.copy(), frame.copy()
+        draw_mesh(right_image, vertices, (0, 0, 1), 1, faces)
+        draw_mesh(left_image, vertices, (0, 0, 1), 0, faces)
+        self.assertGreater(right_image[240, 320, 2], right_image[240, 320, 0])
+        self.assertGreater(left_image[240, 320, 0], left_image[240, 320, 2])
 
     def test_tracker_predicts_then_expires(self):
         tracker = Tracker()

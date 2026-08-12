@@ -213,6 +213,13 @@ class RobotModel:
         transforms = self.fk(q)
         return np.asarray([transforms[name][:3, 3] for name in ROBOT_TIPS])
 
+    def fingertip_pads(self, q):
+        """Return fingertip positions and outward pad normals, Thumb to Little."""
+        transforms = self.fk(q)
+        positions = np.asarray([transforms[name][:3, 3] for name in ROBOT_TIPS])
+        directions = np.asarray([-transforms[name][:3, 2] for name in ROBOT_TIPS])
+        return positions, directions / np.linalg.norm(directions, axis=1, keepdims=True)
+
     def finger_angles(self, points, previous=None):
         q = self.seed.copy() if previous is None else np.asarray(previous, float).copy()
         for row, (chain, indices) in enumerate(zip(HUMAN_FINGERS, self.finger_joints)):

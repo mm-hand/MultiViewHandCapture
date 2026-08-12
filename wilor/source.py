@@ -220,7 +220,7 @@ class Tracker:
 
 
 def crop_hands(frame, tracks, factor, dtype):
-    crops = []
+    crops, centers, box_sizes = [], [], []
     height, width = frame.shape[:2]
     for track in tracks:
         center = (track.box[:2] + track.box[2:]) / 2
@@ -237,7 +237,10 @@ def crop_hands(frame, tracks, factor, dtype):
         patch = cv2.warpAffine(image, transform, (256, 256))
         rgb = patch[:, :, ::-1].transpose(2, 0, 1).astype(np.float32) / 255
         crops.append(((rgb - MEAN) / STD)[:, :, 32:-32].astype(dtype))
-    return np.ascontiguousarray(np.stack(crops))
+        centers.append(center)
+        box_sizes.append(box_size)
+    return (np.ascontiguousarray(np.stack(crops)), np.asarray(centers),
+            np.asarray(box_sizes))
 
 
 class Reconstructor:
@@ -246,8 +249,26 @@ class Reconstructor:
         self.dtype = np.float16 if "float16" in session.get_inputs()[0].type else np.float32
 
     def __call__(self, frame, tracks):
-        crops = crop_hands(frame, tracks, self.factor, self.dtype)
-        return self.session.run(None, {"images": crops})[0].astype(np.float32)
+        crops, centers, box_sizes = crop_hands(frame, tracks, self.factor, self.dtype)
+        vertices, camera = self.session.run(None, {"images": crops})
+        vertices, camera = vertices.astype(np.float32), camera.astype(np.float32)
+        count = len(tracks)
+        if (vertices.shape != (count, 778, 3) or camera.shape != (count, 3)
+                or not np.isfinite(vertices).all() or not np.isfinite(camera).all()):
+            raise ValueError("Invalid WiLoR model output")
+        multiplier = 2 * np.asarray([track.handedness for track in tracks]) - 1
+        camera[:, 1] *= multiplier
+        width, height = frame.shape[1], frame.shape[0]
+        focal = 5000 / 256 * max(width, height)
+        scaled_box = box_sizes * camera[:, 0] + 1e-9
+        if np.any(scaled_box <= 0):
+            raise ValueError("Invalid WiLoR camera scale")
+        translation = np.stack((
+            2 * (centers[:, 0] - width / 2) / scaled_box + camera[:, 1],
+            2 * (centers[:, 1] - height / 2) / scaled_box + camera[:, 2],
+            2 * focal / scaled_box,
+        ), axis=1)
+        return vertices, translation.astype(np.float32)
 
 
 def mesh_hand(vertices, right, regressor, faces):
@@ -271,8 +292,26 @@ def mesh_hand(vertices, right, regressor, faces):
     return points, directions, "Right" if right else "Left"
 
 
-def preview(frame, tracks):
+def draw_mesh(frame, vertices, translation, right, faces):
+    vertices = np.asarray(vertices, np.float32).copy()
+    vertices[:, 0] *= 1 if right else -1
+    points_3d = vertices + np.asarray(translation, np.float32)
+    depth = np.maximum(points_3d[:, 2], 1e-5)
+    focal = 5000 / 256 * max(frame.shape[:2])
+    points = np.stack((focal * points_3d[:, 0] / depth + frame.shape[1] / 2,
+                       focal * points_3d[:, 1] / depth + frame.shape[0] / 2), axis=1)
+    triangles = np.clip(points[faces], -32768, 32767).astype(np.int32)
+    overlay = frame.copy()
+    color = (92, 150, 255) if right else (255, 145, 92)
+    cv2.fillPoly(overlay, triangles, color, lineType=cv2.LINE_AA)
+    cv2.polylines(overlay, triangles, True, (45, 55, 80), 1, cv2.LINE_AA)
+    cv2.addWeighted(overlay, 0.67, frame, 0.33, 0, dst=frame)
+
+
+def preview(frame, tracks, mesh=None):
     frame = frame.copy()
+    if mesh is not None:
+        draw_mesh(frame, *mesh)
     for track in tracks:
         x1, y1, x2, y2 = track.box.astype(int)
         cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 230, 255), 2)
@@ -312,18 +351,22 @@ class WilorSource:
         detect = self.frame_index % WILOR_DETECT_EVERY == 0 or self.tracker.track is None
         tracks = self.tracker.update(self.detector(frame) if detect else None)
         self.frame_index += 1
-        image = preview(frame, tracks)
         if not tracks:
+            image = preview(frame, tracks)
             return HandFrame(timestamp, None, None, False, "WILOR WAITING",
                              finger_pad_directions=None, preview=image)
         try:
-            vertices = self.reconstructor(frame, tracks)[0]
+            vertices, translations = self.reconstructor(frame, tracks)
             points, directions, handedness = mesh_hand(
-                vertices, tracks[0].handedness, self.regressor, self.faces
+                vertices[0], tracks[0].handedness, self.regressor, self.faces
             )
         except ValueError as error:
+            image = preview(frame, tracks)
             return HandFrame(timestamp, None, None, False, f"WILOR INVALID: {error}",
                              finger_pad_directions=None, preview=image)
+        image = preview(frame, tracks, (
+            vertices[0], translations[0], tracks[0].handedness, self.faces
+        ))
         return HandFrame(
             timestamp, points, handedness, True,
             f"WILOR {handedness} {tracks[0].score:.2f}",
