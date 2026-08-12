@@ -8,7 +8,9 @@ import cv2
 
 class OpenCVCamera:
     def __init__(self, device, width, height, fps):
-        self.capture = cv2.VideoCapture(device)
+        local = isinstance(device, int) or str(device).startswith("/dev/video")
+        backend = cv2.CAP_V4L2 if local else cv2.CAP_ANY
+        self.capture = cv2.VideoCapture(device, backend)
         if not self.capture.isOpened():
             raise RuntimeError(f"Cannot open camera {device!r}")
         for prop, value in ((cv2.CAP_PROP_FRAME_WIDTH, width),

@@ -3,6 +3,7 @@ import unittest
 import warnings
 from unittest.mock import patch
 
+import cv2
 import numpy as np
 
 from input import create_source
@@ -102,7 +103,7 @@ class WilorTests(unittest.TestCase):
                 self.open = False
 
         capture = Capture()
-        with patch("input.wilor.camera.cv2.VideoCapture", return_value=capture):
+        with patch("input.wilor.camera.cv2.VideoCapture", return_value=capture) as open_camera:
             camera = OpenCVCamera("/dev/video4", 640, 480, 30)
             sequence, frame, timestamp = camera.read(0)
             camera.close()
@@ -111,6 +112,7 @@ class WilorTests(unittest.TestCase):
         self.assertGreater(timestamp, 0)
         self.assertIn("800x600@25", camera.description)
         self.assertFalse(capture.open)
+        open_camera.assert_called_once_with("/dev/video4", cv2.CAP_V4L2)
 
     def test_cli_and_configured_source(self):
         args = _parse_args([])
