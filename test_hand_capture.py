@@ -72,7 +72,7 @@ class RetargetTests(unittest.TestCase):
         np.testing.assert_array_equal(values[1].ravel(), q[18:20])
         numeric = [np.empty_like(item) for item in jacobians]
         step = 1e-6
-        for column, joint in enumerate(self.model.thumb):
+        for column, joint in enumerate(range(len(q))):
             plus, minus = q.copy(), q.copy()
             plus[joint] += step
             minus[joint] -= step
@@ -87,8 +87,8 @@ class RetargetTests(unittest.TestCase):
             self.points, finger_pad_directions=PAD_DIRECTIONS
         )
         loss, gradient, _ = retargeter._losses(q, targets)
-        numeric = np.empty(5)
-        for column, joint in enumerate(self.model.thumb):
+        numeric = np.empty(len(q))
+        for column, joint in enumerate(range(len(q))):
             plus, minus = q.copy(), q.copy()
             plus[joint] += step
             minus[joint] -= step
@@ -98,6 +98,55 @@ class RetargetTests(unittest.TestCase):
             ) / (2 * step)
         self.assertTrue(np.isfinite(loss))
         np.testing.assert_allclose(gradient, numeric, atol=1e-6, rtol=1e-5)
+
+    def test_joint_initial_guess_and_coupled_targets(self):
+        retargeter = Retargeter(self.model)
+        retargeter.q[self.model.thumb] = .5 * (
+            self.model.lower[self.model.thumb] + self.model.upper[self.model.thumb]
+        )
+        retargeter.has_previous = True
+        targets = retargeter._targets(
+            self.points, retargeter.q, PAD_DIRECTIONS
+        )
+        initial = targets[5]
+        np.testing.assert_array_equal(
+            initial[self.model.finger_joints.ravel()], targets[4]
+        )
+        np.testing.assert_array_equal(
+            initial[self.model.thumb], retargeter.q[self.model.thumb]
+        )
+        _, jacobians = self.model.features(initial)
+        relative_jacobian = jacobians[2]
+        self.assertTrue(np.any(relative_jacobian[..., :16]))
+        self.assertTrue(np.any(relative_jacobian[..., 16:]))
+
+        before = retargeter._losses(initial, targets)[2]
+        retargeter.solve(self.points, 0.0, PAD_DIRECTIONS)
+        after = retargeter._losses(retargeter.q, targets)[2]
+        self.assertLess(after["total"], before["total"])
+        self.assertLess(after["fingertip_vectors"], before["fingertip_vectors"])
+
+        q = initial.copy()
+        q[self.model.finger_joints.ravel()] += .05
+        q = np.clip(q, self.model.lower, self.model.upper)
+        with patch("retarget.C.RETARGET_FINGER_ANGLE_WEIGHT", 0.0):
+            _, no_angles, terms = retargeter._losses(q, targets)
+        with patch("retarget.C.RETARGET_FINGER_ANGLE_WEIGHT", 1.0):
+            _, with_angles, _ = retargeter._losses(q, targets)
+        self.assertEqual(terms["finger_angles"], 0)
+        np.testing.assert_allclose(
+            (with_angles - no_angles)[self.model.thumb], 0, atol=1e-15
+        )
+        self.assertTrue(np.any(with_angles[:16] != no_angles[:16]))
+
+        with patch("retarget.C.RETARGET_FINGERTIP_VECTOR_WEIGHT", 0.0):
+            _, no_vectors, terms = retargeter._losses(q, targets)
+        with patch("retarget.C.RETARGET_FINGERTIP_VECTOR_WEIGHT", 2.0):
+            _, with_vectors, _ = retargeter._losses(q, targets)
+        self.assertEqual(terms["fingertip_vectors"], 0)
+        vector_gradient = with_vectors - no_vectors
+        self.assertTrue(np.any(vector_gradient[:16]))
+        self.assertTrue(np.any(vector_gradient[16:]))
 
     def test_thumb_pad_loss_and_solve(self):
         target_q = self.model.seed.copy()
@@ -119,7 +168,7 @@ class RetargetTests(unittest.TestCase):
         self.assertEqual(
             tuple(losses),
             ("thumb_tip", "thumb_mcp_angle", "thumb_ip_angle",
-             "thumb_to_fingertips", "thumb_pad", "total"),
+             "finger_angles", "fingertip_vectors", "thumb_pad", "total"),
         )
         self.assertAlmostEqual(
             sum(value for name, value in losses.items() if name != "total"),

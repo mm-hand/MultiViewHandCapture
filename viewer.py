@@ -24,7 +24,8 @@ LOSS_LABELS = (
     ("thumb_tip", "thumb tip"),
     ("thumb_mcp_angle", "thumb MCP angle"),
     ("thumb_ip_angle", "thumb IP angle"),
-    ("thumb_to_fingertips", "thumb-fingertips"),
+    ("finger_angles", "finger angles"),
+    ("fingertip_vectors", "fingertip vectors"),
     ("thumb_pad", "thumb pad"),
     ("total", "total"),
 )

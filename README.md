@@ -65,7 +65,8 @@ are configured separately:
 RETARGET_THUMB_PAD_WEIGHT = 0.25
 RETARGET_THUMB_MCP_ANGLE_SCALE = 1.0
 RETARGET_THUMB_IP_ANGLE_SCALE = 1.0
-RETARGET_THUMB_TO_FINGERTIPS_WEIGHT = 1.0
+RETARGET_FINGER_ANGLE_WEIGHT = 1.0
+RETARGET_FINGERTIP_VECTOR_WEIGHT = 2.0
 ```
 
 For MANUS, place/build the bundled Core SDK bridge as described in
@@ -148,12 +149,13 @@ Pad-face normals are averaged, mirrored for handedness, transformed into the
 palm frame, and normalized. The thumb normal is rotated by the configured fixed
 angle around its IP-to-TIP axis: positive for Left and negative for Right.
 
-Four MMHand fingers are mapped analytically. Five thumb joints are solved with
-bounded SLSQP using analytic Jacobians and the previous solution as a warm
-start. The human MCP and IP flexion angles are unsigned 3D angles in `[0, pi]`,
+All 21 MMHand joints are solved together with bounded SLSQP and analytic
+Jacobians. The analytical four-finger angles provide both the per-frame initial
+guess and an angle target; the previous thumb solution remains its warm start.
+The human MCP and IP flexion angles are unsigned 3D angles in `[0, pi]`,
 independently scaled, and matched directly to MMHand J18/PIP and J19/DIP. Pad
 direction and handedness do not affect these angles. Four complete vectors from
-the thumb tip to the other fingertips are matched in the palm-local frames. The
+the thumb tip to the other fingertips jointly move both ends. The
 other objectives align the thumb tip position and thumb-pad
 direction with the local `-Z` direction of MMHand's `5-tip_Link`. The dashboard
 reports every weighted term in real time. Final robot angles have a separate

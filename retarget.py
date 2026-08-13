@@ -15,7 +15,6 @@ HUMAN_FINGERS = np.array(
     ((5, 6, 7, 8), (9, 10, 11, 12), (13, 14, 15, 16), (17, 18, 19, 20))
 )
 ROBOT_TIPS = ("5-tip_Link", "1-tip_Link", "2-tip_Link", "3-tip_Link", "4-tip_Link")
-ROBOT_THUMB = ("5-tip_Link",)
 ROBOT_FINGERS = tuple(
     (
         f"finger_{finger}_proximal_phalanx_1",
@@ -162,8 +161,8 @@ class RobotModel:
             if joint["index"] is not None:
                 indices += (joint["index"],)
             ancestors[joint["child"]] = indices
-        self.influence = np.zeros((len(ROBOT_THUMB), len(self.names), 1))
-        for row, name in enumerate(ROBOT_THUMB):
+        self.influence = np.zeros((len(ROBOT_TIPS), len(self.names), 1))
+        for row, name in enumerate(ROBOT_TIPS):
             self.influence[row, list(ancestors[name])] = 1
         self.lower, self.upper = np.asarray([limits[name] for name in self.names]).T
         self.thumb = np.arange(16, 21)
@@ -259,43 +258,43 @@ class RobotModel:
 
     def features(self, q):
         transforms, origins, axes = self._forward(np.asarray(q, float), True)
-        origins, axes = origins[self.thumb], axes[self.thumb]
-        influence = self.influence[:, self.thumb]
-        world = np.asarray([transforms[name][:3, 3] for name in ROBOT_THUMB])
-        points = (world - self.palm_position) @ self.palm_frame
+        world = np.asarray([transforms[name][:3, 3] for name in ROBOT_TIPS])
         delta = world[:, None] - origins
         world_jacobians = np.empty_like(delta)
         world_jacobians[:, :, 0] = axes[:, 1] * delta[:, :, 2] - axes[:, 2] * delta[:, :, 1]
         world_jacobians[:, :, 1] = axes[:, 2] * delta[:, :, 0] - axes[:, 0] * delta[:, :, 2]
         world_jacobians[:, :, 2] = axes[:, 0] * delta[:, :, 1] - axes[:, 1] * delta[:, :, 0]
-        world_jacobians *= influence
+        world_jacobians *= self.influence
         point_jacobians = np.einsum(
             "ij,knj->kin", self.palm_frame.T, world_jacobians
         )
-        fingertips = np.asarray([transforms[name][:3, 3] for name in ROBOT_TIPS])
-        relative = (fingertips[1:] - fingertips[0]) @ self.palm_frame
-        relative_jacobians = np.broadcast_to(
-            -point_jacobians[0], (4, *point_jacobians[0].shape)
-        ).copy()
+        points = (world - self.palm_position) @ self.palm_frame
+        relative = points[1:] - points[0]
+        relative_jacobians = point_jacobians[1:] - point_jacobians[0]
 
         angles = np.asarray(q, float)[[18, 19], None]
-        angle_jacobians = np.zeros((2, 1, len(self.thumb)))
-        angle_jacobians[0, 0, 2] = angle_jacobians[1, 0, 3] = 1
+        angle_jacobians = np.zeros((2, 1, len(self.names)))
+        angle_jacobians[0, 0, 18] = angle_jacobians[1, 0, 19] = 1
+        finger_indices = self.finger_joints.ravel()
+        finger_angles = np.asarray(q, float)[finger_indices, None]
+        finger_jacobians = np.zeros((len(finger_indices), 1, len(self.names)))
+        finger_jacobians[np.arange(len(finger_indices)), 0, finger_indices] = 1
         pad_world = -transforms[ROBOT_TIPS[0]][:3, 2]
         pad = pad_world @ self.palm_frame
-        pad_jacobian = np.cross(axes, pad_world) * influence[-1]
+        pad_jacobian = np.cross(axes, pad_world) * self.influence[0]
         pad_jacobian = np.einsum("ij,nj->in", self.palm_frame.T, pad_jacobian)
         return (
-            points, angles, relative, pad,
+            points[:1], angles, relative, pad, finger_angles,
         ), (
-            point_jacobians, angle_jacobians, relative_jacobians, pad_jacobian,
+            point_jacobians[:1], angle_jacobians, relative_jacobians,
+            pad_jacobian, finger_jacobians,
         )
 
 
 class Retargeter:
     def __init__(self, model=None):
         self.model = RobotModel() if model is None else model
-        self.bounds = Bounds(self.model.lower[self.model.thumb], self.model.upper[self.model.thumb])
+        self.bounds = Bounds(self.model.lower, self.model.upper)
         self.q = self.model.seed.copy()
         self.output_filter = OneEuro(*C.RETARGET_ANGLE_FILTER)
         self.has_previous = False
@@ -317,7 +316,7 @@ class Retargeter:
         fingers = self.model.finger_angles(local, previous)
         relative = local[[8, 12, 16, 20]] - local[4]
         thumb_pad = _checked_unit(directions[0] @ rotation)
-        return local[4:5], angles, relative, thumb_pad, fingers
+        return local[4:5], angles, relative, thumb_pad, fingers[self.model.finger_joints.ravel()], fingers
 
     @staticmethod
     def _term(value, jacobian, target, scale, weight, normalizer=1.0):
@@ -353,25 +352,30 @@ class Retargeter:
         )
         relative_term = self._term(
             values[2], jacobians[2], targets[2], 1.0,
-            C.RETARGET_THUMB_TO_FINGERTIPS_WEIGHT, C.STANDARD_PALM_SIZE,
+            C.RETARGET_FINGERTIP_VECTOR_WEIGHT, C.STANDARD_PALM_SIZE,
         )
         pad_term = self._term(
             values[3][None], jacobians[3][None], targets[3][None],
             1.0, C.RETARGET_THUMB_PAD_WEIGHT / 3,
         )
-        total = tip_loss + relative_term[0] + pad_term[0] + sum(
+        finger_term = self._term(
+            values[4], jacobians[4], targets[4][:, None], 1.0,
+            C.RETARGET_FINGER_ANGLE_WEIGHT,
+        )
+        total = tip_loss + relative_term[0] + pad_term[0] + finger_term[0] + sum(
             loss for loss, _ in thumb_terms
         )
         gradient = tip_gradient + sum(
-            (term[1] for term in thumb_terms), np.zeros(len(self.model.thumb))
-        ) + relative_term[1] + pad_term[1]
+            (term[1] for term in thumb_terms), np.zeros(len(self.model.names))
+        ) + relative_term[1] + pad_term[1] + finger_term[1]
         return (
             total,
             gradient,
             {
                 "thumb_tip": tip_loss,
                 **dict(zip(THUMB_ANGLE_NAMES, (term[0] for term in thumb_terms))),
-                "thumb_to_fingertips": relative_term[0],
+                "finger_angles": finger_term[0],
+                "fingertip_vectors": relative_term[0],
                 "thumb_pad": pad_term[0],
                 "total": total,
             },
@@ -383,7 +387,7 @@ class Retargeter:
             return None
         previous = self.q.copy() if self.has_previous else None
         targets = self._targets(points, previous, finger_pad_directions)
-        fixed, thumb = targets[4], self.model.thumb
+        initial = targets[5]
         cached_q, cached_value, evaluations, best = None, None, 0, None
 
         def evaluate(x):
@@ -392,8 +396,7 @@ class Retargeter:
                 if evaluations >= C.RETARGET_MAX_EVALUATIONS:
                     raise _EvaluationLimit
                 cached_q = np.asarray(x).copy()
-                q = fixed.copy()
-                q[thumb] = x
+                q = np.asarray(x).copy()
                 cached_value = self._losses(q, targets)
                 evaluations += 1
                 if np.isfinite(cached_value[0]) and np.isfinite(cached_value[1]).all():
@@ -403,7 +406,7 @@ class Retargeter:
             return cached_value[:2]
 
         try:
-            evaluate(fixed[thumb])
+            evaluate(initial)
             with warnings.catch_warnings():
                 warnings.filterwarnings(
                     "ignore",
@@ -412,7 +415,7 @@ class Retargeter:
                     module=r"scipy\.optimize\._slsqp_py",
                 )
                 minimize(
-                    evaluate, fixed[thumb], method="SLSQP", jac=True,
+                    evaluate, initial, method="SLSQP", jac=True,
                     bounds=self.bounds, options=self.options,
                 )
         except _EvaluationLimit:
