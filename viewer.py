@@ -1,4 +1,5 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
 import threading
 import time
 
@@ -263,16 +264,15 @@ let previewUrl=null;
 async function refresh(){{
   try{{
     const responses=await Promise.all([
-      fetch("/preview.jpg?t="+Date.now()),fetch("/status"),fetch("/losses"),
-      fetch("/human_angles"),fetch("/robot_angles")]);
-    const [previewBlob,status,losses,human,robot]=await Promise.all([
-      responses[0].blob(),...responses.slice(1).map(response=>response.text())]);
+      fetch("/preview.jpg?t="+Date.now()),fetch("/state")]);
+    const [previewBlob,state]=await Promise.all([
+      responses[0].blob(),responses[1].json()]);
     const nextUrl=URL.createObjectURL(previewBlob);
     previewImage.src=nextUrl;
     if(previewUrl!==null) URL.revokeObjectURL(previewUrl);
     previewUrl=nextUrl;
-    statusText.textContent=status;lossText.textContent=losses;
-    humanAngles.textContent=human;robotAngles.textContent=robot;
+    statusText.textContent=state.status;lossText.textContent=state.losses;
+    humanAngles.textContent=state.human_angles;robotAngles.textContent=state.robot_angles;
   }}catch(error){{console.debug("dashboard refresh failed",error)}}
   setTimeout(refresh,{round(1000 / WEB_FPS)});
 }}
@@ -284,14 +284,14 @@ refresh();
                 path = self.path.split("?", 1)[0]
                 if path == "/preview.jpg":
                     body, content_type = owner.preview, "image/jpeg"
-                elif path == "/status":
-                    body, content_type = owner.status.encode(), "text/plain; charset=utf-8"
-                elif path == "/losses":
-                    body, content_type = owner.loss_text.encode(), "text/plain; charset=utf-8"
-                elif path == "/human_angles":
-                    body, content_type = owner.human_angle_text.encode(), "text/plain; charset=utf-8"
-                elif path == "/robot_angles":
-                    body, content_type = owner.robot_angle_text.encode(), "text/plain; charset=utf-8"
+                elif path == "/state":
+                    body = json.dumps({
+                        "status": owner.status,
+                        "losses": owner.loss_text,
+                        "human_angles": owner.human_angle_text,
+                        "robot_angles": owner.robot_angle_text,
+                    }).encode()
+                    content_type = "application/json"
                 elif path == "/":
                     body, content_type = page, "text/html; charset=utf-8"
                 else:

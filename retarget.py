@@ -94,13 +94,6 @@ def compute_cmc_frame(points_world):
     return points[1].copy(), np.column_stack((x_axis, y_axis, z_axis))
 
 
-def human_retarget_points(points):
-    """Express tracking landmarks in the independent CMC retarget frame."""
-    points = np.asarray(points, float)
-    origin_world, R_world_from_cmc = compute_cmc_frame(points)
-    return (points - origin_world) @ R_world_from_cmc
-
-
 def _rotation(axis, angle):
     axis = np.asarray(axis, float)
     cross = np.array(((0, -axis[2], axis[1]), (axis[2], 0, -axis[0]), (-axis[1], axis[0], 0)))
@@ -306,7 +299,6 @@ class Retargeter:
         self.q = self.model.seed.copy()
         self.output_filter = OneEuro(*C.RETARGET_ANGLE_FILTER)
         self.has_previous = False
-        self.loss_terms = None
         self.options = {"ftol": C.RETARGET_FTOL, "disp": False}
         scales = np.asarray((C.RETARGET_THUMB_MCP_ANGLE_SCALE,
                              C.RETARGET_THUMB_IP_ANGLE_SCALE), float)
@@ -434,17 +426,16 @@ class Retargeter:
         output = np.radians(self.output_filter(np.degrees(candidate), timestamp))
         output = np.clip(output, self.model.lower, self.model.upper)
         losses = self._losses(output, targets)[2]
-        self.loss_terms = {
+        losses = {
             name: None if value is None else float(value)
             for name, value in losses.items()
         }
-        return output
+        return output, losses
 
     def pause(self):
         self.q = self.model.seed.copy()
         self.output_filter.reset()
         self.has_previous = False
-        self.loss_terms = None
 
 
 class RetargetWorker:
@@ -502,8 +493,7 @@ class RetargetWorker:
                 return
             with self.condition:
                 if self.running and current == self.generation and result is not None:
-                    losses = dict(getattr(self.retargeter, "loss_terms", None) or {})
-                    self.result = result, losses
+                    self.result = result
 
     def close(self):
         with self.condition:

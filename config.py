@@ -1,10 +1,7 @@
 from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parent
-# Experimental collision model: every collision uses the corresponding visual
-# STL with the same origin and scale. Switch back to hand.urdf to restore the
-# mixed convex-mesh/capsule collision model.
-URDF_PATH = _ROOT / "assets/mmhand/urdf/hand_visual_collision.urdf"
+URDF_PATH = _ROOT / "assets/mmhand/urdf/mmhand_collision_coacd.urdf"
 WILOR_ASSET_DIR = _ROOT / "input/wilor/assets"
 
 
@@ -29,16 +26,10 @@ STANDARD_PALM_SIZE = 0.086
 # 官方 MANUS Core SDK 3.1.1 Integrated runtime 及本项目薄封装。
 MANUS_SDK_VERSION = "3.1.1"
 MANUS_SDK_BRIDGE_PATH = _ROOT / "input/manus/assets/libmanus_sdk_bridge.so"
-# 可选兼容旧 MANUS ZMQ sender；默认输入不再使用它。
-MANUS_ENDPOINT = "tcp://127.0.0.1:8000"
 # bridge 的 CoordinateSystemVUH.unitScale=1.0，官方定义为 meter。
 MANUS_POSITION_SCALE_TO_M = 1.0
 # Maximum age of a MANUS frame, in seconds.
 MANUS_STALE_SECONDS = 0.20
-# legacy bridge 只发送 gloveId，不发送 Side。按实际设备 ID 填写，例如：
-# MANUS_GLOVE_ID_TO_HANDEDNESS = {"60f3738b": "Left", "8569617b": "Right"}
-# 若 transport 提供 NodeInfo，则代码优先使用 NodeInfo.side，不查此表。
-MANUS_GLOVE_ID_TO_HANDEDNESS = {}
 # Outward finger-pad axis in every MANUS Tip node's local frame.
 MANUS_PAD_LOCAL_AXIS = (0.0, 0.0, -1.0)
 

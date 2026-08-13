@@ -30,6 +30,10 @@ class InputFrame:
     finger_pad_directions: np.ndarray | None = None
     preview: np.ndarray | None = None
 
+    @classmethod
+    def empty(cls, timestamp, status, preview=None):
+        return cls(timestamp, None, None, False, status, preview=preview)
+
     def __post_init__(self):
         if self.points is None:
             if self.finger_pad_directions is not None:
@@ -77,8 +81,3 @@ def relative_hand(points, directions=None):
     if np.any(lengths < EPS):
         raise ValueError("Finger-pad directions must be nonzero")
     return normalized, local / lengths
-
-
-def relative_points(points):
-    """Return normalized standard-21 points in the wrist-local frame."""
-    return relative_hand(points)[0]

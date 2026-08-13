@@ -313,9 +313,7 @@ class WilorSource:
         self.frame_index += 1
         if self.detection is None:
             self._reset_filters()
-            image = preview(frame)
-            return InputFrame(timestamp, None, None, False, "WILOR WAITING",
-                             finger_pad_directions=None, preview=image)
+            return InputFrame.empty(timestamp, "WILOR WAITING", preview(frame))
         try:
             vertices, translation = self.reconstructor(frame, self.detection)
             points, directions, handedness = mesh_hand(
@@ -323,17 +321,19 @@ class WilorSource:
             )
         except ValueError as error:
             self._reset_filters()
-            image = preview(frame, self.detection)
-            return InputFrame(timestamp, None, None, False, f"WILOR INVALID: {error}",
-                             finger_pad_directions=None, preview=image)
+            return InputFrame.empty(
+                timestamp, f"WILOR INVALID: {error}", preview(frame, self.detection)
+            )
         try:
             points, directions = self._filter(
                 points, directions, handedness, timestamp
             )
         except ValueError:
             self._reset_filters()
-            return InputFrame(timestamp, None, None, False, "WILOR INVALID: direction filter",
-                              finger_pad_directions=None, preview=preview(frame, self.detection))
+            return InputFrame.empty(
+                timestamp, "WILOR INVALID: direction filter",
+                preview(frame, self.detection),
+            )
         image = preview(frame, self.detection, (
             vertices, translation, self.detection.handedness, self.faces
         ))

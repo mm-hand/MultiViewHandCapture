@@ -8,7 +8,7 @@ from config import MANUS_PAD_LOCAL_AXIS
 from input.frame import relative_hand
 
 
-# Official/legacy 25-node layout fallback. Non-thumb metacarpals 5/10/15/20
+# Official 25-node layout fallback. Non-thumb metacarpals 5/10/15/20
 # are deliberately omitted; Thumb Metacarpal (standard Thumb CMC) is retained.
 MANUS_TO_STANDARD21 = np.array(
     (0, 1, 2, 3, 4, 6, 7, 8, 9, 11, 12, 13, 14, 16, 17, 18, 19, 21, 22, 23, 24),

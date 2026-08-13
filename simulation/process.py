@@ -3,7 +3,6 @@
 import multiprocessing as mp
 import signal
 import time
-import traceback
 
 import numpy as np
 
@@ -58,7 +57,7 @@ def _run_simulation(
                     seen_generation = generation
 
             if not simulation.update(command):
-                _send_status(status, ("closed", "viewer"))
+                _send_status(status, ("closed",))
                 return
 
             # Do not try to catch up missed GUI frames. GraspSimulation keeps
@@ -70,17 +69,9 @@ def _run_simulation(
                     break
             else:
                 deadline = time.monotonic()
-        _send_status(status, ("closed", "parent"))
+        _send_status(status, ("closed",))
     except BaseException as error:
-        _send_status(
-            status,
-            (
-                "error",
-                type(error).__name__,
-                str(error),
-                traceback.format_exc(),
-            ),
-        )
+        _send_status(status, ("error", type(error).__name__, str(error)))
     finally:
         if simulation is not None:
             try:
@@ -130,21 +121,26 @@ class GraspSimulationProcess:
             daemon=True,
         )
         self._state = "starting"
-        self._remote_error = None
+        self._error = None
         self._closed = False
-        self._started = False
-        self._child_status = child_status
         try:
             self._process.start()
-            self._started = True
-            self._child_status.close()
-            self._child_status = None
+            child_status.close()
             self._wait_until_ready(float(startup_timeout))
         except BaseException:
+            child_status.close()
             self.close()
             raise
 
-    def _record_status(self, message):
+    def _read_status(self, timeout=0.0):
+        if self._status is None:
+            return
+        try:
+            if not self._status.poll(timeout):
+                return
+            message = self._status.recv()
+        except (EOFError, OSError):
+            return
         kind = message[0]
         if kind == "ready":
             self._state = "running"
@@ -152,34 +148,12 @@ class GraspSimulationProcess:
             self._state = "closed"
         elif kind == "error":
             self._state = "error"
-            self._remote_error = message[1:]
-
-    def _drain_status(self):
-        if self._status is None:
-            return
-        try:
-            while self._status.poll():
-                self._record_status(self._status.recv())
-        except (EOFError, OSError):
-            pass
-
-    def _drain_after_exit(self):
-        """Give the child status pipe a moment to expose its final message."""
-        if self._status is None:
-            return
-        try:
-            if self._status.poll(0.05):
-                self._record_status(self._status.recv())
-                self._drain_status()
-        except (EOFError, OSError):
-            pass
+            self._error = message[1:]
 
     def _raise_remote_error(self):
-        name, message, remote_traceback = self._remote_error
+        name, message = self._error
         detail = f"{name}: {message}" if message else name
-        raise RuntimeError(
-            f"SAPIEN simulation failed: {detail}\n{remote_traceback}"
-        )
+        raise RuntimeError(f"SAPIEN simulation failed: {detail}")
 
     def _wait_until_ready(self, timeout):
         deadline = time.monotonic() + timeout
@@ -189,14 +163,9 @@ class GraspSimulationProcess:
                 raise TimeoutError(
                     f"SAPIEN simulation did not start within {timeout:g}s"
                 )
-            try:
-                if self._status.poll(min(remaining, 0.05)):
-                    self._record_status(self._status.recv())
-            except EOFError:
-                pass
+            self._read_status(min(remaining, 0.05))
             if self._process.exitcode is not None and self._state == "starting":
-                self._drain_after_exit()
-            if self._process.exitcode is not None and self._state == "starting":
+                self._read_status(0.05)
                 raise RuntimeError(
                     "SAPIEN simulation exited during startup "
                     f"(exit code {self._process.exitcode})"
@@ -210,13 +179,13 @@ class GraspSimulationProcess:
         """Publish the newest command without waiting for physics or rendering."""
         if self._closed:
             return False
-        self._drain_status()
+        self._read_status()
         if self._state == "error":
             self._raise_remote_error()
         if self._state == "closed":
             return False
         if self._process.exitcode is not None:
-            self._drain_after_exit()
+            self._read_status(0.05)
             if self._state == "error":
                 self._raise_remote_error()
             if self._state == "closed":
@@ -246,17 +215,11 @@ class GraspSimulationProcess:
             return
         self._closed = True
         self._stop_event.set()
-        if self._started:
+        if self._process.pid is not None:
             self._process.join(_SHUTDOWN_TIMEOUT)
             if self._process.is_alive():
                 self._process.terminate()
                 self._process.join(_SHUTDOWN_TIMEOUT)
-            if self._process.is_alive():
-                self._process.kill()
-                self._process.join(_SHUTDOWN_TIMEOUT)
-        if self._child_status is not None:
-            self._child_status.close()
-            self._child_status = None
         if self._status is not None:
             self._status.close()
             self._status = None

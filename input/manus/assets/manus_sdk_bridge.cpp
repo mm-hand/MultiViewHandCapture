@@ -25,13 +25,11 @@ std::vector<RawFrame> g_latest_frames;
 uint64_t g_sequence = 0;
 bool g_initialized = false;
 std::atomic_bool g_connected{false};
-int g_last_code = 0;
 std::string g_last_error;
 
 void SetError(const char* operation, SDKReturnCode code) {
-    g_last_code = static_cast<int>(code);
     g_last_error = std::string(operation) + " failed (SDKReturnCode=" +
-                   std::to_string(g_last_code) + ")";
+                   std::to_string(static_cast<int>(code)) + ")";
 }
 
 void OnRawSkeletonStream(const SkeletonStreamInfo* const stream) {
@@ -118,7 +116,6 @@ int manus_bridge_initialize() {
         return -1;
     }
     g_initialized = true;
-    g_last_code = 0;
     g_last_error.clear();
     return 0;
 }
@@ -159,7 +156,6 @@ int manus_bridge_connect() {
     // WORLD positions should move using the best available MANUS tracking input.
     CoreSdk_SetRawSkeletonHandMotion(HandMotion_Auto);
     g_connected = true;
-    g_last_code = 0;
     g_last_error.clear();
     return 0;
 }
@@ -236,7 +232,6 @@ int manus_bridge_poll(ManusBridgeFrame* output) {
 }
 
 const char* manus_bridge_last_error() { return g_last_error.c_str(); }
-int manus_bridge_last_code() { return g_last_code; }
 
 void manus_bridge_shutdown() {
     if (!g_initialized) return;

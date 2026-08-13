@@ -1,7 +1,7 @@
 """MANUS Core 3.1.1 input."""
 
 import ctypes
-import ctypes.util
+from dataclasses import dataclass
 from pathlib import Path
 import threading
 import time
@@ -9,8 +9,6 @@ import time
 import numpy as np
 
 from config import (
-    MANUS_ENDPOINT,
-    MANUS_GLOVE_ID_TO_HANDEDNESS,
     MANUS_POSITION_SCALE_TO_M,
     MANUS_SDK_BRIDGE_PATH,
     MANUS_SDK_VERSION,
@@ -19,11 +17,6 @@ from config import (
 from input.frame import InputFrame
 from .adapter import MANUS_TO_STANDARD21, adapt_raw_skeleton, handedness_from_node_info
 
-_ZMQ_PULL = 7
-_ZMQ_DONTWAIT = 1
-_ZMQ_CONFLATE = 54
-_ZMQ_EAGAIN = 11
-_MAX_MESSAGE_BYTES = 32768
 _MAX_SDK_NODES = 64
 
 
@@ -50,6 +43,17 @@ class _SdkFrame(ctypes.Structure):
     )
 
 
+@dataclass(slots=True)
+class ManusPacket:
+    positions: np.ndarray
+    rotations_wxyz: np.ndarray
+    node_ids: list[int]
+    node_info: list[dict]
+    handedness: str | None
+    received_at: float
+    calibrated: bool | None = None
+
+
 def _sdk_frame_to_packet(frame, received_at):
     """Copy the C bridge ABI into Python without changing any transform."""
     count = int(frame.node_count)
@@ -72,19 +76,10 @@ def _sdk_frame_to_packet(frame, received_at):
                 "fingerJointType": int(node.finger_joint_type),
             }
         )
-    return {
-        "glove_id": str(frame.glove_id),
-        "positions": positions,
-        "rotations_wxyz": rotations,
-        "node_ids": node_ids,
-        "node_info": node_info,
-        "handedness": {1: "Left", 2: "Right"}.get(int(frame.side)),
-        "position_scale_to_m": 1.0,
-        "received_at": float(received_at),
-        "sdk_publish_time": int(frame.publish_time),
-        "coordinate_mode": "WORLD/GLOBAL",
-        "calibrated": None,
-    }
+    return ManusPacket(
+        positions, rotations, node_ids, node_info,
+        {1: "Left", 2: "Right"}.get(int(frame.side)), float(received_at),
+    )
 
 
 class OfficialSdkTransport:
@@ -118,7 +113,6 @@ class OfficialSdkTransport:
         self._lib.manus_bridge_poll.argtypes = (ctypes.POINTER(_SdkFrame),)
         self._lib.manus_bridge_poll.restype = ctypes.c_int
         self._lib.manus_bridge_last_error.restype = ctypes.c_char_p
-        self._lib.manus_bridge_last_code.restype = ctypes.c_int
         self._lib.manus_bridge_shutdown.restype = None
 
     def _error(self):
@@ -156,97 +150,6 @@ class OfficialSdkTransport:
             thread.join(timeout=3.0)
         if self._init_error is None:
             self._lib.manus_bridge_shutdown()
-
-
-def _normalize_glove_id(value):
-    return str(value).strip().lower().removeprefix("0x")
-
-
-def parse_legacy_bridge_message(message, received_at=None):
-    """Parse the deployed ``gloveId + 25*(xyz+xyzw)`` CSV protocol."""
-    text = message.decode("utf-8") if isinstance(message, bytes) else str(message)
-    fields = text.strip().split(",")
-    if len(fields) not in (176, 352):
-        raise ValueError(f"Unexpected MANUS bridge field count: {len(fields)}")
-    received_at = time.monotonic() if received_at is None else float(received_at)
-    packets = []
-    for offset in range(0, len(fields), 176):
-        glove_id = _normalize_glove_id(fields[offset])
-        values = np.asarray(fields[offset + 1 : offset + 176], dtype=float).reshape(25, 7)
-        if not np.isfinite(values).all():
-            raise ValueError("MANUS bridge frame contains non-finite values")
-        packets.append(
-            {
-                "glove_id": glove_id,
-                "positions": values[:, :3],
-                "rotations_wxyz": values[:, (6, 3, 4, 5)],
-                "received_at": received_at,
-                "coordinate_mode": "WORLD/GLOBAL",
-            }
-        )
-    return packets
-
-
-class LegacyZmqTransport:
-    """Small libzmq PULL wrapper, avoiding a mandatory pyzmq dependency."""
-
-    def __init__(self, endpoint=MANUS_ENDPOINT):
-        library = ctypes.util.find_library("zmq")
-        if library is None:
-            raise RuntimeError("libzmq is required for the MANUS bridge")
-        self._lib = ctypes.CDLL(library, use_errno=True)
-        self._configure_api()
-        self._context = self._lib.zmq_ctx_new()
-        if not self._context:
-            raise RuntimeError("Could not create MANUS ZMQ context")
-        self._socket = self._lib.zmq_socket(self._context, _ZMQ_PULL)
-        if not self._socket:
-            self._lib.zmq_ctx_term(self._context)
-            raise RuntimeError("Could not create MANUS ZMQ PULL socket")
-        conflation = ctypes.c_int(1)
-        if self._lib.zmq_setsockopt(
-            self._socket, _ZMQ_CONFLATE, ctypes.byref(conflation), ctypes.sizeof(conflation)
-        ) != 0:
-            self.close()
-            raise RuntimeError("Could not enable MANUS latest-frame conflation")
-        endpoint_bytes = endpoint.encode("utf-8")
-        if self._lib.zmq_connect(self._socket, endpoint_bytes) != 0:
-            self.close()
-            raise RuntimeError(f"Could not connect to MANUS bridge: {endpoint}")
-
-    def _configure_api(self):
-        void_p = ctypes.c_void_p
-        self._lib.zmq_ctx_new.restype = void_p
-        self._lib.zmq_ctx_term.argtypes = (void_p,)
-        self._lib.zmq_socket.argtypes = (void_p, ctypes.c_int)
-        self._lib.zmq_socket.restype = void_p
-        self._lib.zmq_setsockopt.argtypes = (void_p, ctypes.c_int, void_p, ctypes.c_size_t)
-        self._lib.zmq_connect.argtypes = (void_p, ctypes.c_char_p)
-        self._lib.zmq_recv.argtypes = (void_p, void_p, ctypes.c_size_t, ctypes.c_int)
-        self._lib.zmq_close.argtypes = (void_p,)
-        self._lib.zmq_errno.restype = ctypes.c_int
-
-    def read(self):
-        buffer = ctypes.create_string_buffer(_MAX_MESSAGE_BYTES)
-        size = self._lib.zmq_recv(self._socket, buffer, len(buffer), _ZMQ_DONTWAIT)
-        if size < 0:
-            error = self._lib.zmq_errno()
-            if error == _ZMQ_EAGAIN:
-                return None
-            raise RuntimeError(f"MANUS bridge receive failed (ZMQ errno {error})")
-        if size >= len(buffer):
-            raise ValueError("MANUS bridge message exceeds receive buffer")
-        return parse_legacy_bridge_message(buffer.raw[:size])
-
-    def close(self):
-        socket, context = getattr(self, "_socket", None), getattr(self, "_context", None)
-        self._socket = self._context = None
-        if socket:
-            self._lib.zmq_close(socket)
-        if context:
-            self._lib.zmq_ctx_term(context)
-
-
 class ManusSource:
     """Read fresh WORLD Raw Skeleton positions as common input frames."""
 
@@ -255,19 +158,10 @@ class ManusSource:
         transport=None,
         *,
         stale_seconds=MANUS_STALE_SECONDS,
-        glove_id_to_handedness=None,
         clock=time.monotonic,
     ):
         self.transport = OfficialSdkTransport() if transport is None else transport
         self.stale_seconds = float(stale_seconds)
-        self.glove_id_to_handedness = {
-            _normalize_glove_id(key): value
-            for key, value in (
-                MANUS_GLOVE_ID_TO_HANDEDNESS
-                if glove_id_to_handedness is None
-                else glove_id_to_handedness
-            ).items()
-        }
         self.clock = clock
         self.last_received_at = None
         self._waiting_reported = False
@@ -281,13 +175,10 @@ class ManusSource:
         print("CMC/root frame implementation: compute_cmc_frame; origin=point1; rotation=R_world_from_cmc")
 
     def _handedness(self, packet):
-        explicit = packet.get("handedness")
+        explicit = packet.handedness
         if explicit in ("Left", "Right"):
             return explicit
-        semantic = handedness_from_node_info(packet.get("node_info"))
-        if semantic is not None:
-            return semantic
-        return self.glove_id_to_handedness.get(_normalize_glove_id(packet.get("glove_id", "")))
+        return handedness_from_node_info(packet.node_info)
 
     def _select_packet(self, packets):
         packets = packets if isinstance(packets, (list, tuple)) else [packets]
@@ -297,14 +188,7 @@ class ManusSource:
         return packets[0] if packets else None
 
     def _empty_frame(self, timestamp, status):
-        return InputFrame(
-            timestamp=timestamp,
-            points=None,
-            handedness=None,
-            ready=False,
-            status=status,
-            preview=None,
-        )
+        return InputFrame.empty(timestamp, status)
 
     def read(self):
         now = self.clock()
@@ -326,36 +210,33 @@ class ManusSource:
         packet = self._select_packet(packets)
         if packet is None:
             return self._empty_frame(now, "MANUS WAITING")
-        received_at = float(packet.get("received_at", now))
+        received_at = packet.received_at
         if now - received_at > self.stale_seconds:
             self.last_received_at, self._stale_reported = received_at, True
             return self._empty_frame(now, "MANUS STALE")
-        if packet.get("coordinate_mode", "WORLD/GLOBAL") != "WORLD/GLOBAL":
-            return self._empty_frame(now, "MANUS INVALID · bridge is not WORLD/GLOBAL")
-
         handedness = self._handedness(packet)
         try:
             adapted = adapt_raw_skeleton(
-                packet["positions"],
-                rotations_wxyz=packet["rotations_wxyz"],
-                node_info=packet.get("node_info"),
-                node_ids=packet.get("node_ids"),
-                scale_to_m=packet.get("position_scale_to_m", MANUS_POSITION_SCALE_TO_M),
+                packet.positions,
+                rotations_wxyz=packet.rotations_wxyz,
+                node_info=packet.node_info,
+                node_ids=packet.node_ids,
+                scale_to_m=MANUS_POSITION_SCALE_TO_M,
             )
         except (KeyError, TypeError, ValueError) as error:
             return self._empty_frame(now, f"MANUS INVALID · {error}")
 
         self.last_received_at, self._stale_reported = received_at, False
         self._waiting_reported = False
-        calibrated = packet.get("calibrated")
+        calibrated = packet.calibrated
         ready = handedness in ("Left", "Right") and calibrated is not False
         calibration_text = "calibration unknown" if calibrated is None else (
             "calibrated" if calibrated else "not calibrated"
         )
         status = f"MANUS TRACKING · {handedness or 'unknown side'} · {calibration_text}"
         if not self._first_frame_reported:
-            print(f"MANUS raw node count: {np.asarray(packet['positions']).shape[0]}")
-            print(f"MANUS handedness: {handedness or 'Unknown (configure glove ID or provide NodeInfo)'}")
+            print(f"MANUS raw node count: {len(packet.positions)}")
+            print(f"MANUS handedness: {handedness or 'Unknown (SDK side/NodeInfo unavailable)'}")
             print(f"MANUS mapping source: {adapted.mapping_source}")
             print(f"MANUS -> Standard21 mapping: {adapted.mapping.tolist()}")
             self._first_frame_reported = True

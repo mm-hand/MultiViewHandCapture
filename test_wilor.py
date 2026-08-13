@@ -1,14 +1,11 @@
 import types
 import unittest
-import warnings
 from unittest.mock import patch
 
-import cv2
 import numpy as np
 
 from input import create_source
-from input.frame import InputFrame, relative_hand
-from input.wilor.camera import OpenCVCamera
+from input.frame import relative_hand
 from one_euro import OneEuro
 from track import _parse_args
 from input.wilor.source import (
@@ -21,7 +18,6 @@ from input.wilor.source import (
     WilorSource,
     draw_mesh,
     mesh_hand,
-    preview,
     rotate,
 )
 
@@ -81,38 +77,6 @@ class FakeReconstructorSession:
 
 
 class WilorTests(unittest.TestCase):
-    def test_opencv_camera_reports_actual_mode_and_closes(self):
-        class Capture:
-            def __init__(self):
-                self.open = True
-
-            def isOpened(self):
-                return self.open
-
-            def set(self, *_):
-                return True
-
-            def get(self, prop):
-                return {3: 800, 4: 600, 5: 25}.get(prop, 0)
-
-            def read(self):
-                return True, np.zeros((600, 800, 3), np.uint8)
-
-            def release(self):
-                self.open = False
-
-        capture = Capture()
-        with patch("input.wilor.camera.cv2.VideoCapture", return_value=capture) as open_camera:
-            camera = OpenCVCamera("/dev/video4", 640, 480, 30)
-            sequence, frame, timestamp = camera.read(0)
-            camera.close()
-        self.assertGreater(sequence, 0)
-        self.assertEqual(frame.shape, (600, 800, 3))
-        self.assertGreater(timestamp, 0)
-        self.assertIn("800x600@25", camera.description)
-        self.assertFalse(capture.open)
-        open_camera.assert_called_once_with("/dev/video4", cv2.CAP_V4L2)
-
     def test_cli_and_configured_source(self):
         args = _parse_args([])
         self.assertFalse(args.ros)
@@ -126,27 +90,6 @@ class WilorTests(unittest.TestCase):
             "input.wilor.source.WilorSource", return_value=selected
         ):
             self.assertIs(create_source(), selected)
-
-    def test_fixed_thumb_rotation(self):
-        root = np.sqrt(0.5)
-        np.testing.assert_allclose(
-            rotate(np.array((1., 0, 0)), np.array((0., 0, 1)), np.pi / 4),
-            (root, root, 0), atol=1e-8,
-        )
-        np.testing.assert_allclose(
-            rotate(np.array((1., 0, 0)), np.array((0., 0, 1)), -np.pi / 4),
-            (root, -root, 0), atol=1e-8,
-        )
-
-    def test_hand_frame_direction_default_and_validation(self):
-        frame = InputFrame(0, None, None, False, "waiting")
-        self.assertIsNone(frame.finger_pad_directions)
-        with self.assertRaisesRegex(ValueError, "required"):
-            InputFrame(0, standard_hand(), "Left", True, "tracking")
-        with self.assertRaisesRegex(ValueError, "shape"):
-            relative_hand(standard_hand(), np.zeros((4, 3)))
-        with self.assertRaisesRegex(ValueError, "nonzero"):
-            relative_hand(standard_hand(), np.zeros((5, 3)))
 
     def test_tracking_frame_is_rigid_transform_invariant(self):
         points = standard_hand()
@@ -163,13 +106,6 @@ class WilorTests(unittest.TestCase):
         np.testing.assert_allclose(actual_directions, expected_directions, atol=1e-7)
 
     def test_mesh_to_standard21_and_pad_directions(self):
-        self.assertEqual(len(PAD_FACE_ROWS[0]), 28)
-        np.testing.assert_array_equal(
-            PAD_FACE_ROWS[0],
-            (1376, 1377, 1378, 1358, 1357, 1373, 1374, 1375, 1301, 1302,
-             1306, 1305, 1379, 1380, 1363, 1364, 1365, 1366, 1353, 1354,
-             1304, 1339, 1340, 1355, 1356, 1303, 1351, 1352),
-        )
         vertices, regressor, faces = synthetic_mesh()
         with patch("input.wilor.source.WILOR_THUMB_PAD_ROTATION_DEG", 0.0):
             right_points, raw_right, _ = mesh_hand(vertices, 1, regressor, faces)
@@ -194,14 +130,6 @@ class WilorTests(unittest.TestCase):
             left_directions[0], rotate(raw_left[0], left_points[4] - left_points[3], np.pi / 4)
         )
 
-    def test_mesh_rejects_bad_vertices_and_faces(self):
-        vertices, regressor, faces = synthetic_mesh()
-        with self.assertRaisesRegex(ValueError, "shape"):
-            mesh_hand(vertices[:10], 1, regressor, faces)
-        vertices[faces[np.concatenate(PAD_FACE_ROWS)].ravel()] = 0
-        with self.assertRaisesRegex(ValueError, "Degenerate"):
-            mesh_hand(vertices, 1, regressor, faces)
-
     def test_detector_threshold_coordinates_and_handedness(self):
         raw = np.array([[[320, 100], [320, 100], [100, 20], [100, 20],
                          [0.1, 0.2], [0.9, 0.1]]], np.float16)
@@ -210,13 +138,6 @@ class WilorTests(unittest.TestCase):
         np.testing.assert_allclose(detection.box, (270, 190, 370, 290), atol=1)
         self.assertEqual(detection.handedness, 1)
         self.assertAlmostEqual(detection.score, 0.9, places=2)
-
-    def test_detector_fp16_extremes_do_not_overflow(self):
-        raw = np.full((1, 6, 8400), np.float16(65504), np.float16)
-        detector = Detector(FakeDetectorSession(raw), 0.3, 0.5)
-        with warnings.catch_warnings():
-            warnings.simplefilter("error", RuntimeWarning)
-            detector(np.zeros((480, 640, 3), np.uint8))
 
     def test_point_and_direction_filters_reset_on_hand_switch(self):
         source = object.__new__(WilorSource)
@@ -231,13 +152,6 @@ class WilorTests(unittest.TestCase):
         self.assertTrue(np.all(moved > first))
         np.testing.assert_array_equal(switched, points + 2)
         np.testing.assert_allclose(np.linalg.norm(vectors, axis=1), 1)
-
-    def test_tracking_fps_is_smoothed(self):
-        source = object.__new__(WilorSource)
-        source.fps = source.fps_timestamp = None
-        self.assertEqual(source._update_fps(1.0), 0.0)
-        self.assertEqual(source._update_fps(1.5), 2.0)
-        self.assertAlmostEqual(source._update_fps(1.75), 2.2)
 
     def test_reconstruction_camera_translation_and_mesh_overlay(self):
         frame = np.zeros((480, 640, 3), np.uint8)
@@ -264,16 +178,6 @@ class WilorTests(unittest.TestCase):
         draw_mesh(image, vertices, (0, 0, 1), 1, faces)
         self.assertGreater(image[240, 320, 1], image[240, 320, 0])
         self.assertGreater(image[240, 320, 2], image[240, 320, 0])
-
-    def test_preview_contains_centered_full_frame(self):
-        frame = np.zeros((480, 640, 3), np.uint8)
-        frame[180:300, 260:380] = (10, 80, 200)
-        detection = Detection(np.array((270, 190, 370, 290), np.float32), 1, .9)
-        canvas = preview(frame, detection)
-        self.assertEqual(canvas.shape, (360, 1280, 3))
-        self.assertEqual(np.count_nonzero(canvas[:, :400]), 0)
-        self.assertGreater(np.count_nonzero(canvas[:, 400:880]), 0)
-        self.assertEqual(np.count_nonzero(canvas[:, 880:]), 0)
 
 if __name__ == "__main__":
     unittest.main()

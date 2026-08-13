@@ -69,10 +69,10 @@ RETARGET_THUMB_TO_FINGERTIPS_WEIGHT = 1.0
 ```
 
 For MANUS, place/build the bundled Core SDK bridge as described in
-`input/manus/assets/README.md`, then set `INPUT_SOURCE = "manus"`. If the SDK
-does not provide handedness, map glove IDs in `MANUS_GLOVE_ID_TO_HANDEDNESS`.
+`input/manus/assets/README.md`, then set `INPUT_SOURCE = "manus"`.
 `MANUS_PAD_LOCAL_AXIS` selects the outward pad axis in every Tip node's local
-frame and defaults to `(0, 0, -1)`.
+frame and defaults to `(0, 0, -1)`. Handedness comes directly from the SDK
+frame or its NodeInfo topology.
 
 ## Running
 
@@ -159,6 +159,15 @@ direction with the local `-Z` direction of MMHand's `5-tip_Link`. The dashboard
 reports every weighted term in real time. Final robot angles have a separate
 One Euro filter and are clipped to the limits read from the MMHand URDF.
 
+## Robot assets
+
+The robot model is `assets/mmhand/urdf/mmhand_collision_coacd.urdf`. It and its
+27 visual meshes plus 162 convex collision meshes come from
+[`mm-hand/structure`](https://github.com/mm-hand/structure) commit
+`04eb24bedc300419d8556de1e3848c6d4e344d4e`. This repository adds five fixed,
+geometry-free virtual fingertip links used by retargeting. Every STL is tracked
+with Git LFS, so `git lfs pull` is required after cloning.
+
 ## ROS 2
 
 `python track.py --ros` publishes `std_msgs/msg/Float32MultiArray`:
@@ -189,7 +198,7 @@ input/
     assets/              ONNX/MANO data and license notices
   manus/
     adapter.py          25-to-21 mapping and quaternion pad directions
-    source.py           official SDK and optional legacy transport
+    source.py           official SDK transport and common-frame source
     assets/              SDK bridge, headers, library, and documentation
 assets/mmhand/           MMHand URDF, meshes, and licenses
 config.py                all runtime settings and public ROS constants
