@@ -19,19 +19,24 @@ def _parse_args(argv=None):
 
 def main():
     args = _parse_args()
-    retargeter = Retargeter()
     source = create_source()
+    retargeter = Retargeter()
     viewer = Viewer(retargeter.model)
     ros = RosOutput() if args.ros else None
     worker = RetargetWorker(retargeter)
     simulation = None
+    pending_view_output = None
     try:
         if args.sim:
             from simulation.process import GraspSimulationProcess
 
             simulation = GraspSimulationProcess()
         while True:
+            request_started = time.monotonic()
             frame = source.read()
+            normalization_latency_ms = (
+                time.monotonic() - request_started
+            ) * 1000.0
             if frame is None:
                 if simulation is not None and not simulation.update(None):
                     break
@@ -41,15 +46,30 @@ def main():
                 ros.hand(frame)
             if frame.ready and frame.handedness == "Left":
                 worker.submit(
-                    frame.points, frame.timestamp, frame.finger_pad_directions
+                    frame.points, frame.timestamp, frame.finger_pad_directions,
+                    frame.initial_joint_angles,
                 )
             else:
                 worker.pause()
+                pending_view_output = None
             output = worker.poll()
-            robot, losses = (None, None) if output is None else output
+            robot = None if output is None else output[0]
             if ros is not None and robot is not None:
                 ros.joints(np.degrees(robot))
-            viewer.update(frame, robot, losses)
+            if output is not None:
+                pending_view_output = output
+            view_robot, view_losses, view_latency, view_timings = (
+                (None, None, None, None)
+                if pending_view_output is None else pending_view_output
+            )
+            displayed = viewer.update(
+                frame, view_robot, view_losses,
+                normalization_latency_ms=normalization_latency_ms,
+                retarget_latency_ms=view_latency,
+                retarget_timings_ms=view_timings,
+            )
+            if displayed:
+                pending_view_output = None
             if simulation is not None and not simulation.update(robot):
                 break
     except KeyboardInterrupt:

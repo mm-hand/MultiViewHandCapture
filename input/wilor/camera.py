@@ -38,7 +38,9 @@ class OpenCVCamera:
                 return
             with self.condition:
                 self.frame = frame
-                self.timestamp = time.perf_counter()
+                # Use the common monotonic acquisition clock consumed by the
+                # input and output One Euro filters.
+                self.timestamp = time.monotonic()
                 self.sequence += 1
                 self.condition.notify_all()
 

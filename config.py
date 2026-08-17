@@ -7,7 +7,11 @@ WILOR_ASSET_DIR = _ROOT / "input/wilor/assets"
 
 # Input -----------------------------------------------------------------------
 
-INPUT_SOURCE = "wilor"  # "wilor" or "manus"
+INPUT_SOURCE = "manus"  # "wilor" or "manus"
+STANDARD_PALM_SIZE = 0.086
+
+# WILOR ------------------------------------------------------------------------
+
 CAMERA_DEVICE = "/dev/video4"  # V4L2 index or /dev/videoN path
 CAMERA_WIDTH, CAMERA_HEIGHT, CAMERA_FPS = 640, 480, 30
 WILOR_DEVICE_ID = 0
@@ -18,20 +22,31 @@ WILOR_CROP_FACTOR = 2.0
 WILOR_THUMB_PAD_ROTATION_DEG = 45.0
 WILOR_POINT_FILTER = (0.5, 1.0, 1.0)
 WILOR_DIRECTION_FILTER = (0.5, 0.25, 1.0)
-STANDARD_PALM_SIZE = 0.086
-
 
 # MANUS ------------------------------------------------------------------------
 
 # 官方 MANUS Core SDK 3.1.1 Integrated runtime 及本项目薄封装。
 MANUS_SDK_VERSION = "3.1.1"
 MANUS_SDK_BRIDGE_PATH = _ROOT / "input/manus/assets/libmanus_sdk_bridge.so"
+# Per-glove official calibration blobs created by the terminal calibration
+# wizard. Runtime files in this directory are ignored by git.
+MANUS_CALIBRATION_DIR = _ROOT / "input/manus/calibrations"
+# How long track.py waits for a connected Left glove before calibration gating.
+MANUS_CALIBRATION_CONNECT_TIMEOUT = 60.0
 # bridge 的 CoordinateSystemVUH.unitScale=1.0，官方定义为 meter。
 MANUS_POSITION_SCALE_TO_M = 1.0
+# Fixed gain applied to MANUS Thumb PIPStretch/DIPStretch before retargeting.
+MANUS_THUMB_PIP_DIP_SCALE = 1.5
 # Maximum age of a MANUS frame, in seconds.
 MANUS_STALE_SECONDS = 0.20
+# Official Core raw-skeleton pinch compensation. The SDK documents this for
+# MetaGlove; keep it switchable so the same poses can be compared with False.
+MANUS_PINCH_COMPENSATION = True
 # Outward finger-pad axis in every MANUS Tip node's local frame.
 MANUS_PAD_LOCAL_AXIS = (0.0, 0.0, -1.0)
+# Thumb-pad alignment around the palm-local Thumb IP-to-TIP axis. The adapter
+# applies a positive angle for Left and a negative angle for Right.
+MANUS_THUMB_PAD_ROTATION_DEG = 30.0
 
 
 # MMHand joint mapping ---------------------------------------------------------
@@ -66,20 +81,20 @@ ROBOT_JOINT_NAMES = (
 RETARGET_THUMB_TIP_SCALE = 1.0
 # 掌原点到拇指尖位置误差的损失权重。
 RETARGET_THUMB_TIP_WEIGHT = 1.0
-# 人手拇指 MCP/IP 无符号正角的独立缩放及 MMHand J18/J19 损失权重。
-RETARGET_THUMB_MCP_ANGLE_SCALE = 2.0
-RETARGET_THUMB_IP_ANGLE_SCALE = 3.0
-RETARGET_THUMB_MCP_ANGLE_WEIGHT = 1.0
-RETARGET_THUMB_IP_ANGLE_WEIGHT = 1.0
+# 拇指链第一/第二弯曲分别到 MMHand J18/J19 的角度损失。
+RETARGET_THUMB_PROXIMAL_BEND_WEIGHT = 1.5
+RETARGET_THUMB_DISTAL_BEND_WEIGHT = 1.5
 # 四指关节角和拇指尖到四指尖相对向量的损失权重。
 RETARGET_FINGER_ANGLE_WEIGHT = 1.0
 RETARGET_FINGERTIP_VECTOR_WEIGHT = 1.0
 # Human-to-MMHand thumb pad direction loss weight.
 RETARGET_THUMB_PAD_WEIGHT = 2.0
+# The four non-thumb pad directions share this one residual weight.
+RETARGET_FINGER_PAD_WEIGHT = 0.0
 # 最终 21 个 MMHand 输出角的 One Euro 参数，角度单位 degree。
 RETARGET_ANGLE_FILTER = (1.0, 0.02, 1.0)
 # 每帧最多计算的不同 SLSQP 关节候选数；超限时采用最低损失候选。
-RETARGET_MAX_EVALUATIONS = 30
+RETARGET_MAX_EVALUATIONS = 15
 # SLSQP 的目标和步长停止精度。
 RETARGET_FTOL = 3e-5
 
@@ -104,4 +119,4 @@ VIEW_PORTS = (
     8082,  # 第 2 项：MMHand Viser 端口。
 )
 # Dashboard JPEG 和状态文本的最大刷新频率，单位 Hz。
-WEB_FPS = 15
+WEB_FPS = 30

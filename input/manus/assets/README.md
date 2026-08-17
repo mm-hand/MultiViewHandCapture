@@ -33,6 +33,11 @@ WORLD/GLOBAL frame. It calls
 `CoreSdk_GetRawSkeletonNodeInfoArray()` for every returned topology; the fixed
 25-row layout is only an adapter fallback/test reference.
 
+The wrapper also exposes the official Integrated glove-calibration sequence:
+step discovery, start/run/stop/finish, and calibration blob import/export.
+`track.py` uses these calls through `input/manus/calibration.py` before any
+tracking UI or retargeting is started.
+
 Runtime prerequisites for Integrated mode:
 
 - an SDK Integrated feature on the connected MANUS license key;

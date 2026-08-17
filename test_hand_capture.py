@@ -16,12 +16,17 @@ from config import (
     ROBOT_LAYOUT,
     ROBOT_TOPIC,
 )
-from input.frame import InputFrame, relative_hand
+from input.frame import (
+    InitialJointAngles, InputFrame, initial_joint_angles_from_points, relative_hand,
+)
 from retarget import (
     Retargeter, RetargetWorker, RobotModel, compute_cmc_frame,
 )
 from ros import RosOutput
-from viewer import _arrow_points, _loss_text
+from viewer import (
+    _arrow_points, _latency_text, _loss_text, _render_time_text,
+    _timing_breakdown_text,
+)
 
 PAD_DIRECTIONS = np.tile((0.0, 0.0, -1.0), (5, 1))
 
@@ -41,6 +46,7 @@ class RetargetTests(unittest.TestCase):
     def setUpClass(cls):
         cls.model = RobotModel()
         cls.points = hand()
+        cls.angles = initial_joint_angles_from_points(cls.points)
 
     def test_robot_contract_and_fingertip_frames(self):
         model = self.model
@@ -56,20 +62,40 @@ class RetargetTests(unittest.TestCase):
             np.linalg.norm(arrows[:, 1] - points, axis=1), .025, atol=1e-8
         )
 
+    def test_initial_joint_angle_contract(self):
+        copied = self.angles.copy()
+        self.assertIsNot(copied.four_fingers, self.angles.four_fingers)
+        self.assertIsNot(copied.thumb_bends, self.angles.thumb_bends)
+        for four, thumb in (
+            (np.zeros((3, 4)), np.zeros(2)),
+            (np.zeros((4, 4)), np.zeros(3)),
+            (np.full((4, 4), np.nan), np.zeros(2)),
+        ):
+            with self.assertRaises(ValueError):
+                InitialJointAngles(four, thumb)
+        with self.assertRaisesRegex(ValueError, "require initial"):
+            InputFrame(
+                0.0, self.points, "Left", True, "TRACKING",
+                finger_pad_directions=PAD_DIRECTIONS,
+            )
+
     def test_frames_and_direct_fingers(self):
         origin, rotation = compute_cmc_frame(self.points)
         np.testing.assert_allclose(origin, self.points[1])
         np.testing.assert_allclose(rotation.T @ rotation, np.eye(3), atol=1e-12)
-        local = (self.points - origin) @ rotation
-        q = self.model.finger_angles(local)
+        q = self.model.initial_angle_targets(self.angles)
         self.assertTrue(np.isfinite(q).all())
         self.assertTrue(np.all((q >= self.model.lower) & (q <= self.model.upper)))
-        np.testing.assert_allclose(q[self.model.finger_joints[:, 2:]], 0, atol=1e-12)
+        indices = self.model.finger_joints
+        np.testing.assert_allclose(
+            q[indices[:, 1:]], self.model.lower[indices[:, 1:]], atol=1e-12
+        )
 
     def test_analytic_jacobians_and_loss_gradient(self):
         q = (self.model.lower + self.model.upper) / 2
         values, jacobians = self.model.features(q)
-        np.testing.assert_array_equal(values[1].ravel(), q[18:20])
+        np.testing.assert_allclose(values[1].ravel(), q[18:20])
+        np.testing.assert_array_equal(jacobians[1][:, 0, 18:20], np.eye(2))
         numeric = [np.empty_like(item) for item in jacobians]
         step = 1e-6
         for column, joint in enumerate(range(len(q))):
@@ -84,7 +110,8 @@ class RetargetTests(unittest.TestCase):
 
         retargeter = Retargeter(self.model)
         targets = retargeter._targets(
-            self.points, finger_pad_directions=PAD_DIRECTIONS
+            self.points, finger_pad_directions=PAD_DIRECTIONS,
+            initial_joint_angles=self.angles,
         )
         loss, gradient, _ = retargeter._losses(q, targets)
         numeric = np.empty(len(q))
@@ -99,29 +126,36 @@ class RetargetTests(unittest.TestCase):
         self.assertTrue(np.isfinite(loss))
         np.testing.assert_allclose(gradient, numeric, atol=1e-6, rtol=1e-5)
 
-    def test_joint_initial_guess_and_coupled_targets(self):
+    def test_joint_initial_guess_and_independent_targets(self):
         retargeter = Retargeter(self.model)
+        cold = retargeter._targets(
+            self.points, finger_pad_directions=PAD_DIRECTIONS,
+            initial_joint_angles=self.angles,
+        )[5]
+        np.testing.assert_allclose(
+            cold[18:20],
+            np.clip(self.angles.thumb_bends, self.model.lower[18:20], self.model.upper[18:20]),
+        )
         retargeter.q[self.model.thumb] = .5 * (
             self.model.lower[self.model.thumb] + self.model.upper[self.model.thumb]
         )
         retargeter.has_previous = True
         targets = retargeter._targets(
-            self.points, retargeter.q, PAD_DIRECTIONS
+            self.points, retargeter.q, PAD_DIRECTIONS, self.angles
         )
         initial = targets[5]
         np.testing.assert_array_equal(
             initial[self.model.finger_joints.ravel()], targets[4]
         )
-        np.testing.assert_array_equal(
-            initial[self.model.thumb], retargeter.q[self.model.thumb]
-        )
+        np.testing.assert_array_equal(initial[[16, 17, 20]], retargeter.q[[16, 17, 20]])
+        np.testing.assert_allclose(initial[18:20], cold[18:20])
         _, jacobians = self.model.features(initial)
         relative_jacobian = jacobians[2]
         self.assertTrue(np.any(relative_jacobian[..., :16]))
         self.assertTrue(np.any(relative_jacobian[..., 16:]))
 
         before = retargeter._losses(initial, targets)[2]
-        retargeter.solve(self.points, 0.0, PAD_DIRECTIONS)
+        retargeter.solve(self.points, 0.0, PAD_DIRECTIONS, self.angles)
         after = retargeter._losses(retargeter.q, targets)[2]
         self.assertLess(after["total"], before["total"])
         self.assertLess(after["fingertip_vectors"], before["fingertip_vectors"])
@@ -148,6 +182,45 @@ class RetargetTests(unittest.TestCase):
         self.assertTrue(np.any(vector_gradient[:16]))
         self.assertTrue(np.any(vector_gradient[16:]))
 
+    def test_four_finger_flexion_uses_urdf_lower_as_human_zero(self):
+        index = self.model.finger_joints[0]
+        four = self.angles.four_fingers.copy()
+        four[0] = (0.0, 0.0, np.radians(30), np.radians(40))
+        angles = InitialJointAngles(four, self.angles.thumb_bends)
+        mapped = self.model.initial_angle_targets(angles)
+        self.assertAlmostEqual(mapped[index[1]], self.model.lower[index[1]])
+        self.assertAlmostEqual(
+            mapped[index[2]], self.model.lower[index[2]] + np.radians(30)
+        )
+        self.assertAlmostEqual(
+            mapped[index[3]], self.model.lower[index[3]] + np.radians(40)
+        )
+
+    def test_thumb_bends_are_independent_and_clipped(self):
+        retargeter = Retargeter(self.model)
+        angles = InitialJointAngles(
+            self.angles.four_fingers, np.radians((30.0, 400.0))
+        )
+        mapped = self.model.initial_angle_targets(angles)
+        self.assertAlmostEqual(mapped[18], np.radians(30.0))
+        self.assertAlmostEqual(mapped[19], self.model.upper[19])
+        targets = retargeter._targets(
+            self.points, finger_pad_directions=PAD_DIRECTIONS,
+            initial_joint_angles=angles,
+        )
+        np.testing.assert_allclose(
+            targets[1].ravel(), mapped[18:20]
+        )
+        changed = InitialJointAngles(
+            self.angles.four_fingers, np.radians((45.0, 400.0))
+        )
+        changed_target = retargeter._targets(
+            self.points, finger_pad_directions=PAD_DIRECTIONS,
+            initial_joint_angles=changed,
+        )[1].ravel()
+        self.assertNotEqual(changed_target[0], targets[1].ravel()[0])
+        self.assertEqual(changed_target[1], targets[1].ravel()[1])
+
     def test_thumb_pad_loss_and_solve(self):
         target_q = self.model.seed.copy()
         thumb = self.model.thumb
@@ -158,17 +231,22 @@ class RetargetTests(unittest.TestCase):
         _, rotation = compute_cmc_frame(self.points)
         directions = np.tile(target @ rotation.T, (5, 1))
         with patch("retarget.C.RETARGET_THUMB_PAD_WEIGHT", 0.0):
-            baseline, _ = Retargeter(self.model).solve(self.points, 0.0, directions)
+            baseline, _ = Retargeter(self.model).solve(
+                self.points, 0.0, directions, self.angles
+            )
         with patch("retarget.C.RETARGET_THUMB_PAD_WEIGHT", .25):
             retargeter = Retargeter(self.model)
-            aligned, losses = retargeter.solve(self.points, 0.0, directions)
+            aligned, losses = retargeter.solve(
+                self.points, 0.0, directions, self.angles
+            )
         baseline_pad = self.model.fingertip_pads(baseline)[1][0] @ self.model.palm_frame
         aligned_pad = self.model.fingertip_pads(aligned)[1][0] @ self.model.palm_frame
         self.assertGreater(aligned_pad @ target, baseline_pad @ target)
         self.assertEqual(
             tuple(losses),
-            ("thumb_tip", "thumb_mcp_angle", "thumb_ip_angle",
-             "finger_angles", "fingertip_vectors", "thumb_pad", "total"),
+            ("thumb_tip", "thumb_proximal_bend", "thumb_distal_bend",
+             "finger_angles", "fingertip_vectors", "thumb_pad",
+             "finger_pads", "total"),
         )
         self.assertAlmostEqual(
             sum(value for name, value in losses.items() if name != "total"),
@@ -181,14 +259,41 @@ class RetargetTests(unittest.TestCase):
         for bad in (np.zeros((20, 3)), np.full((21, 3), np.nan)):
             self.assertIsNone(Retargeter(self.model).solve(bad, finger_pad_directions=PAD_DIRECTIONS))
 
+    def test_four_finger_pad_residual_has_shared_non_thumb_gradient(self):
+        target_q = self.model.seed.copy()
+        indices = self.model.finger_joints.ravel()
+        target_q[indices] = self.model.lower[indices] + .3 * (
+            self.model.upper[indices] - self.model.lower[indices]
+        )
+        target_pads = self.model.fingertip_pads(target_q)[1] @ self.model.palm_frame
+        _, rotation = compute_cmc_frame(self.points)
+        directions = target_pads @ rotation.T
+        retargeter = Retargeter(self.model)
+        targets = retargeter._targets(
+            self.points, finger_pad_directions=directions,
+            initial_joint_angles=self.angles,
+        )
+        with patch("retarget.C.RETARGET_FINGER_PAD_WEIGHT", 0.0):
+            _, without, terms = retargeter._losses(self.model.seed, targets)
+        with patch("retarget.C.RETARGET_FINGER_PAD_WEIGHT", 2.0):
+            _, with_pads, terms_with_pads = retargeter._losses(
+                self.model.seed, targets
+            )
+        self.assertEqual(terms["finger_pads"], 0.0)
+        self.assertGreater(terms_with_pads["finger_pads"], 0.0)
+        gradient = with_pads - without
+        self.assertTrue(np.any(np.abs(gradient[:16]) > 1e-12))
+        np.testing.assert_allclose(gradient[16:], 0.0, atol=1e-15)
+
     def test_output_filter_and_pause(self):
         retargeter = Retargeter(self.model)
-        first, _ = retargeter.solve(self.points, 0.0, PAD_DIRECTIONS)
+        first, _ = retargeter.solve(self.points, 0.0, PAD_DIRECTIONS, self.angles)
         raw = retargeter.q.copy()
         np.testing.assert_allclose(first, raw)
         moved = self.points.copy()
         moved[4] += (.02, -.01, .01)
-        second, _ = retargeter.solve(moved, 1 / 30, PAD_DIRECTIONS)
+        moved_angles = initial_joint_angles_from_points(moved)
+        second, _ = retargeter.solve(moved, 1 / 30, PAD_DIRECTIONS, moved_angles)
         self.assertTrue(np.all(np.abs(second - first) <= np.abs(retargeter.q - first) + 1e-12))
         retargeter.pause()
         self.assertFalse(retargeter.has_previous)
@@ -202,9 +307,13 @@ class RetargetTests(unittest.TestCase):
                 self.calls = []
                 self.started, self.release = threading.Event(), threading.Event()
 
-            def solve(self, points, _timestamp, directions):
+            def solve(self, points, _timestamp, directions, initial_angles):
                 value = int(points[0, 0])
-                self.calls.append((value, None if directions is None else directions.copy()))
+                self.calls.append((
+                    value,
+                    None if directions is None else directions.copy(),
+                    None if initial_angles is None else initial_angles.copy(),
+                ))
                 if not self.release.is_set():
                     self.started.set()
                     self.release.wait(1)
@@ -214,11 +323,13 @@ class RetargetTests(unittest.TestCase):
                 pass
 
         fake, worker = Fake(), None
-        worker = RetargetWorker(fake)
+        worker = RetargetWorker(fake, clock=lambda: 3.025)
         try:
             directions = np.ones((5, 3))
-            worker.submit(np.ones((21, 3)), 1.0, directions)
+            angles = self.angles.copy()
+            worker.submit(np.ones((21, 3)), 1.0, directions, angles)
             directions[:] = 9
+            angles.four_fingers[:] = 9
             self.assertTrue(fake.started.wait(1))
             worker.submit(np.full((21, 3), 2), 2.0)
             worker.submit(np.full((21, 3), 3), 3.0)
@@ -229,9 +340,23 @@ class RetargetTests(unittest.TestCase):
                 time.sleep(.001)
             self.assertEqual([call[0] for call in fake.calls], [1, 3])
             np.testing.assert_array_equal(fake.calls[0][1], np.ones((5, 3)))
+            np.testing.assert_array_equal(
+                fake.calls[0][2].four_fingers, self.angles.four_fingers
+            )
             self.assertEqual(output[1], {"total": 3.0})
+            self.assertAlmostEqual(output[2], 0.0)
+            self.assertEqual(output[3]["solve_total"], 0.0)
         finally:
             worker.close()
+
+    def test_latency_text_contract(self):
+        self.assertEqual(_latency_text(None), "waiting")
+        self.assertEqual(_latency_text(float("nan")), "waiting")
+        self.assertEqual(_latency_text(-1.0), "waiting")
+        self.assertEqual(_latency_text(12.34), "12.3 ms")
+        self.assertEqual(_render_time_text(None), "render waiting")
+        self.assertEqual(_render_time_text(0.26), "render 0.3 ms")
+        self.assertIn("SLSQP           3.2 ms", _timing_breakdown_text({"slsqp": 3.2}))
 
     def test_ros_contract(self):
         class Message:
@@ -266,6 +391,7 @@ class RetargetTests(unittest.TestCase):
             output.hand(InputFrame(
                 1.0, self.points, "Left", True, "TRACKING",
                 finger_pad_directions=PAD_DIRECTIONS,
+                initial_joint_angles=self.angles,
             ))
             output.joints(np.arange(21))
             output.close()

@@ -22,11 +22,12 @@ ARROW_HEAD_LENGTH = 0.006
 TIP_INDICES = np.array((4, 8, 12, 16, 20))
 LOSS_LABELS = (
     ("thumb_tip", "thumb tip"),
-    ("thumb_mcp_angle", "thumb MCP angle"),
-    ("thumb_ip_angle", "thumb IP angle"),
+    ("thumb_proximal_bend", "thumb proximal"),
+    ("thumb_distal_bend", "thumb distal"),
     ("finger_angles", "finger angles"),
     ("fingertip_vectors", "fingertip vectors"),
     ("thumb_pad", "thumb pad"),
+    ("finger_pads", "finger pads"),
     ("total", "total"),
 )
 ANGLE_COLORS = ((80, 230, 120), (190, 100, 255))
@@ -45,6 +46,36 @@ def _loss_text(losses=None):
     else:
         lines.append("waiting")
     return "\n".join(lines)
+
+
+def _latency_text(value):
+    """Format an optional non-negative latency value for the dashboard."""
+    if value is None or not np.isfinite(value) or value < 0:
+        return "waiting"
+    return f"{value:.1f} ms"
+
+
+def _render_time_text(value):
+    """Format one server-side visualization update duration."""
+    return f"render {_latency_text(value)}"
+
+
+def _timing_breakdown_text(timings=None):
+    """Format the measured components of one retargeted-frame latency."""
+    labels = (
+        ("worker_queue", "worker queue"),
+        ("targets", "targets"),
+        ("slsqp", "SLSQP"),
+        ("output_filter", "output filter"),
+        ("final_loss", "final loss"),
+        ("solver_overhead", "solver overhead"),
+        ("solve_total", "solve total"),
+    )
+    timings = {} if timings is None else timings
+    return "\n".join(
+        f"{label:<16}{_latency_text(timings.get(name))}"
+        for name, label in labels
+    )
 
 
 def _human_view_wxyz(handedness, points):
@@ -220,8 +251,11 @@ class Viewer:
         )
         self.last_update, self.status = 0.0, "WAITING"
         self.loss_text = _loss_text()
-        self.human_angle_text = _angle_text("Human thumb", (), None)
+        self.human_angle_text = _angle_text("Input thumb", (), None)
         self.robot_angle_text = _angle_text("MMHand thumb", (), None)
+        self.normalization_latency_text = self.retarget_latency_text = "waiting"
+        self.normalized_render_text = self.robot_render_text = _render_time_text(None)
+        self.retarget_timings_text = _timing_breakdown_text()
         self.preview = cv2.imencode(".jpg", np.zeros((360, 1280, 3), np.uint8))[1].tobytes()
         self._start_dashboard()
         print(f"Dashboard: http://localhost:{WEB_PORT}")
@@ -247,18 +281,28 @@ font:15px sans-serif;display:grid;grid-template:40vh 60vh/repeat(2,1fr);gap:6px}
 font-size:15px;background:#101318cc;border-radius:0 0 6px 0}}
 img,iframe{{width:100%;height:100%;display:block;border:0;object-fit:contain}}
 #status{{color:#9bd;margin-left:12px;font-weight:normal}}
+.latency{{color:#9bd;margin-left:10px;font-size:13px;font-weight:normal}}
+.render-time{{display:block;color:#b8c5d6;margin-top:3px;font-size:12px;
+font-weight:normal}}
 #losses{{position:absolute;z-index:2;right:0;top:0;margin:0;padding:9px 12px;
 background:#101318dd;color:#bde2ff;font:13px/1.35 monospace;pointer-events:none}}
 .angles{{position:absolute;z-index:3;right:0;top:0;margin:0;padding:9px 12px;
-background:#101318dd;color:#dff;font:13px/1.4 monospace;pointer-events:none}}</style></head><body>
+background:#101318dd;color:#dff;font:13px/1.4 monospace;pointer-events:none}}
+.timings{{position:absolute;z-index:3;left:0;top:66px;margin:0;padding:8px 12px;
+background:#101318dd;color:#b8c5d6;font:12px/1.4 monospace;pointer-events:none}}</style></head><body>
 <section class="panel input"><h2>Input <span id="status">WAITING</span></h2>
 <pre id="losses">Weighted retarget loss\nwaiting</pre><img id="preview"></section>
-<section class="panel"><h2>Normalized hand</h2><pre class="angles" id="humanAngles">Human thumb\nwaiting</pre><iframe id="normalized"></iframe></section>
-<section class="panel"><h2>Retargeted MMHand</h2><pre class="angles" id="robotAngles">MMHand thumb\nwaiting</pre><iframe id="robot"></iframe></section>
+<section class="panel"><h2>Normalized hand <span class="latency" id="normalizationLatency">waiting</span><span class="render-time" id="normalizedRender">render waiting</span></h2><pre class="angles" id="humanAngles">Input thumb\nwaiting</pre><iframe id="normalized"></iframe></section>
+<section class="panel"><h2>Retargeted MMHand <span class="latency" id="retargetLatency">waiting</span><span class="render-time" id="robotRender">render waiting</span></h2><pre class="timings" id="retargetTimings">waiting</pre><pre class="angles" id="robotAngles">MMHand thumb\nwaiting</pre><iframe id="robot"></iframe></section>
 <script>
 const host=location.hostname, statusText=document.getElementById("status"),
 previewImage=document.getElementById("preview"),lossText=document.getElementById("losses"),
 humanAngles=document.getElementById("humanAngles"),robotAngles=document.getElementById("robotAngles");
+const normalizationLatency=document.getElementById("normalizationLatency"),
+retargetLatency=document.getElementById("retargetLatency"),
+normalizedRender=document.getElementById("normalizedRender"),
+robotRender=document.getElementById("robotRender");
+const retargetTimings=document.getElementById("retargetTimings");
 for(const [id,port] of [["normalized",{normalized_port}],["robot",{robot_port}]])
   document.getElementById(id).src=`http://${{host}}:${{port}}`;
 let previewUrl=null;
@@ -274,6 +318,11 @@ async function refresh(){{
     previewUrl=nextUrl;
     statusText.textContent=state.status;lossText.textContent=state.losses;
     humanAngles.textContent=state.human_angles;robotAngles.textContent=state.robot_angles;
+    normalizationLatency.textContent=state.normalization_latency;
+    retargetLatency.textContent=state.retarget_latency;
+    normalizedRender.textContent=state.normalized_render;
+    robotRender.textContent=state.robot_render;
+    retargetTimings.textContent=state.retarget_timings;
   }}catch(error){{console.debug("dashboard refresh failed",error)}}
   setTimeout(refresh,{round(1000 / WEB_FPS)});
 }}
@@ -291,6 +340,11 @@ refresh();
                         "losses": owner.loss_text,
                         "human_angles": owner.human_angle_text,
                         "robot_angles": owner.robot_angle_text,
+                        "normalization_latency": owner.normalization_latency_text,
+                        "retarget_latency": owner.retarget_latency_text,
+                        "normalized_render": owner.normalized_render_text,
+                        "robot_render": owner.robot_render_text,
+                        "retarget_timings": owner.retarget_timings_text,
                     }).encode()
                     content_type = "application/json"
                 elif path == "/":
@@ -315,12 +369,23 @@ refresh();
         self.http_thread = threading.Thread(target=self.http.serve_forever, daemon=True)
         self.http_thread.start()
 
-    def update(self, frame, robot=None, losses=None):
+    def update(
+        self,
+        frame,
+        robot=None,
+        losses=None,
+        normalization_latency_ms=None,
+        retarget_latency_ms=None,
+        retarget_timings_ms=None,
+    ):
         now = time.monotonic()
         if now - self.last_update < 1 / WEB_FPS:
-            return
+            return False
         self.last_update = now
         self.status = frame.status
+        self.normalization_latency_text = _latency_text(
+            normalization_latency_ms if frame.points is not None else None
+        )
         if losses is not None:
             self.loss_text = _loss_text(losses)
         elif frame.points is None or frame.handedness != "Left":
@@ -331,6 +396,7 @@ refresh();
         ok, encoded = cv2.imencode(".jpg", preview, (cv2.IMWRITE_JPEG_QUALITY, 82))
         if ok:
             self.preview = encoded.tobytes()
+        normalized_render_started = time.perf_counter()
         points = frame.points
         if points is not None and frame.handedness in ("Left", "Right"):
             self.human_frame.wxyz = _human_view_wxyz(frame.handedness, points)
@@ -341,7 +407,7 @@ refresh();
             arc.visible = False
         if not visible:
             self.human_retarget_frame.visible = False
-            self.human_angle_text = _angle_text("Human thumb", (), None)
+            self.human_angle_text = _angle_text("Input thumb", (), None)
         else:
             points = np.asarray(points, float)
             self.human_cloud.points = points.astype(np.float32)
@@ -349,10 +415,14 @@ refresh();
             directions = np.asarray(frame.finger_pad_directions, float)
             self.pad_directions.points = _arrow_points(points[TIP_INDICES], directions)
             self.pad_directions.visible = True
-            angles, arcs = _human_angle_segments(points)
+            _, arcs = _human_angle_segments(points)
             for handle, segments in zip(self.human_angle_arcs, arcs):
                 handle.points, handle.visible = segments, True
-            self.human_angle_text = _angle_text("Human thumb", ("MCP", "IP"), angles)
+            initial_angles = frame.initial_joint_angles
+            self.human_angle_text = _angle_text(
+                "Input thumb", ("proximal", "distal"),
+                None if initial_angles is None else initial_angles.thumb_bends,
+            )
             try:
                 origin, palm_frame = compute_cmc_frame(points)
             except ValueError:
@@ -361,7 +431,16 @@ refresh();
                 self.human_retarget_frame.position = origin
                 self.human_retarget_frame.wxyz = _frame_wxyz(palm_frame)
                 self.human_retarget_frame.visible = True
+        self.normalized_render_text = _render_time_text(
+            (time.perf_counter() - normalized_render_started) * 1000.0
+            if visible else None
+        )
         if robot is not None:
+            robot_render_started = time.perf_counter()
+            self.retarget_latency_text = _latency_text(retarget_latency_ms)
+            self.retarget_timings_text = _timing_breakdown_text(
+                retarget_timings_ms
+            )
             self.urdf.update_cfg(
                 np.asarray([robot[self.robot_index[name]] for name in self.urdf_names])
             )
@@ -377,10 +456,17 @@ refresh();
             self.robot_angle_text = _angle_text(
                 "MMHand thumb", ("J18/PIP", "J19/DIP"), robot[18:20]
             )
+            self.robot_render_text = _render_time_text(
+                (time.perf_counter() - robot_render_started) * 1000.0
+            )
         elif not visible or frame.handedness != "Left":
+            self.retarget_latency_text = "waiting"
+            self.retarget_timings_text = _timing_breakdown_text()
+            self.robot_render_text = _render_time_text(None)
             for arc in self.robot_angle_arcs:
                 arc.visible = False
             self.robot_angle_text = _angle_text("MMHand thumb", (), None)
+        return True
 
     def close(self):
         self.http.shutdown()

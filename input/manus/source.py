@@ -9,12 +9,14 @@ import time
 import numpy as np
 
 from config import (
+    MANUS_PINCH_COMPENSATION,
     MANUS_POSITION_SCALE_TO_M,
     MANUS_SDK_BRIDGE_PATH,
     MANUS_SDK_VERSION,
     MANUS_STALE_SECONDS,
+    MANUS_THUMB_PIP_DIP_SCALE,
 )
-from input.frame import InputFrame
+from input.frame import InitialJointAngles, InputFrame
 from .adapter import MANUS_TO_STANDARD21, adapt_raw_skeleton, handedness_from_node_info
 
 _MAX_SDK_NODES = 64
@@ -40,7 +42,26 @@ class _SdkFrame(ctypes.Structure):
         ("node_count", ctypes.c_uint32),
         ("side", ctypes.c_int32),
         ("nodes", _SdkNode * _MAX_SDK_NODES),
+        ("has_ergonomics", ctypes.c_int32),
+        ("ergonomics", ctypes.c_float * 20),
     )
+
+
+class _SdkCalibrationStep(ctypes.Structure):
+    _fields_ = (
+        ("index", ctypes.c_uint32),
+        ("title", ctypes.c_char * 64),
+        ("description", ctypes.c_char * 256),
+        ("time", ctypes.c_float),
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class CalibrationStep:
+    index: int
+    title: str
+    description: str
+    duration: float
 
 
 @dataclass(slots=True)
@@ -52,6 +73,8 @@ class ManusPacket:
     handedness: str | None
     received_at: float
     calibrated: bool | None = None
+    ergonomics: np.ndarray | None = None
+    glove_id: int | None = None
 
 
 def _sdk_frame_to_packet(frame, received_at):
@@ -76,16 +99,26 @@ def _sdk_frame_to_packet(frame, received_at):
                 "fingerJointType": int(node.finger_joint_type),
             }
         )
+    ergonomics = (
+        np.asarray(frame.ergonomics, dtype=float).reshape(5, 4).copy()
+        if frame.has_ergonomics else None
+    )
     return ManusPacket(
         positions, rotations, node_ids, node_info,
         {1: "Left", 2: "Right"}.get(int(frame.side)), float(received_at),
+        ergonomics=ergonomics, glove_id=int(frame.glove_id),
     )
 
 
 class OfficialSdkTransport:
     """Read Raw Skeleton callbacks from official Core SDK 3.1.1 Integrated."""
 
-    def __init__(self, bridge_path=MANUS_SDK_BRIDGE_PATH, clock=time.monotonic):
+    def __init__(
+        self,
+        bridge_path=MANUS_SDK_BRIDGE_PATH,
+        clock=time.monotonic,
+        pinch_compensation=MANUS_PINCH_COMPENSATION,
+    ):
         path = Path(bridge_path)
         if not path.is_file():
             raise RuntimeError(
@@ -94,11 +127,19 @@ class OfficialSdkTransport:
         self._lib = ctypes.CDLL(str(path))
         self._configure_api()
         self._clock = clock
+        self.pinch_compensation = bool(pinch_compensation)
         self._last_sequence = 0
         self._closed = False
         self._connected = False
+        self._initialized = False
         self._init_error = None
         if self._lib.manus_bridge_initialize() != 0:
+            self._init_error = self._error()
+            return
+        self._initialized = True
+        if self._lib.manus_bridge_set_pinch_compensation(
+            int(self.pinch_compensation)
+        ) != 0:
             self._init_error = self._error()
             return
         self._stop = threading.Event()
@@ -112,6 +153,43 @@ class OfficialSdkTransport:
         self._lib.manus_bridge_connect.restype = ctypes.c_int
         self._lib.manus_bridge_poll.argtypes = (ctypes.POINTER(_SdkFrame),)
         self._lib.manus_bridge_poll.restype = ctypes.c_int
+        self._lib.manus_bridge_set_pinch_compensation.argtypes = (ctypes.c_int,)
+        self._lib.manus_bridge_set_pinch_compensation.restype = ctypes.c_int
+        self._lib.manus_bridge_get_pinch_compensation.argtypes = (
+            ctypes.POINTER(ctypes.c_int),
+        )
+        self._lib.manus_bridge_get_pinch_compensation.restype = ctypes.c_int
+        self._lib.manus_bridge_calibration_get_step_count.argtypes = (
+            ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32),
+        )
+        self._lib.manus_bridge_calibration_get_step_count.restype = ctypes.c_int
+        self._lib.manus_bridge_calibration_get_step.argtypes = (
+            ctypes.c_uint32, ctypes.c_uint32,
+            ctypes.POINTER(_SdkCalibrationStep),
+        )
+        self._lib.manus_bridge_calibration_get_step.restype = ctypes.c_int
+        for name in (
+            "manus_bridge_calibration_start",
+            "manus_bridge_calibration_finish",
+            "manus_bridge_calibration_stop",
+        ):
+            function = getattr(self._lib, name)
+            function.argtypes = (ctypes.c_uint32,)
+            function.restype = ctypes.c_int
+        self._lib.manus_bridge_calibration_run_step.argtypes = (
+            ctypes.c_uint32, ctypes.c_uint32,
+        )
+        self._lib.manus_bridge_calibration_run_step.restype = ctypes.c_int
+        byte_pointer = ctypes.POINTER(ctypes.c_ubyte)
+        self._lib.manus_bridge_calibration_export.argtypes = (
+            ctypes.c_uint32, byte_pointer, ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_uint32),
+        )
+        self._lib.manus_bridge_calibration_export.restype = ctypes.c_int
+        self._lib.manus_bridge_calibration_import.argtypes = (
+            ctypes.c_uint32, byte_pointer, ctypes.c_uint32,
+        )
+        self._lib.manus_bridge_calibration_import.restype = ctypes.c_int
         self._lib.manus_bridge_last_error.restype = ctypes.c_char_p
         self._lib.manus_bridge_shutdown.restype = None
 
@@ -138,6 +216,74 @@ class OfficialSdkTransport:
         self._last_sequence = frame.sequence
         return _sdk_frame_to_packet(frame, self._clock())
 
+    def pinch_compensation_readback(self):
+        """Return Core's effective setting, or None before connection."""
+        enabled = ctypes.c_int()
+        if self._lib.manus_bridge_get_pinch_compensation(ctypes.byref(enabled)) != 0:
+            return None
+        return bool(enabled.value)
+
+    def calibration_steps(self, glove_id):
+        count = ctypes.c_uint32()
+        if self._lib.manus_bridge_calibration_get_step_count(
+            int(glove_id), ctypes.byref(count)
+        ) != 0:
+            raise RuntimeError(self._error())
+        steps = []
+        for index in range(count.value):
+            data = _SdkCalibrationStep()
+            if self._lib.manus_bridge_calibration_get_step(
+                int(glove_id), index, ctypes.byref(data)
+            ) != 0:
+                raise RuntimeError(self._error())
+            steps.append(CalibrationStep(
+                int(data.index),
+                bytes(data.title).split(b"\0", 1)[0].decode("utf-8", "replace"),
+                bytes(data.description).split(b"\0", 1)[0].decode(
+                    "utf-8", "replace"
+                ),
+                float(data.time),
+            ))
+        return tuple(steps)
+
+    def _calibration_call(self, name, glove_id, *args):
+        function = getattr(self._lib, f"manus_bridge_calibration_{name}")
+        if function(int(glove_id), *args) != 0:
+            raise RuntimeError(self._error())
+
+    def calibration_start(self, glove_id):
+        self._calibration_call("start", glove_id)
+
+    def calibration_run_step(self, glove_id, step_index):
+        self._calibration_call("run_step", glove_id, int(step_index))
+
+    def calibration_finish(self, glove_id):
+        self._calibration_call("finish", glove_id)
+
+    def calibration_stop(self, glove_id):
+        self._calibration_call("stop", glove_id)
+
+    def calibration_export(self, glove_id):
+        required = ctypes.c_uint32()
+        function = self._lib.manus_bridge_calibration_export
+        if function(int(glove_id), None, 0, ctypes.byref(required)) != 0:
+            raise RuntimeError(self._error())
+        if required.value == 0:
+            raise RuntimeError("MANUS returned an empty glove calibration")
+        buffer = (ctypes.c_ubyte * required.value)()
+        if function(
+            int(glove_id), buffer, len(buffer), ctypes.byref(required)
+        ) != 0:
+            raise RuntimeError(self._error())
+        return bytes(buffer[:required.value])
+
+    def calibration_import(self, glove_id, payload):
+        payload = bytes(payload)
+        if not payload:
+            raise ValueError("Calibration payload cannot be empty")
+        buffer = (ctypes.c_ubyte * len(payload)).from_buffer_copy(payload)
+        self._calibration_call("import", glove_id, buffer, len(buffer))
+
     def close(self):
         if self._closed:
             return
@@ -148,8 +294,9 @@ class OfficialSdkTransport:
         thread = getattr(self, "_connect_thread", None)
         if thread is not None:
             thread.join(timeout=3.0)
-        if self._init_error is None:
+        if self._initialized:
             self._lib.manus_bridge_shutdown()
+            self._initialized = False
 class ManusSource:
     """Read fresh WORLD Raw Skeleton positions as common input frames."""
 
@@ -167,12 +314,17 @@ class ManusSource:
         self._waiting_reported = False
         self._stale_reported = False
         self._first_frame_reported = False
+        self.calibration_path = None
         print("Input source: MANUS")
         print(f"MANUS SDK: official Core SDK {MANUS_SDK_VERSION} Integrated")
         print("MANUS coordinate mode: WORLD/GLOBAL")
         print("p_UseWorldCoordinates: true")
+        print(f"MANUS Raw Skeleton pinch compensation requested: {MANUS_PINCH_COMPENSATION}")
         print("MANUS -> Standard21 fallback mapping: " + str(MANUS_TO_STANDARD21.tolist()))
         print("CMC/root frame implementation: compute_cmc_frame; origin=point1; rotation=R_world_from_cmc")
+
+    def mark_calibrated(self, path):
+        self.calibration_path = Path(path)
 
     def _handedness(self, packet):
         explicit = packet.handedness
@@ -219,6 +371,7 @@ class ManusSource:
             adapted = adapt_raw_skeleton(
                 packet.positions,
                 rotations_wxyz=packet.rotations_wxyz,
+                handedness=handedness,
                 node_info=packet.node_info,
                 node_ids=packet.node_ids,
                 scale_to_m=MANUS_POSITION_SCALE_TO_M,
@@ -228,17 +381,33 @@ class ManusSource:
 
         self.last_received_at, self._stale_reported = received_at, False
         self._waiting_reported = False
-        calibrated = packet.calibrated
-        ready = handedness in ("Left", "Right") and calibrated is not False
+        calibrated = True if self.calibration_path is not None else packet.calibrated
+        try:
+            initial_angles = _ergonomics_initial_angles(packet.ergonomics)
+        except ValueError as error:
+            initial_angles = None
+            ergonomics_text = f"ergonomics invalid: {error}"
+        else:
+            ergonomics_text = "ergonomics ready"
+        ready = (
+            handedness in ("Left", "Right")
+            and calibrated is not False
+            and initial_angles is not None
+        )
         calibration_text = "calibration unknown" if calibrated is None else (
             "calibrated" if calibrated else "not calibrated"
         )
-        status = f"MANUS TRACKING · {handedness or 'unknown side'} · {calibration_text}"
+        status = (
+            f"MANUS TRACKING · {handedness or 'unknown side'} · "
+            f"{calibration_text} · {ergonomics_text}"
+        )
         if not self._first_frame_reported:
             print(f"MANUS raw node count: {len(packet.positions)}")
             print(f"MANUS handedness: {handedness or 'Unknown (SDK side/NodeInfo unavailable)'}")
             print(f"MANUS mapping source: {adapted.mapping_source}")
             print(f"MANUS -> Standard21 mapping: {adapted.mapping.tolist()}")
+            readback = getattr(self.transport, "pinch_compensation_readback", lambda: None)()
+            print(f"MANUS Raw Skeleton pinch compensation Core readback: {readback}")
             self._first_frame_reported = True
         return InputFrame(
             timestamp=received_at,
@@ -248,7 +417,23 @@ class ManusSource:
             status=status,
             finger_pad_directions=adapted.directions,
             preview=None,
+            initial_joint_angles=initial_angles,
         )
 
     def close(self):
         self.transport.close()
+
+
+def _ergonomics_initial_angles(ergonomics):
+    values = np.asarray(ergonomics, dtype=float)
+    if values.shape != (5, 4):
+        raise ValueError("expected 5x4")
+    if not np.isfinite(values).all():
+        raise ValueError("contains non-finite values")
+    thumb_scale = float(MANUS_THUMB_PIP_DIP_SCALE)
+    if not np.isfinite(thumb_scale) or thumb_scale <= 0:
+        raise ValueError("thumb PIP/DIP scale must be finite and positive")
+    radians = np.radians(values)
+    return InitialJointAngles(
+        radians[1:5], radians[0, 2:4] * thumb_scale
+    )

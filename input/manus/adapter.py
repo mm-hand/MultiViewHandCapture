@@ -4,7 +4,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from config import MANUS_PAD_LOCAL_AXIS
+from config import MANUS_PAD_LOCAL_AXIS, MANUS_THUMB_PAD_ROTATION_DEG
 from input.frame import relative_hand
 
 
@@ -147,10 +147,24 @@ def _rotate_wxyz(quaternions, vector):
     )
 
 
+def _rotate(vector, axis, angle):
+    """Rotate and renormalize a direction around a palm-local axis."""
+    axis = np.asarray(axis, float)
+    axis /= max(np.linalg.norm(axis), 1e-8)
+    cosine, sine = np.cos(angle), np.sin(angle)
+    result = (
+        vector * cosine
+        + np.cross(axis, vector) * sine
+        + axis * np.dot(axis, vector) * (1 - cosine)
+    )
+    return result / max(np.linalg.norm(result), 1e-8)
+
+
 def adapt_raw_skeleton(
     positions25,
     *,
     rotations_wxyz,
+    handedness=None,
     node_info=None,
     node_ids=None,
     scale_to_m=1.0,
@@ -172,6 +186,12 @@ def adapt_raw_skeleton(
     normalized, directions = relative_hand(standard_world, tip_directions)
     if normalized is None:
         raise ValueError("MANUS hand geometry has a degenerate palm size")
+    if handedness in ("Left", "Right"):
+        angle = np.radians(MANUS_THUMB_PAD_ROTATION_DEG)
+        directions[0] = _rotate(
+            directions[0], normalized[4] - normalized[3],
+            angle if handedness == "Left" else -angle,
+        )
     return AdaptedManusFrame(
         points=normalized,
         directions=directions,

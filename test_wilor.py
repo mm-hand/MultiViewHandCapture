@@ -5,7 +5,7 @@ from unittest.mock import patch
 import numpy as np
 
 from input import create_source
-from input.frame import relative_hand
+from input.frame import initial_joint_angles_from_points, relative_hand
 from one_euro import OneEuro
 from track import _parse_args
 from input.wilor.source import (
@@ -129,6 +129,14 @@ class WilorTests(unittest.TestCase):
         np.testing.assert_allclose(
             left_directions[0], rotate(raw_left[0], left_points[4] - left_points[3], np.pi / 4)
         )
+        angles = initial_joint_angles_from_points(points)
+        thumb = np.diff(points[1:5], axis=0)
+        thumb /= np.linalg.norm(thumb, axis=1, keepdims=True)
+        expected_thumb = np.arccos(np.clip((
+            thumb[0] @ thumb[1], thumb[1] @ thumb[2]
+        ), -1.0, 1.0))
+        np.testing.assert_allclose(angles.thumb_bends, expected_thumb, atol=1e-9)
+        self.assertEqual(angles.four_fingers.shape, (4, 4))
 
     def test_detector_threshold_coordinates_and_handedness(self):
         raw = np.array([[[320, 100], [320, 100], [100, 20], [100, 20],

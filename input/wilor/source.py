@@ -20,7 +20,7 @@ from config import (
     WILOR_DIRECTION_FILTER,
     WILOR_POINT_FILTER,
 )
-from input.frame import InputFrame, relative_hand
+from input.frame import InputFrame, initial_joint_angles_from_points, relative_hand
 from one_euro import OneEuro
 from .camera import OpenCVCamera
 
@@ -328,10 +328,11 @@ class WilorSource:
             points, directions = self._filter(
                 points, directions, handedness, timestamp
             )
-        except ValueError:
+            initial_angles = initial_joint_angles_from_points(points)
+        except ValueError as error:
             self._reset_filters()
             return InputFrame.empty(
-                timestamp, "WILOR INVALID: direction filter",
+                timestamp, f"WILOR INVALID: filtered geometry: {error}",
                 preview(frame, self.detection),
             )
         image = preview(frame, self.detection, (
@@ -342,6 +343,7 @@ class WilorSource:
             timestamp, points, handedness, True,
             f"WILOR {handedness} {self.detection.score:.2f} · {fps:.1f} FPS",
             finger_pad_directions=directions, preview=image,
+            initial_joint_angles=initial_angles,
         )
 
     def close(self):

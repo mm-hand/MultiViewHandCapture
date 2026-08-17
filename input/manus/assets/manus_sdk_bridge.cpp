@@ -12,6 +12,7 @@
 
 namespace {
 constexpr std::size_t kMaxNodes = 64;
+constexpr std::size_t kHandErgonomicsCount = 20;
 
 struct RawFrame {
     uint64_t sequence = 0;
@@ -20,16 +21,44 @@ struct RawFrame {
     std::vector<SkeletonNode> nodes;
 };
 
+struct ErgonomicsFrame {
+    uint32_t id = 0;
+    bool is_user_id = false;
+    std::array<float, ErgonomicsDataType_MAX_SIZE> data{};
+};
+
 std::mutex g_mutex;
 std::vector<RawFrame> g_latest_frames;
+std::vector<ErgonomicsFrame> g_latest_ergonomics;
 uint64_t g_sequence = 0;
 bool g_initialized = false;
 std::atomic_bool g_connected{false};
+bool g_pinch_compensation = false;
 std::string g_last_error;
 
 void SetError(const char* operation, SDKReturnCode code) {
     g_last_error = std::string(operation) + " failed (SDKReturnCode=" +
                    std::to_string(static_cast<int>(code)) + ")";
+}
+
+bool ApplyRawSkeletonSettings() {
+    SDKReturnCode code = CoreSdk_SetRawSkeletonPinchCompensation(
+        g_pinch_compensation);
+    if (code != SDKReturnCode_Success) {
+        SetError("CoreSdk_SetRawSkeletonPinchCompensation", code);
+        return false;
+    }
+    bool enabled = false;
+    code = CoreSdk_GetRawSkeletonPinchCompensation(&enabled);
+    if (code != SDKReturnCode_Success) {
+        SetError("CoreSdk_GetRawSkeletonPinchCompensation", code);
+        return false;
+    }
+    if (enabled != g_pinch_compensation) {
+        g_last_error = "Raw Skeleton pinch compensation readback mismatch";
+        return false;
+    }
+    return true;
 }
 
 void OnRawSkeletonStream(const SkeletonStreamInfo* const stream) {
@@ -63,6 +92,50 @@ void OnRawSkeletonStream(const SkeletonStreamInfo* const stream) {
     for (RawFrame& frame : collection) frame.sequence = g_sequence;
     g_latest_frames = std::move(collection);
 }
+
+void OnErgonomicsStream(const ErgonomicsStream* const stream) {
+    if (stream == nullptr || stream->dataCount == 0) return;
+    std::vector<ErgonomicsFrame> collection;
+    collection.reserve(stream->dataCount);
+    for (uint32_t index = 0; index < stream->dataCount; ++index) {
+        const ErgonomicsData& source = stream->data[index];
+        ErgonomicsFrame frame;
+        frame.id = source.id;
+        frame.is_user_id = source.isUserID;
+        std::copy(std::begin(source.data), std::end(source.data), frame.data.begin());
+        collection.push_back(frame);
+    }
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_latest_ergonomics = std::move(collection);
+}
+
+GloveCalibrationArgs CalibrationArgs(uint32_t glove_id) {
+    GloveCalibrationArgs args;
+    GloveCalibrationArgs_Init(&args);
+    args.gloveId = glove_id;
+    return args;
+}
+
+GloveCalibrationStepArgs CalibrationStepArgs(uint32_t glove_id, uint32_t step) {
+    GloveCalibrationStepArgs args;
+    GloveCalibrationStepArgs_Init(&args);
+    args.gloveId = glove_id;
+    args.stepIndex = step;
+    return args;
+}
+
+int CalibrationResult(const char* operation, SDKReturnCode code, bool result) {
+    if (code != SDKReturnCode_Success) {
+        SetError(operation, code);
+        return -1;
+    }
+    if (!result) {
+        g_last_error = std::string(operation) + " was rejected by MANUS Core";
+        return -1;
+    }
+    g_last_error.clear();
+    return 0;
+}
 }  // namespace
 
 extern "C" {
@@ -85,6 +158,15 @@ struct ManusBridgeFrame {
     uint32_t node_count;
     int32_t side;
     ManusBridgeNode nodes[kMaxNodes];
+    int32_t has_ergonomics;
+    float ergonomics[kHandErgonomicsCount];
+};
+
+struct ManusBridgeCalibrationStep {
+    uint32_t index;
+    char title[MAX_NUM_CHARS_IN_CALIBRATION_TITLE];
+    char description[MAX_NUM_CHARS_IN_CALIBRATION_DESCRIPTION];
+    float time;
 };
 
 int manus_bridge_initialize() {
@@ -97,6 +179,12 @@ int manus_bridge_initialize() {
     code = CoreSdk_RegisterCallbackForRawSkeletonStream(OnRawSkeletonStream);
     if (code != SDKReturnCode_Success) {
         SetError("CoreSdk_RegisterCallbackForRawSkeletonStream", code);
+        CoreSdk_ShutDown();
+        return -1;
+    }
+    code = CoreSdk_RegisterCallbackForErgonomicsStream(OnErgonomicsStream);
+    if (code != SDKReturnCode_Success) {
+        SetError("CoreSdk_RegisterCallbackForErgonomicsStream", code);
         CoreSdk_ShutDown();
         return -1;
     }
@@ -125,6 +213,7 @@ int manus_bridge_connect() {
     bool connected = false;
     if (CoreSdk_GetIsConnectedToCore(&connected) == SDKReturnCode_Success &&
         connected) {
+        if (!ApplyRawSkeletonSettings()) return -1;
         g_connected = true;
         return 0;
     }
@@ -153,6 +242,7 @@ int manus_bridge_connect() {
         SetError("CoreSdk_ConnectToHost", code);
         return -1;
     }
+    if (!ApplyRawSkeletonSettings()) return -1;
     // WORLD positions should move using the best available MANUS tracking input.
     CoreSdk_SetRawSkeletonHandMotion(HandMotion_Auto);
     g_connected = true;
@@ -160,13 +250,143 @@ int manus_bridge_connect() {
     return 0;
 }
 
+int manus_bridge_set_pinch_compensation(int enabled) {
+    g_pinch_compensation = enabled != 0;
+    return 0;
+}
+
+int manus_bridge_get_pinch_compensation(int* enabled) {
+    if (enabled == nullptr || !g_connected.load()) return -1;
+    bool value = false;
+    SDKReturnCode code = CoreSdk_GetRawSkeletonPinchCompensation(&value);
+    if (code != SDKReturnCode_Success) {
+        SetError("CoreSdk_GetRawSkeletonPinchCompensation", code);
+        return -1;
+    }
+    *enabled = value ? 1 : 0;
+    return 0;
+}
+
+int manus_bridge_calibration_get_step_count(uint32_t glove_id, uint32_t* count) {
+    if (!g_connected.load() || count == nullptr) return -1;
+    const SDKReturnCode code = CoreSdk_GloveCalibrationGetNumberOfSteps(
+        CalibrationArgs(glove_id), count);
+    if (code != SDKReturnCode_Success) {
+        SetError("CoreSdk_GloveCalibrationGetNumberOfSteps", code);
+        return -1;
+    }
+    if (*count == 0) {
+        g_last_error = "MANUS returned an empty glove calibration sequence";
+        return -1;
+    }
+    g_last_error.clear();
+    return 0;
+}
+
+int manus_bridge_calibration_get_step(
+    uint32_t glove_id, uint32_t step, ManusBridgeCalibrationStep* output) {
+    if (!g_connected.load() || output == nullptr) return -1;
+    GloveCalibrationStepData data;
+    GloveCalibrationStepData_Init(&data);
+    const SDKReturnCode code = CoreSdk_GloveCalibrationGetStepData(
+        CalibrationStepArgs(glove_id, step), &data);
+    if (code != SDKReturnCode_Success) {
+        SetError("CoreSdk_GloveCalibrationGetStepData", code);
+        return -1;
+    }
+    std::memset(output, 0, sizeof(*output));
+    output->index = data.index;
+    std::copy_n(data.title, sizeof(output->title), output->title);
+    std::copy_n(data.description, sizeof(output->description), output->description);
+    output->time = data.time;
+    g_last_error.clear();
+    return 0;
+}
+
+int manus_bridge_calibration_start(uint32_t glove_id) {
+    bool result = false;
+    const SDKReturnCode code = CoreSdk_GloveCalibrationStart(
+        CalibrationArgs(glove_id), &result);
+    return CalibrationResult("CoreSdk_GloveCalibrationStart", code, result);
+}
+
+int manus_bridge_calibration_run_step(uint32_t glove_id, uint32_t step) {
+    bool result = false;
+    const SDKReturnCode code = CoreSdk_GloveCalibrationStartStep(
+        CalibrationStepArgs(glove_id, step), &result);
+    return CalibrationResult("CoreSdk_GloveCalibrationStartStep", code, result);
+}
+
+int manus_bridge_calibration_finish(uint32_t glove_id) {
+    bool result = false;
+    const SDKReturnCode code = CoreSdk_GloveCalibrationFinish(
+        CalibrationArgs(glove_id), &result);
+    return CalibrationResult("CoreSdk_GloveCalibrationFinish", code, result);
+}
+
+int manus_bridge_calibration_stop(uint32_t glove_id) {
+    bool result = false;
+    const SDKReturnCode code = CoreSdk_GloveCalibrationStop(
+        CalibrationArgs(glove_id), &result);
+    return CalibrationResult("CoreSdk_GloveCalibrationStop", code, result);
+}
+
+int manus_bridge_calibration_export(
+    uint32_t glove_id, unsigned char* output, uint32_t capacity,
+    uint32_t* required_size) {
+    if (!g_connected.load() || required_size == nullptr) return -1;
+    uint32_t size = 0;
+    SDKReturnCode code = CoreSdk_GetGloveCalibrationSize(glove_id, &size);
+    if (code != SDKReturnCode_Success) {
+        SetError("CoreSdk_GetGloveCalibrationSize", code);
+        return -1;
+    }
+    *required_size = size;
+    if (output == nullptr) {
+        g_last_error.clear();
+        return 0;
+    }
+    if (capacity < size) {
+        g_last_error = "Glove calibration output buffer is too small";
+        return -1;
+    }
+    code = CoreSdk_GetGloveCalibration(output, size);
+    if (code != SDKReturnCode_Success) {
+        SetError("CoreSdk_GetGloveCalibration", code);
+        return -1;
+    }
+    g_last_error.clear();
+    return 0;
+}
+
+int manus_bridge_calibration_import(
+    uint32_t glove_id, unsigned char* data, uint32_t size) {
+    if (!g_connected.load() || data == nullptr || size == 0) return -1;
+    SetGloveCalibrationReturnCode result = SetGloveCalibrationReturnCode_Error;
+    const SDKReturnCode code = CoreSdk_SetGloveCalibration(
+        glove_id, data, size, &result);
+    if (code != SDKReturnCode_Success) {
+        SetError("CoreSdk_SetGloveCalibration", code);
+        return -1;
+    }
+    if (result != SetGloveCalibrationReturnCode_Success) {
+        g_last_error = "CoreSdk_SetGloveCalibration rejected data (result=" +
+                       std::to_string(static_cast<int>(result)) + ")";
+        return -1;
+    }
+    g_last_error.clear();
+    return 0;
+}
+
 int manus_bridge_poll(ManusBridgeFrame* output) {
     if (output == nullptr || !g_connected.load()) return 0;
     std::vector<RawFrame> frames;
+    std::vector<ErgonomicsFrame> ergonomics;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         if (g_latest_frames.empty()) return 0;
         frames = g_latest_frames;
+        ergonomics = g_latest_ergonomics;
     }
 
     // Query semantic topology outside the SDK callback, matching the official
@@ -228,6 +448,19 @@ int manus_bridge_poll(ManusBridgeFrame* output) {
         target.rotation_wxyz[3] = source.transform.rotation.z;
         if (output->side == Side_Invalid) output->side = target.side;
     }
+    const auto ergonomics_match = std::find_if(
+        ergonomics.begin(), ergonomics.end(), [&](const ErgonomicsFrame& item) {
+            return !item.is_user_id && item.id == frame.glove_id;
+        });
+    if (ergonomics_match != ergonomics.end() &&
+        (output->side == Side_Left || output->side == Side_Right)) {
+        const std::size_t offset = output->side == Side_Left ? 0 : kHandErgonomicsCount;
+        std::copy_n(
+            ergonomics_match->data.begin() + offset,
+            kHandErgonomicsCount,
+            output->ergonomics);
+        output->has_ergonomics = 1;
+    }
     return 1;
 }
 
@@ -240,6 +473,7 @@ void manus_bridge_shutdown() {
     g_connected.store(false);
     std::lock_guard<std::mutex> lock(g_mutex);
     g_latest_frames.clear();
+    g_latest_ergonomics.clear();
     g_sequence = 0;
 }
 }

@@ -1,3 +1,5 @@
+"""Retarget normalized human-hand observations to the 21-DOF MMHand URDF."""
+
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 import threading
@@ -8,12 +10,10 @@ import numpy as np
 from scipy.optimize import Bounds, minimize
 
 import config as C
+from input.frame import InitialJointAngles, compute_cmc_frame
 from one_euro import OneEuro
 
 EPS = 1e-9
-HUMAN_FINGERS = np.array(
-    ((5, 6, 7, 8), (9, 10, 11, 12), (13, 14, 15, 16), (17, 18, 19, 20))
-)
 ROBOT_TIPS = ("5-tip_Link", "1-tip_Link", "2-tip_Link", "3-tip_Link", "4-tip_Link")
 ROBOT_FINGERS = tuple(
     (
@@ -33,22 +33,29 @@ ROBOT_FINGER_JOINTS = tuple(
     )
     for name, finger in zip(("Index", "Middle", "Ring", "Little"), range(1, 5))
 )
-THUMB_ANGLE_NAMES = ("thumb_mcp_angle", "thumb_ip_angle")
 
 
 class _EvaluationLimit(Exception):
+    """Stop SLSQP after the configured number of distinct evaluations."""
+
     pass
 
 
 def _values(text, default):
+    """Parse a whitespace-separated URDF vector with a fallback value."""
+
     return np.fromstring(text if text is not None else default, sep=" ")
 
 
 def _unit(vector):
+    """Normalize a vector while preventing division by a near-zero norm."""
+
     return vector / max(np.linalg.norm(vector), EPS)
 
 
 def _checked_unit(vector):
+    """Normalize a vector and reject degenerate geometry."""
+
     norm = np.linalg.norm(vector)
     if norm <= EPS:
         raise ValueError("Degenerate human palm frame")
@@ -56,6 +63,8 @@ def _checked_unit(vector):
 
 
 def _orthogonal(vector):
+    """Construct a stable unit vector orthogonal to the input vector."""
+
     basis = np.eye(3)[np.argmin(np.abs(vector))]
     return _checked_unit(np.cross(vector, basis))
 
@@ -75,31 +84,17 @@ def human_thumb_geometry(points):
     return segments, np.asarray(angles), np.asarray(axes)
 
 
-def human_thumb_angles(points):
-    """Return unsigned MCP and IP flexion angles in radians."""
-    return human_thumb_geometry(points)[1]
-
-
-def compute_cmc_frame(points_world):
-    """Return ``origin_world, R_world_from_cmc`` for the existing CMC frame."""
-    points = np.asarray(points_world, float)
-    if points.shape != (21, 3) or not np.isfinite(points).all():
-        raise ValueError("Human landmarks must be finite with shape (21, 3)")
-    x_axis = _checked_unit(points[9] - points[0])
-    side = points[17] - points[5]
-    y_axis = _checked_unit(side - x_axis * np.dot(side, x_axis))
-    z_axis = _checked_unit(np.cross(x_axis, y_axis))
-    y_axis = np.cross(z_axis, x_axis)
-    return points[1].copy(), np.column_stack((x_axis, y_axis, z_axis))
-
-
 def _rotation(axis, angle):
+    """Build a 3D Rodrigues rotation matrix for one axis-angle motion."""
+
     axis = np.asarray(axis, float)
     cross = np.array(((0, -axis[2], axis[1]), (axis[2], 0, -axis[0]), (-axis[1], axis[0], 0)))
     return np.eye(3) + np.sin(angle) * cross + (1 - np.cos(angle)) * cross @ cross
 
 
 def _origin(node):
+    """Convert a URDF origin element into a homogeneous transform."""
+
     xyz = _values(node.get("xyz"), "0 0 0")
     roll, pitch, yaw = _values(node.get("rpy"), "0 0 0")
     transform = np.eye(4)
@@ -109,6 +104,8 @@ def _origin(node):
 
 
 def _directions(points, jacobians=None):
+    """Return unit segment directions and optional normalized Jacobians."""
+
     vectors = np.diff(points, axis=0)
     lengths = np.linalg.norm(vectors, axis=1)
     if np.any(lengths <= EPS):
@@ -126,7 +123,11 @@ def _directions(points, jacobians=None):
 
 
 class RobotModel:
+    """Provide MMHand URDF kinematics, joint metadata, and target features."""
+
     def __init__(self, urdf_path=C.URDF_PATH):
+        """Parse the URDF and precompute limits, topology, and neutral geometry."""
+
         self.joints, self.children = {}, defaultdict(list)
         limits = {}
         for node in ET.parse(urdf_path).getroot().findall("joint"):
@@ -198,6 +199,8 @@ class RobotModel:
         )
 
     def _forward(self, q, jacobian=False):
+        """Run tree forward kinematics and optionally return joint frames."""
+
         transforms = {"base_link": np.eye(4)}
         origins = np.zeros((len(self.names), 3))
         axes = np.zeros_like(origins)
@@ -215,9 +218,13 @@ class RobotModel:
         return (transforms, origins, axes) if jacobian else transforms
 
     def fk(self, q):
+        """Return every URDF link transform for a 21-element joint vector."""
+
         return self._forward(np.asarray(q, float))
 
     def fingertips(self, q):
+        """Return Thumb-to-Little virtual fingertip positions in robot space."""
+
         transforms = self.fk(q)
         return np.asarray([transforms[name][:3, 3] for name in ROBOT_TIPS])
 
@@ -235,28 +242,27 @@ class RobotModel:
         incoming = origins[indices] - origins[indices - 1]
         return origins[indices], axes[indices], incoming
 
-    def finger_angles(self, points, previous=None):
+    def initial_angle_targets(self, initial_angles, previous=None):
+        """Map human angles to clipped robot targets while preserving warm starts."""
+
+        if not isinstance(initial_angles, InitialJointAngles):
+            raise ValueError("Retargeting requires InitialJointAngles")
         q = self.seed.copy() if previous is None else np.asarray(previous, float).copy()
-        for row, (chain, indices) in enumerate(zip(HUMAN_FINGERS, self.finger_joints)):
-            directions = _directions(points[chain])
-            proximal, planar = directions[0], np.linalg.norm(directions[0, :2])
-            aa = (
-                self.finger_neutral[row]
-                if previous is None or planar <= EPS
-                else q[indices[0]]
-            )
-            if planar > EPS:
-                aa = self.finger_neutral[row] + np.arctan2(proximal[1], proximal[0]) / self.finger_axis[row]
-            angles = (
-                aa,
-                np.arctan2(-proximal[2], planar),
-                np.arccos(np.clip(proximal @ directions[1], -1, 1)),
-                np.arccos(np.clip(directions[1] @ directions[2], -1, 1)),
-            )
+        for row, indices in enumerate(self.finger_joints):
+            human = initial_angles.four_fingers[row]
+            aa = self.finger_neutral[row] + human[0] / self.finger_axis[row]
+            angles = np.concatenate((
+                (aa,), self.lower[indices[1:]] + human[1:],
+            ))
             q[indices] = np.clip(angles, self.lower[indices], self.upper[indices])
+        q[18:20] = np.clip(
+            initial_angles.thumb_bends, self.lower[18:20], self.upper[18:20]
+        )
         return q
 
     def features(self, q):
+        """Evaluate all optimization features and their analytic Jacobians."""
+
         transforms, origins, axes = self._forward(np.asarray(q, float), True)
         world = np.asarray([transforms[name][:3, 3] for name in ROBOT_TIPS])
         delta = world[:, None] - origins
@@ -279,32 +285,51 @@ class RobotModel:
         finger_angles = np.asarray(q, float)[finger_indices, None]
         finger_jacobians = np.zeros((len(finger_indices), 1, len(self.names)))
         finger_jacobians[np.arange(len(finger_indices)), 0, finger_indices] = 1
-        pad_world = -transforms[ROBOT_TIPS[0]][:3, 2]
-        pad = pad_world @ self.palm_frame
-        pad_jacobian = np.cross(axes, pad_world) * self.influence[0]
-        pad_jacobian = np.einsum("ij,nj->in", self.palm_frame.T, pad_jacobian)
+        pad_world = np.asarray([-transforms[name][:3, 2] for name in ROBOT_TIPS])
+        pads = pad_world @ self.palm_frame
+        pad_jacobians = (
+            np.cross(axes[None], pad_world[:, None]) * self.influence
+        )
+        pad_jacobians = np.einsum(
+            "ij,knj->kin", self.palm_frame.T, pad_jacobians
+        )
         return (
-            points[:1], angles, relative, pad, finger_angles,
+            points[:1], angles, relative, pads, finger_angles,
         ), (
             point_jacobians[:1], angle_jacobians, relative_jacobians,
-            pad_jacobian, finger_jacobians,
+            pad_jacobians, finger_jacobians,
         )
 
 
 class Retargeter:
+    """Solve bounded full-hand retargeting and filter the resulting joint vector."""
+
     def __init__(self, model=None):
+        """Initialize the robot model, SLSQP bounds, warm start, and output filter."""
+
         self.model = RobotModel() if model is None else model
         self.bounds = Bounds(self.model.lower, self.model.upper)
         self.q = self.model.seed.copy()
         self.output_filter = OneEuro(*C.RETARGET_ANGLE_FILTER)
         self.has_previous = False
+        self.last_stage_timings_ms = {}
         self.options = {"ftol": C.RETARGET_FTOL, "disp": False}
-        scales = np.asarray((C.RETARGET_THUMB_MCP_ANGLE_SCALE,
-                             C.RETARGET_THUMB_IP_ANGLE_SCALE), float)
-        if not np.isfinite(scales).all() or np.any(scales < 0):
-            raise ValueError("Thumb angle scales must be finite and non-negative")
+        weights = np.asarray((
+            C.RETARGET_THUMB_PROXIMAL_BEND_WEIGHT,
+            C.RETARGET_THUMB_DISTAL_BEND_WEIGHT,
+        ), float)
+        if not np.isfinite(weights).all() or np.any(weights < 0):
+            raise ValueError("Thumb bend weights must be finite and non-negative")
 
-    def _targets(self, points, previous=None, finger_pad_directions=None):
+    def _targets(
+        self,
+        points,
+        previous=None,
+        finger_pad_directions=None,
+        initial_joint_angles=None,
+    ):
+        """Build spatial, directional, and angle targets in the CMC frame."""
+
         if finger_pad_directions is None:
             raise ValueError("Finger-pad directions are required for retargeting")
         directions = np.asarray(finger_pad_directions, float)
@@ -312,14 +337,23 @@ class Retargeter:
             raise ValueError("Invalid finger-pad directions")
         origin, rotation = compute_cmc_frame(points)
         local = (np.asarray(points, float) - origin) @ rotation
-        angles = human_thumb_angles(points)[:, None]
-        fingers = self.model.finger_angles(local, previous)
+        if not isinstance(initial_joint_angles, InitialJointAngles):
+            raise ValueError("Initial joint angles are required for retargeting")
+        fingers = self.model.initial_angle_targets(initial_joint_angles, previous)
+        angles = fingers[18:20, None]
         relative = local[[8, 12, 16, 20]] - local[4]
-        thumb_pad = _checked_unit(directions[0] @ rotation)
-        return local[4:5], angles, relative, thumb_pad, fingers[self.model.finger_joints.ravel()], fingers
+        pads = np.asarray([
+            _checked_unit(direction @ rotation) for direction in directions
+        ])
+        return (
+            local[4:5], angles, relative, pads,
+            fingers[self.model.finger_joints.ravel()], fingers,
+        )
 
     @staticmethod
     def _term(value, jacobian, target, scale, weight, normalizer=1.0):
+        """Compute one weighted mean-squared residual and its joint gradient."""
+
         error = (value - scale * target) / normalizer
         loss = weight * np.mean(np.sum(error * error, axis=1))
         gradient = (
@@ -329,82 +363,106 @@ class Retargeter:
         return loss, gradient
 
     def _losses(self, q, targets):
+        """Evaluate the complete weighted objective and per-term diagnostics."""
+
         values, jacobians = self.model.features(q)
         tip_loss, tip_gradient = self._term(
             values[0], jacobians[0], targets[0],
             C.RETARGET_THUMB_TIP_SCALE, C.RETARGET_THUMB_TIP_WEIGHT,
             C.STANDARD_PALM_SIZE,
         )
-        scales = (
-            C.RETARGET_THUMB_MCP_ANGLE_SCALE,
-            C.RETARGET_THUMB_IP_ANGLE_SCALE,
-        )
-        weights = (
-            C.RETARGET_THUMB_MCP_ANGLE_WEIGHT,
-            C.RETARGET_THUMB_IP_ANGLE_WEIGHT,
-        )
         thumb_terms = tuple(
             self._term(
-                values[1][i:i + 1], jacobians[1][i:i + 1], targets[1][i:i + 1],
-                scale, weight,
+                values[1][row:row + 1], jacobians[1][row:row + 1],
+                targets[1][row:row + 1], 1.0, weight,
             )
-            for i, (scale, weight) in enumerate(zip(scales, weights))
+            for row, weight in enumerate((
+                C.RETARGET_THUMB_PROXIMAL_BEND_WEIGHT,
+                C.RETARGET_THUMB_DISTAL_BEND_WEIGHT,
+            ))
         )
         relative_term = self._term(
             values[2], jacobians[2], targets[2], 1.0,
             C.RETARGET_FINGERTIP_VECTOR_WEIGHT, C.STANDARD_PALM_SIZE,
         )
         pad_term = self._term(
-            values[3][None], jacobians[3][None], targets[3][None],
+            values[3][:1], jacobians[3][:1], targets[3][:1],
             1.0, C.RETARGET_THUMB_PAD_WEIGHT / 3,
+        )
+        finger_pad_term = self._term(
+            values[3][1:], jacobians[3][1:], targets[3][1:],
+            1.0, C.RETARGET_FINGER_PAD_WEIGHT / 3,
         )
         finger_term = self._term(
             values[4], jacobians[4], targets[4][:, None], 1.0,
             C.RETARGET_FINGER_ANGLE_WEIGHT,
         )
-        total = tip_loss + relative_term[0] + pad_term[0] + finger_term[0] + sum(
-            loss for loss, _ in thumb_terms
+        total = (
+            tip_loss + sum(term[0] for term in thumb_terms) + relative_term[0]
+            + pad_term[0] + finger_pad_term[0] + finger_term[0]
         )
-        gradient = tip_gradient + sum(
-            (term[1] for term in thumb_terms), np.zeros(len(self.model.names))
-        ) + relative_term[1] + pad_term[1] + finger_term[1]
+        gradient = (
+            tip_gradient + sum(
+                (term[1] for term in thumb_terms), np.zeros(len(self.model.names))
+            ) + relative_term[1]
+            + pad_term[1] + finger_pad_term[1] + finger_term[1]
+        )
         return (
             total,
             gradient,
             {
                 "thumb_tip": tip_loss,
-                **dict(zip(THUMB_ANGLE_NAMES, (term[0] for term in thumb_terms))),
+                "thumb_proximal_bend": thumb_terms[0][0],
+                "thumb_distal_bend": thumb_terms[1][0],
                 "finger_angles": finger_term[0],
                 "fingertip_vectors": relative_term[0],
                 "thumb_pad": pad_term[0],
+                "finger_pads": finger_pad_term[0],
                 "total": total,
             },
         )
 
-    def solve(self, points, timestamp=None, finger_pad_directions=None):
+    def solve(
+        self,
+        points,
+        timestamp=None,
+        finger_pad_directions=None,
+        initial_joint_angles=None,
+    ):
+        """Solve one frame, update the warm start, and return filtered joints."""
+
+        solve_started = time.perf_counter()
+        self.last_stage_timings_ms = {}
         points = np.asarray(points, float)
         if points.shape != (21, 3) or not np.isfinite(points).all():
             return None
         previous = self.q.copy() if self.has_previous else None
-        targets = self._targets(points, previous, finger_pad_directions)
+        targets_started = time.perf_counter()
+        targets = self._targets(
+            points, previous, finger_pad_directions, initial_joint_angles
+        )
+        targets_ms = (time.perf_counter() - targets_started) * 1000.0
         initial = targets[5]
-        cached_q, cached_value, evaluations, best = None, None, 0, None
+        cached_x, cached_value, evaluations, best = None, None, 0, None
 
         def evaluate(x):
-            nonlocal cached_q, cached_value, evaluations, best
-            if cached_q is None or not np.array_equal(x, cached_q):
+            """Cache repeated SLSQP evaluations and retain the best finite state."""
+
+            nonlocal cached_x, cached_value, evaluations, best
+            if cached_x is None or not np.array_equal(x, cached_x):
                 if evaluations >= C.RETARGET_MAX_EVALUATIONS:
                     raise _EvaluationLimit
-                cached_q = np.asarray(x).copy()
-                q = np.asarray(x).copy()
+                cached_x = np.asarray(x).copy()
+                q = cached_x
                 cached_value = self._losses(q, targets)
                 evaluations += 1
                 if np.isfinite(cached_value[0]) and np.isfinite(cached_value[1]).all():
-                    candidate = cached_value[0], q
+                    candidate = cached_value[0], q, cached_x.copy()
                     if best is None or candidate[0] < best[0]:
                         best = candidate
             return cached_value[:2]
 
+        slsqp_started = time.perf_counter()
         try:
             evaluate(initial)
             with warnings.catch_warnings():
@@ -420,30 +478,53 @@ class Retargeter:
                 )
         except _EvaluationLimit:
             pass
+        slsqp_ms = (time.perf_counter() - slsqp_started) * 1000.0
         if best is None:
             return None
-        _, candidate = best
+        _, candidate, _ = best
         self.q = candidate.copy()
         self.has_previous = True
         timestamp = time.monotonic() if timestamp is None else timestamp
+        filter_started = time.perf_counter()
         output = np.radians(self.output_filter(np.degrees(candidate), timestamp))
         output = np.clip(output, self.model.lower, self.model.upper)
+        output_filter_ms = (time.perf_counter() - filter_started) * 1000.0
+        final_loss_started = time.perf_counter()
         losses = self._losses(output, targets)[2]
+        final_loss_ms = (time.perf_counter() - final_loss_started) * 1000.0
         losses = {
             name: None if value is None else float(value)
             for name, value in losses.items()
         }
+        solve_total_ms = (time.perf_counter() - solve_started) * 1000.0
+        named_ms = targets_ms + slsqp_ms + output_filter_ms + final_loss_ms
+        self.last_stage_timings_ms = {
+            "targets": targets_ms,
+            "slsqp": slsqp_ms,
+            "output_filter": output_filter_ms,
+            "final_loss": final_loss_ms,
+            "solver_overhead": max(0.0, solve_total_ms - named_ms),
+            "solve_total": solve_total_ms,
+        }
         return output, losses
 
     def pause(self):
+        """Clear warm-start and output-filter state after tracking is interrupted."""
+
         self.q = self.model.seed.copy()
         self.output_filter.reset()
         self.has_previous = False
+        self.last_stage_timings_ms = {}
 
 
 class RetargetWorker:
-    def __init__(self, retargeter=None):
+    """Run retargeting on a latest-frame-wins background worker."""
+
+    def __init__(self, retargeter=None, clock=time.monotonic):
+        """Start a daemon worker around the supplied or default retargeter."""
+
         self.retargeter = Retargeter() if retargeter is None else retargeter
+        self.clock = clock
         self.model = self.retargeter.model
         self.condition = threading.Condition()
         self.pending = self.result = self.error = None
@@ -451,18 +532,31 @@ class RetargetWorker:
         self.thread = threading.Thread(target=self._run, daemon=True)
         self.thread.start()
 
-    def submit(self, points, timestamp=None, finger_pad_directions=None):
+    def submit(
+        self,
+        points,
+        timestamp=None,
+        finger_pad_directions=None,
+        initial_joint_angles=None,
+    ):
+        """Deep-copy and enqueue the newest common input frame for solving."""
+
         with self.condition:
             directions = (
                 None if finger_pad_directions is None
                 else np.asarray(finger_pad_directions, float).copy()
             )
             self.pending = (
-                self.generation, np.asarray(points, float).copy(), timestamp, directions
+                self.generation, np.asarray(points, float).copy(), timestamp,
+                directions,
+                None if initial_joint_angles is None else initial_joint_angles.copy(),
+                self.clock(),
             )
             self.condition.notify()
 
     def poll(self):
+        """Consume joints, losses, submit-to-solve latency, and stage timings."""
+
         with self.condition:
             if self.error is not None:
                 raise RuntimeError("Retarget worker failed") from self.error
@@ -470,25 +564,56 @@ class RetargetWorker:
             return result
 
     def pause(self):
+        """Discard queued work and request a solver-state reset."""
+
         with self.condition:
             self.generation += 1
             self.pending = self.result = None
             self.condition.notify()
 
     def _run(self):
+        """Process pending frames until shutdown, keeping only the latest result."""
+
         generation = 0
         while True:
             with self.condition:
                 self.condition.wait_for(lambda: not self.running or self.pending is not None)
                 if not self.running:
                     return
-                current, points, timestamp, directions = self.pending
+                (
+                    current, points, timestamp, directions, initial_angles,
+                    submitted_at,
+                ) = self.pending
                 self.pending = None
             try:
                 if current != generation:
                     self.retargeter.pause()
                     generation = current
-                result = self.retargeter.solve(points, timestamp, directions)
+                solve_started_at = self.clock()
+                solved = self.retargeter.solve(
+                    points, timestamp, directions, initial_angles
+                )
+                solved_at = self.clock()
+                if solved is None:
+                    result = None
+                else:
+                    timings = dict(getattr(
+                        self.retargeter, "last_stage_timings_ms", {}
+                    ))
+                    timings.update({
+                        "worker_queue": max(
+                            0.0, (solve_started_at - submitted_at) * 1000.0
+                        ),
+                    })
+                    if "solve_total" not in timings:
+                        timings["solve_total"] = max(
+                            0.0, (solved_at - solve_started_at) * 1000.0
+                        )
+                    result = (
+                        *solved,
+                        max(0.0, (solved_at - submitted_at) * 1000.0),
+                        timings,
+                    )
             except Exception as error:
                 with self.condition:
                     self.error, self.running = error, False
@@ -499,6 +624,8 @@ class RetargetWorker:
                     self.result = result
 
     def close(self):
+        """Stop the worker thread and wait for it to exit."""
+
         with self.condition:
             self.running, self.pending = False, None
             self.condition.notify()
