@@ -14,7 +14,9 @@ from config import (
     MANUS_SDK_BRIDGE_PATH,
     MANUS_SDK_VERSION,
     MANUS_STALE_SECONDS,
+    MANUS_THUMB_DIP_TO_PIP_GAIN,
     MANUS_THUMB_PIP_DIP_SCALE,
+    NORMALIZE_INPUT_HAND,
 )
 from input.frame import InitialJointAngles, InputFrame
 from .adapter import MANUS_TO_STANDARD21, adapt_raw_skeleton, handedness_from_node_info
@@ -418,6 +420,9 @@ class ManusSource:
             finger_pad_directions=adapted.directions,
             preview=None,
             initial_joint_angles=initial_angles,
+            raw_palm_length=adapted.raw_palm_length,
+            raw_palm_width=adapted.raw_palm_width,
+            points_normalized=NORMALIZE_INPUT_HAND,
         )
 
     def close(self):
@@ -433,7 +438,15 @@ def _ergonomics_initial_angles(ergonomics):
     thumb_scale = float(MANUS_THUMB_PIP_DIP_SCALE)
     if not np.isfinite(thumb_scale) or thumb_scale <= 0:
         raise ValueError("thumb PIP/DIP scale must be finite and positive")
+    dip_to_pip_gain = float(MANUS_THUMB_DIP_TO_PIP_GAIN)
+    if not np.isfinite(dip_to_pip_gain):
+        raise ValueError("thumb DIP-to-PIP gain must be finite")
     radians = np.radians(values)
+    pip, dip = radians[0, 2:4]
+    thumb_targets = np.asarray((
+        thumb_scale * (pip + dip_to_pip_gain * dip),
+        thumb_scale * dip,
+    ))
     return InitialJointAngles(
-        radians[1:5], radians[0, 2:4] * thumb_scale
+        radians[1:5], thumb_targets, four_finger_space="robot"
     )

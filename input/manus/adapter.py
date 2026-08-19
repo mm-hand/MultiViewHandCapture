@@ -4,8 +4,10 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from config import MANUS_PAD_LOCAL_AXIS, MANUS_THUMB_PAD_ROTATION_DEG
-from input.frame import relative_hand
+from config import (
+    MANUS_PAD_LOCAL_AXIS, MANUS_THUMB_PAD_ROTATION_DEG, NORMALIZE_INPUT_HAND,
+)
+from input.frame import hand0_middle_tip_distance, relative_hand
 
 
 # Official 25-node layout fallback. Non-thumb metacarpals 5/10/15/20
@@ -32,6 +34,8 @@ class AdaptedManusFrame:
     directions: np.ndarray
     mapping: np.ndarray
     mapping_source: str
+    raw_palm_length: float
+    raw_palm_width: float
 
 
 def _field(value, name):
@@ -177,24 +181,29 @@ def adapt_raw_skeleton(
         mapping, mapping_source = MANUS_TO_STANDARD21, "official-25 fallback"
 
     standard_world = convert_manus25_to_standard21(positions25, mapping, scale_to_m)
+    raw_palm_length = hand0_middle_tip_distance(standard_world)
     rotations = np.asarray(rotations_wxyz, float)
     if rotations.shape != (25, 4):
         raise ValueError("MANUS rotations must have shape (25, 4)")
     tip_directions = _rotate_wxyz(
         rotations[np.asarray(mapping)[[4, 8, 12, 16, 20]]], MANUS_PAD_LOCAL_AXIS
     )
-    normalized, directions = relative_hand(standard_world, tip_directions)
-    if normalized is None:
+    points, directions = relative_hand(
+        standard_world, tip_directions, normalize=NORMALIZE_INPUT_HAND
+    )
+    if points is None:
         raise ValueError("MANUS hand geometry has a degenerate palm size")
     if handedness in ("Left", "Right"):
         angle = np.radians(MANUS_THUMB_PAD_ROTATION_DEG)
         directions[0] = _rotate(
-            directions[0], normalized[4] - normalized[3],
+            directions[0], points[4] - points[3],
             angle if handedness == "Left" else -angle,
         )
     return AdaptedManusFrame(
-        points=normalized,
+        points=points,
         directions=directions,
         mapping=np.asarray(mapping).copy(),
         mapping_source=mapping_source,
+        raw_palm_length=raw_palm_length,
+        raw_palm_width=float(np.linalg.norm(standard_world[5] - standard_world[17])),
     )

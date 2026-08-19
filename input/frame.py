@@ -31,11 +31,14 @@ class InitialJointAngles:
 
     ``four_fingers`` rows are Index, Middle, Ring, Little and columns are MCP
     Spread, MCP F-E, PIP, DIP. ``thumb_bends`` contains the first and second
-    internal bends along the standard thumb chain.
+    internal bends along the standard thumb chain. ``four_finger_space`` is
+    ``"human"`` when retargeting must apply the WiLoR human-to-robot mapping,
+    or ``"robot"`` when the values are already direct robot-angle targets.
     """
 
     four_fingers: np.ndarray
     thumb_bends: np.ndarray
+    four_finger_space: str = "human"
 
     def __post_init__(self):
         four = np.asarray(self.four_fingers, dtype=float)
@@ -44,11 +47,15 @@ class InitialJointAngles:
             raise ValueError("Four-finger initial angles must be finite with shape (4, 4)")
         if thumb.shape != (2,) or not np.isfinite(thumb).all():
             raise ValueError("Thumb initial bends must be finite with shape (2,)")
+        if self.four_finger_space not in ("human", "robot"):
+            raise ValueError("Four-finger angle space must be 'human' or 'robot'")
         object.__setattr__(self, "four_fingers", four.copy())
         object.__setattr__(self, "thumb_bends", thumb.copy())
 
     def copy(self):
-        return InitialJointAngles(self.four_fingers, self.thumb_bends)
+        return InitialJointAngles(
+            self.four_fingers, self.thumb_bends, self.four_finger_space
+        )
 
 
 @dataclass(slots=True)
@@ -63,6 +70,11 @@ class InputFrame:
     finger_pad_directions: np.ndarray | None = None
     preview: np.ndarray | None = None
     initial_joint_angles: InitialJointAngles | None = None
+    # Direct Hand0-to-Middle-tip distance before palm-size normalization.
+    raw_palm_length: float | None = None
+    # Index-to-Little MCP distance in source metres before palm-size normalization.
+    raw_palm_width: float | None = None
+    points_normalized: bool = True
 
     @classmethod
     def empty(cls, timestamp, status, preview=None):
@@ -74,6 +86,10 @@ class InputFrame:
                 raise ValueError("Finger-pad directions require hand landmarks")
             if self.initial_joint_angles is not None:
                 raise ValueError("Initial joint angles require hand landmarks")
+            if self.raw_palm_length is not None:
+                raise ValueError("Raw palm length requires hand landmarks")
+            if self.raw_palm_width is not None:
+                raise ValueError("Raw palm width requires hand landmarks")
             return
         points = np.asarray(self.points, float)
         directions = np.asarray(self.finger_pad_directions, float)
@@ -89,6 +105,14 @@ class InputFrame:
             self.initial_joint_angles, InitialJointAngles
         ):
             raise ValueError("initial_joint_angles must be InitialJointAngles")
+        if self.raw_palm_length is not None and not np.isfinite(
+            self.raw_palm_length
+        ):
+            raise ValueError("Raw palm length must be finite")
+        if self.raw_palm_width is not None and (
+            not np.isfinite(self.raw_palm_width) or self.raw_palm_width <= 0
+        ):
+            raise ValueError("Raw palm width must be finite and positive")
 
 
 def _unit(vector, fallback=(1.0, 0.0, 0.0)):
@@ -99,11 +123,21 @@ def _unit(vector, fallback=(1.0, 0.0, 0.0)):
     return fallback / max(np.linalg.norm(fallback), EPS)
 
 
-def relative_hand(points, directions=None):
-    """Normalize standard-21 points and optional directions to the tracking frame."""
+def relative_hand(points, directions=None, *, normalize=True):
+    """Optionally normalize Standard21 points and directions to the tracking frame."""
     points = np.asarray(points, float)
     if points.shape != (21, 3) or not np.isfinite(points).all():
         raise ValueError("Hand landmarks must be finite with shape (21, 3)")
+    if not normalize:
+        if directions is None:
+            return points.copy(), None
+        directions = np.asarray(directions, float)
+        if directions.shape != (5, 3) or not np.isfinite(directions).all():
+            raise ValueError("Finger-pad directions must be finite with shape (5, 3)")
+        lengths = np.linalg.norm(directions, axis=1, keepdims=True)
+        if np.any(lengths < EPS):
+            raise ValueError("Finger-pad directions must be nonzero")
+        return points.copy(), directions / lengths
     centered = points - points[0]
     palm_size = np.mean([np.linalg.norm(centered[index]) for index in (5, 9, 13, 17)])
     if palm_size < EPS:
@@ -145,6 +179,18 @@ def compute_cmc_frame(points):
     z_axis = _unit(z_axis)
     y_axis = np.cross(z_axis, x_axis)
     return points[1].copy(), np.column_stack((x_axis, y_axis, z_axis))
+
+
+def hand0_middle_tip_distance(points):
+    """Return the direct distance from Hand0 (P0) to Middle tip (P12)."""
+
+    points = np.asarray(points, float)
+    if points.shape != (21, 3) or not np.isfinite(points).all():
+        raise ValueError("Hand landmarks must be finite with shape (21, 3)")
+    distance = float(np.linalg.norm(points[12] - points[0]))
+    if distance <= EPS:
+        raise ValueError("Degenerate Hand0-to-Middle-tip distance")
+    return distance
 
 
 def _segment_directions(points):

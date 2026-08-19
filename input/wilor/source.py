@@ -19,8 +19,12 @@ from config import (
     WILOR_THUMB_PAD_ROTATION_DEG,
     WILOR_DIRECTION_FILTER,
     WILOR_POINT_FILTER,
+    NORMALIZE_INPUT_HAND,
 )
-from input.frame import InputFrame, initial_joint_angles_from_points, relative_hand
+from input.frame import (
+    InputFrame, initial_joint_angles_from_points, relative_hand,
+    hand0_middle_tip_distance,
+)
 from one_euro import OneEuro
 from .camera import OpenCVCamera
 
@@ -207,14 +211,21 @@ def mesh_hand(vertices, right, regressor, faces):
     if not right:
         joints[:, 0] *= -1
         normals[:, 0] *= -1
-    points, directions = relative_hand(joints, normals)
+    raw_palm_length = hand0_middle_tip_distance(joints)
+    raw_palm_width = float(np.linalg.norm(joints[5] - joints[17]))
+    points, directions = relative_hand(
+        joints, normals, normalize=NORMALIZE_INPUT_HAND
+    )
     if points is None:
         raise ValueError("Degenerate WiLoR hand")
     directions[0] = rotate(
         directions[0], points[4] - points[3],
         np.radians(WILOR_THUMB_PAD_ROTATION_DEG) * (-1 if right else 1),
     )
-    return points, directions, "Right" if right else "Left"
+    return (
+        points, directions, "Right" if right else "Left",
+        raw_palm_length, raw_palm_width,
+    )
 
 
 def rotate(vector, axis, angle):
@@ -316,7 +327,9 @@ class WilorSource:
             return InputFrame.empty(timestamp, "WILOR WAITING", preview(frame))
         try:
             vertices, translation = self.reconstructor(frame, self.detection)
-            points, directions, handedness = mesh_hand(
+            (
+                points, directions, handedness, raw_palm_length, raw_palm_width,
+            ) = mesh_hand(
                 vertices, self.detection.handedness, self.regressor, self.faces
             )
         except ValueError as error:
@@ -344,6 +357,9 @@ class WilorSource:
             f"WILOR {handedness} {self.detection.score:.2f} · {fps:.1f} FPS",
             finger_pad_directions=directions, preview=image,
             initial_joint_angles=initial_angles,
+            raw_palm_length=raw_palm_length,
+            raw_palm_width=raw_palm_width,
+            points_normalized=NORMALIZE_INPUT_HAND,
         )
 
     def close(self):

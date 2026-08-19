@@ -7,15 +7,21 @@ import numpy as np
 import track
 
 from input import create_source
-from input.frame import InitialJointAngles, relative_hand
+from input.frame import (
+    InitialJointAngles, compute_cmc_frame, relative_hand,
+    hand0_middle_tip_distance,
+)
 from input.manus.adapter import (
     MANUS_TO_STANDARD21,
+    MANUS_THUMB_PAD_ROTATION_DEG,
     adapt_raw_skeleton,
     convert_manus25_to_standard21,
 )
 from input.manus.calibration import ensure_calibration
 from input.manus.source import (
     CalibrationStep,
+    MANUS_THUMB_DIP_TO_PIP_GAIN,
+    MANUS_THUMB_PIP_DIP_SCALE,
     ManusPacket,
     ManusSource,
     _SdkFrame,
@@ -133,14 +139,19 @@ class ManusPhase1Tests(unittest.TestCase):
 
     def test_thumb_pip_dip_scale_is_configurable_and_thumb_only(self):
         ergonomics = np.arange(20, dtype=float).reshape(5, 4)
-        with patch("input.manus.source.MANUS_THUMB_PIP_DIP_SCALE", 2.0):
+        with (
+            patch("input.manus.source.MANUS_THUMB_PIP_DIP_SCALE", 2.0),
+            patch("input.manus.source.MANUS_THUMB_DIP_TO_PIP_GAIN", 0.5),
+        ):
             angles = _ergonomics_initial_angles(ergonomics)
         np.testing.assert_allclose(
             angles.four_fingers, np.radians(ergonomics[1:5])
         )
         np.testing.assert_allclose(
-            angles.thumb_bends, np.radians(ergonomics[0, 2:4]) * 2.0
+            angles.thumb_bends,
+            np.radians((2 * 2 + 3 * 0.5 * 2, 3 * 2)),
         )
+        self.assertEqual(angles.four_finger_space, "robot")
 
     def test_source_returns_common_frame_with_pad_directions(self):
         packet = raw_packet(received_at=5.0)
@@ -154,6 +165,8 @@ class ManusPhase1Tests(unittest.TestCase):
         self.assertTrue(frame.ready)
         self.assertEqual(frame.handedness, "Left")
         self.assertEqual(frame.points.shape, (21, 3))
+        self.assertFalse(frame.points_normalized)
+        np.testing.assert_allclose(frame.points, standard_hand_world())
         self.assertEqual(frame.finger_pad_directions.shape, (5, 3))
         self.assertIsInstance(frame.initial_joint_angles, InitialJointAngles)
         np.testing.assert_allclose(
@@ -162,7 +175,19 @@ class ManusPhase1Tests(unittest.TestCase):
         )
         np.testing.assert_allclose(
             frame.initial_joint_angles.thumb_bends,
-            np.radians((2, 3)) * 1.5,
+            np.radians((
+                MANUS_THUMB_PIP_DIP_SCALE
+                * (2 + MANUS_THUMB_DIP_TO_PIP_GAIN * 3),
+                MANUS_THUMB_PIP_DIP_SCALE * 3,
+            )),
+        )
+        self.assertEqual(frame.initial_joint_angles.four_finger_space, "robot")
+        raw = standard_hand_world()
+        self.assertAlmostEqual(
+            frame.raw_palm_length, hand0_middle_tip_distance(raw)
+        )
+        self.assertAlmostEqual(
+            frame.raw_palm_width, np.linalg.norm(raw[5] - raw[17])
         )
         np.testing.assert_allclose(np.linalg.norm(frame.finger_pad_directions, axis=1), 1)
         source.close()
@@ -196,7 +221,9 @@ class ManusPhase1Tests(unittest.TestCase):
             packet.positions, rotations_wxyz=packet.rotations_wxyz
         )
         standard = convert_manus25_to_standard21(packet.positions)
-        expected = relative_hand(standard, np.tile((0, 1., 0), (5, 1)))[1]
+        expected = relative_hand(
+            standard, np.tile((0, 1., 0), (5, 1)), normalize=False
+        )[1]
         np.testing.assert_allclose(adapted.directions, expected, atol=1e-7)
 
     def test_thumb_pad_alignment_uses_handed_ip_to_tip_rotation(self):
@@ -233,7 +260,7 @@ class ManusPhase1Tests(unittest.TestCase):
                 + axis * np.dot(axis, vector) * (1 - cosine)
             )
 
-        angle = np.radians(30.0)
+        angle = np.radians(MANUS_THUMB_PAD_ROTATION_DEG)
         np.testing.assert_allclose(left.directions[0], rotate(raw.directions[0], angle))
         np.testing.assert_allclose(right.directions[0], rotate(raw.directions[0], -angle))
         np.testing.assert_allclose(left.directions[1:], raw.directions[1:])
@@ -338,7 +365,7 @@ class ManusPhase1Tests(unittest.TestCase):
         with patch("track._parse_args", return_value=arguments), patch(
             "track.create_source", side_effect=RuntimeError("calibration required")
         ), patch("track.Retargeter") as retargeter, patch(
-            "track.Viewer"
+            "track.ViewerProcess"
         ) as viewer, self.assertRaisesRegex(RuntimeError, "calibration required"):
             track.main()
         retargeter.assert_not_called()

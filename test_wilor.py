@@ -108,16 +108,26 @@ class WilorTests(unittest.TestCase):
     def test_mesh_to_standard21_and_pad_directions(self):
         vertices, regressor, faces = synthetic_mesh()
         with patch("input.wilor.source.WILOR_THUMB_PAD_ROTATION_DEG", 0.0):
-            right_points, raw_right, _ = mesh_hand(vertices, 1, regressor, faces)
-            left_points, raw_left, _ = mesh_hand(vertices, 0, regressor, faces)
-        points, directions, handedness = mesh_hand(vertices, 1, regressor, faces)
+            right_points, raw_right, _, right_raw_x, right_raw_width = mesh_hand(
+                vertices, 1, regressor, faces
+            )
+            left_points, raw_left, _, left_raw_x, left_raw_width = mesh_hand(
+                vertices, 0, regressor, faces
+            )
+        points, directions, handedness, raw_x, raw_width = mesh_hand(
+            vertices, 1, regressor, faces
+        )
         self.assertEqual(handedness, "Right")
+        self.assertTrue(np.isfinite(raw_x))
+        self.assertGreater(raw_width, 0.0)
+        self.assertAlmostEqual(right_raw_x, left_raw_x)
+        self.assertAlmostEqual(right_raw_width, left_raw_width)
         self.assertEqual(points.shape, (21, 3))
         self.assertEqual(directions.shape, (5, 3))
         self.assertTrue(np.isfinite(points).all())
         np.testing.assert_allclose(np.linalg.norm(directions, axis=1), 1, atol=1e-7)
 
-        left_points, left_directions, handedness = mesh_hand(
+        left_points, left_directions, handedness, _, _ = mesh_hand(
             vertices, 0, regressor, faces
         )
         self.assertEqual(handedness, "Left")

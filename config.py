@@ -9,6 +9,9 @@ WILOR_ASSET_DIR = _ROOT / "input/wilor/assets"
 
 INPUT_SOURCE = "manus"  # "wilor" or "manus"
 STANDARD_PALM_SIZE = 0.086
+# Diagnostic switch: False passes source Standard21 geometry through without
+# wrist centering, palm-frame rotation, or palm-size scaling.
+NORMALIZE_INPUT_HAND = False
 
 # WILOR ------------------------------------------------------------------------
 
@@ -37,6 +40,8 @@ MANUS_CALIBRATION_CONNECT_TIMEOUT = 60.0
 MANUS_POSITION_SCALE_TO_M = 1.0
 # Fixed gain applied to MANUS Thumb PIPStretch/DIPStretch before retargeting.
 MANUS_THUMB_PIP_DIP_SCALE = 1.5
+# Blend this fraction of Thumb DIPStretch into the MANUS J18 angle target.
+MANUS_THUMB_DIP_TO_PIP_GAIN = 0.5
 # Maximum age of a MANUS frame, in seconds.
 MANUS_STALE_SECONDS = 0.20
 # Official Core raw-skeleton pinch compensation. The SDK documents this for
@@ -46,7 +51,7 @@ MANUS_PINCH_COMPENSATION = True
 MANUS_PAD_LOCAL_AXIS = (0.0, 0.0, -1.0)
 # Thumb-pad alignment around the palm-local Thumb IP-to-TIP axis. The adapter
 # applies a positive angle for Left and a negative angle for Right.
-MANUS_THUMB_PAD_ROTATION_DEG = 30.0
+MANUS_THUMB_PAD_ROTATION_DEG = 45.0
 
 
 # MMHand joint mapping ---------------------------------------------------------
@@ -80,17 +85,20 @@ ROBOT_JOINT_NAMES = (
 # 掌原点到拇指尖的人手向量缩放系数；1.0 表示不缩放。
 RETARGET_THUMB_TIP_SCALE = 1.0
 # 掌原点到拇指尖位置误差的损失权重。
-RETARGET_THUMB_TIP_WEIGHT = 1.0
+RETARGET_THUMB_TIP_WEIGHT = 0.0
 # 拇指链第一/第二弯曲分别到 MMHand J18/J19 的角度损失。
-RETARGET_THUMB_PROXIMAL_BEND_WEIGHT = 1.5
-RETARGET_THUMB_DISTAL_BEND_WEIGHT = 1.5
+RETARGET_THUMB_PROXIMAL_BEND_WEIGHT = 0.3
+RETARGET_THUMB_DISTAL_BEND_WEIGHT = 0.5
 # 四指关节角和拇指尖到四指尖相对向量的损失权重。
-RETARGET_FINGER_ANGLE_WEIGHT = 1.0
-RETARGET_FINGERTIP_VECTOR_WEIGHT = 1.0
+RETARGET_FINGER_ANGLE_WEIGHT = 3.0
+RETARGET_FINGERTIP_VECTOR_WEIGHT = 8.0
 # Human-to-MMHand thumb pad direction loss weight.
-RETARGET_THUMB_PAD_WEIGHT = 2.0
-# The four non-thumb pad directions share this one residual weight.
-RETARGET_FINGER_PAD_WEIGHT = 0.0
+RETARGET_THUMB_PAD_WEIGHT = 1.0 # 2.0
+# Per-finger pad-direction loss weights in Standard21 finger order.
+RETARGET_INDEX_PAD_WEIGHT = 1.0
+RETARGET_MIDDLE_PAD_WEIGHT = 1.0
+RETARGET_RING_PAD_WEIGHT = 1.0
+RETARGET_LITTLE_PAD_WEIGHT = 1.0
 # 最终 21 个 MMHand 输出角的 One Euro 参数，角度单位 degree。
 RETARGET_ANGLE_FILTER = (1.0, 0.02, 1.0)
 # 每帧最多计算的不同 SLSQP 关节候选数；超限时采用最低损失候选。

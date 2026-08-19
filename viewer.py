@@ -7,9 +7,10 @@ import cv2
 import numpy as np
 from scipy.spatial.transform import Rotation
 
+import config as C
 from config import URDF_PATH, WEB_FPS, WEB_PORT, VIEW_PORTS
-from input.frame import SKELETON_EDGES
-from retarget import compute_cmc_frame, human_thumb_geometry
+from input.frame import SKELETON_EDGES, hand0_middle_tip_distance
+from retarget import compute_cmc_frame, human_thumb_geometry, human_vector_features
 
 ROBOT_CAMERA_DISTANCE = 0.42
 PALM_FRAME_AXIS_LENGTH = 0.04
@@ -31,6 +32,32 @@ LOSS_LABELS = (
     ("total", "total"),
 )
 ANGLE_COLORS = ((80, 230, 120), (190, 100, 255))
+VECTOR_GROUPS = (
+    "off", "thumb_tip", "fingertip_vectors", "thumb_pad", "finger_pads",
+)
+VECTOR_GROUP_LABELS = {
+    "off": "Off",
+    "thumb_tip": "Thumb tip",
+    "fingertip_vectors": "Fingertip vectors",
+    "thumb_pad": "Thumb pad",
+    "finger_pads": "Finger pads",
+}
+VECTOR_ITEMS = {
+    "thumb_tip": (("Thumb", (235, 80, 200)),),
+    "fingertip_vectors": (
+        ("Index", (80, 220, 100)),
+        ("Middle", (60, 210, 235)),
+        ("Ring", (245, 205, 60)),
+        ("Little", (180, 100, 235)),
+    ),
+    "thumb_pad": (("Thumb", (235, 80, 200)),),
+    "finger_pads": (
+        ("Index", (80, 220, 100)),
+        ("Middle", (60, 210, 235)),
+        ("Ring", (245, 205, 60)),
+        ("Little", (180, 100, 235)),
+    ),
+}
 
 
 def _loss_text(losses=None):
@@ -102,6 +129,116 @@ def _arrow_points(starts, directions):
     ).astype(np.float32)
 
 
+def _vector_group_info(group):
+    """Describe the selected residual group and its exact solver weight."""
+
+    if group == "off":
+        return "Residual vectors hidden"
+    if group == "thumb_tip":
+        disabled = " · disabled" if C.RETARGET_THUMB_TIP_WEIGHT == 0 else ""
+        return (
+            f"thumb tip · weight {C.RETARGET_THUMB_TIP_WEIGHT:g}{disabled} · "
+            f"scale {C.RETARGET_THUMB_TIP_SCALE:g} · "
+            f"normalizer {1000 * C.STANDARD_PALM_SIZE:g} mm"
+        )
+    if group == "fingertip_vectors":
+        return (
+            f"fingertip vectors · shared weight "
+            f"{C.RETARGET_FINGERTIP_VECTOR_WEIGHT:g} · "
+            f"normalizer {1000 * C.STANDARD_PALM_SIZE:g} mm"
+        )
+    if group == "thumb_pad":
+        configured = C.RETARGET_THUMB_PAD_WEIGHT
+        return (
+            f"thumb pad · configured weight {configured:g} · "
+            f"solver weight {configured / 3:g}"
+        )
+    configured = (
+        C.RETARGET_INDEX_PAD_WEIGHT,
+        C.RETARGET_MIDDLE_PAD_WEIGHT,
+        C.RETARGET_RING_PAD_WEIGHT,
+        C.RETARGET_LITTLE_PAD_WEIGHT,
+    )
+    weights = " ".join(
+        f"{name[0]}={weight:g}" for name, weight in zip(
+            ("Index", "Middle", "Ring", "Little"), configured
+        )
+    )
+    effective = " ".join(
+        f"{name[0]}={weight / 3:g}" for name, weight in zip(
+            ("Index", "Middle", "Ring", "Little"), configured
+        )
+    )
+    return (
+        f"finger pads · configured {weights} · solver effective {effective}"
+    )
+
+
+def _vector_label(name, vector, *, direction=False, angle_error=None):
+    """Format one CMC-local position or direction vector annotation."""
+
+    vector = np.asarray(vector, float)
+    if direction:
+        xyz = ", ".join(f"{value:+.3f}" for value in vector)
+        angle = "" if angle_error is None else f"\nangle error {angle_error:.1f}°"
+        return f"{name}\nxyz [{xyz}]\n|d| {np.linalg.norm(vector):.3f}{angle}"
+    millimetres = 1000 * vector
+    xyz = ", ".join(f"{value:+.1f}" for value in millimetres)
+    return f"{name}\nxyz [{xyz}] mm\n|v| {np.linalg.norm(millimetres):.1f} mm"
+
+
+def _pad_angle_errors(human_pads, robot_pads):
+    """Return row-wise angular errors between two sets of unit pad vectors."""
+
+    dots = np.einsum("ij,ij->i", human_pads, robot_pads)
+    return np.degrees(np.arccos(np.clip(dots, -1.0, 1.0)))
+
+
+def _human_residual_vector_data(points, directions):
+    """Build scene geometry and exact loss targets for the human side."""
+
+    points = np.asarray(points, float)
+    directions = np.asarray(directions, float)
+    _, _, thumb_tip, relative, pads = human_vector_features(points, directions)
+    tips = points[TIP_INDICES]
+    return {
+        "thumb_tip": (points[1:2], points[4:5], thumb_tip),
+        "fingertip_vectors": (
+            np.repeat(points[4:5], 4, axis=0), tips[1:], relative,
+        ),
+        "thumb_pad": (
+            tips[:1], tips[:1] + PAD_DIRECTION_LENGTH * directions[:1], pads[:1],
+        ),
+        "finger_pads": (
+            tips[1:], tips[1:] + PAD_DIRECTION_LENGTH * directions[1:], pads[1:],
+        ),
+    }
+
+
+def _robot_residual_vector_data(model, q):
+    """Build scene geometry and exact filtered-robot loss feature vectors."""
+
+    q = np.asarray(q, float)
+    values = model.features(q)[0]
+    tips, directions = model.fingertip_pads(q)
+    return {
+        "thumb_tip": (
+            model.palm_position[None], tips[:1], values[0],
+        ),
+        "fingertip_vectors": (
+            np.repeat(tips[:1], 4, axis=0), tips[1:], values[2],
+        ),
+        "thumb_pad": (
+            tips[:1], tips[:1] + PAD_DIRECTION_LENGTH * directions[:1],
+            values[3][:1],
+        ),
+        "finger_pads": (
+            tips[1:], tips[1:] + PAD_DIRECTION_LENGTH * directions[1:],
+            values[3][1:],
+        ),
+    }
+
+
 def _rotate(vector, axis, angle):
     axis = axis / np.linalg.norm(axis)
     return (vector * np.cos(angle) + np.cross(axis, vector) * np.sin(angle)
@@ -133,13 +270,30 @@ def _human_angle_segments(points):
     )
 
 
-def _angle_text(title, labels, angles=None):
+def _angle_text(
+    title, labels, angles=None, palm_width=None, middle_tip_x=None,
+    raw_palm_length=None, raw_palm_width=None,
+    palm_width_label="palm width", middle_tip_label="palm length",
+):
+    """Format thumb angles, palm width, and the CMC-frame Middle-tip x value."""
+
+    lines = [title]
     if angles is None:
-        return f"{title}\nwaiting"
-    return title + "\n" + "\n".join(
-        f"{label:<8}{np.degrees(value):+6.1f}°"
-        for label, value in zip(labels, angles)
-    )
+        lines.append("waiting")
+    else:
+        lines.extend(
+            f"{label:<8}{np.degrees(value):+6.1f}°"
+            for label, value in zip(labels, angles)
+        )
+    if palm_width is not None and np.isfinite(palm_width) and palm_width >= 0:
+        lines.append(f"{palm_width_label} {1000 * palm_width:6.1f} mm")
+    if middle_tip_x is not None and np.isfinite(middle_tip_x):
+        lines.append(f"{middle_tip_label} {1000 * middle_tip_x:6.1f} mm")
+    if raw_palm_length is not None and np.isfinite(raw_palm_length):
+        lines.append(f"raw palm length {1000 * raw_palm_length:6.1f} mm")
+    if raw_palm_width is not None and np.isfinite(raw_palm_width):
+        lines.append(f"raw palm width {1000 * raw_palm_width:6.1f} mm")
+    return "\n".join(lines)
 
 
 def _robot_camera_pose(model):
@@ -249,6 +403,16 @@ class Viewer:
             )
             for name, color in zip(("pip", "dip"), ANGLE_COLORS)
         )
+        self.vector_lock = threading.Lock()
+        self.vector_group = "fingertip_vectors"
+        self.human_vector_handles = self._add_residual_vector_handles(
+            normalized, "/hand/residual_vectors"
+        )
+        self.robot_vector_handles = self._add_residual_vector_handles(
+            robot_server, "/robot/residual_vectors"
+        )
+        self.vector_available = {"human": False, "robot": False}
+        self.last_robot = None
         self.last_update, self.status = 0.0, "WAITING"
         self.loss_text = _loss_text()
         self.human_angle_text = _angle_text("Input thumb", (), None)
@@ -259,6 +423,109 @@ class Viewer:
         self.preview = cv2.imencode(".jpg", np.zeros((360, 1280, 3), np.uint8))[1].tobytes()
         self._start_dashboard()
         print(f"Dashboard: http://localhost:{WEB_PORT}")
+
+    @staticmethod
+    def _add_residual_vector_handles(server, root):
+        """Create hidden arrows and labels for every residual vector group."""
+
+        handles = {}
+        for group, items in VECTOR_ITEMS.items():
+            handles[group] = []
+            for index, (name, color) in enumerate(items):
+                path = f"{root}/{group}/{index}_{name.lower()}"
+                arrow = server.scene.add_arrows(
+                    f"{path}/arrow",
+                    np.zeros((1, 2, 3), np.float32),
+                    color,
+                    shaft_radius=ARROW_SHAFT_RADIUS,
+                    head_radius=ARROW_HEAD_RADIUS,
+                    head_length=ARROW_HEAD_LENGTH,
+                    visible=False,
+                )
+                label = server.scene.add_label(
+                    f"{path}/label", name,
+                    position=(0.0, 0.0, 0.0),
+                    visible=False,
+                    font_screen_scale=0.8,
+                    anchor="bottom-center",
+                )
+                handles[group].append((arrow, label))
+        return handles
+
+    @staticmethod
+    def _write_residual_vector_handles(handles, data, pad_errors=None):
+        """Update one side's arrows and CMC-local value labels."""
+
+        for group, items in handles.items():
+            starts, ends, vectors = data[group]
+            direction = group in ("thumb_pad", "finger_pads")
+            errors = None if pad_errors is None else pad_errors.get(group)
+            for row, ((name, _), (arrow, label)) in enumerate(
+                zip(VECTOR_ITEMS[group], items)
+            ):
+                arrow.points = np.asarray(((starts[row], ends[row]),), np.float32)
+                label.position = ends[row] if direction else .5 * (starts[row] + ends[row])
+                label.text = _vector_label(
+                    name, vectors[row], direction=direction,
+                    angle_error=None if errors is None else errors[row],
+                )
+
+    def _apply_vector_visibility(self):
+        """Show only the selected group on each side when its data is valid."""
+
+        for side, handles in (
+            ("human", self.human_vector_handles),
+            ("robot", self.robot_vector_handles),
+        ):
+            for group, items in handles.items():
+                visible = self.vector_available[side] and group == self.vector_group
+                for arrow, label in items:
+                    arrow.visible = label.visible = visible
+
+    def set_vector_group(self, group):
+        """Validate and apply a dashboard residual-vector selection."""
+
+        if group not in VECTOR_GROUPS:
+            raise ValueError(f"Unknown residual vector group: {group}")
+        with self.vector_lock:
+            self.vector_group = group
+            self._apply_vector_visibility()
+
+    def _update_residual_vectors(self, frame, robot):
+        """Refresh paired human targets and filtered robot feature vectors."""
+
+        human = robot_data = None
+        if frame.points is not None and frame.finger_pad_directions is not None:
+            try:
+                human = _human_residual_vector_data(
+                    frame.points, frame.finger_pad_directions
+                )
+            except ValueError:
+                human = None
+        if robot is not None:
+            robot_data = _robot_residual_vector_data(self.model, robot)
+        pad_errors = None
+        if human is not None and robot_data is not None:
+            all_errors = _pad_angle_errors(
+                np.vstack((human["thumb_pad"][2], human["finger_pads"][2])),
+                np.vstack((robot_data["thumb_pad"][2], robot_data["finger_pads"][2])),
+            )
+            pad_errors = {
+                "thumb_pad": all_errors[:1],
+                "finger_pads": all_errors[1:],
+            }
+        with self.vector_lock:
+            if human is not None:
+                self._write_residual_vector_handles(
+                    self.human_vector_handles, human, pad_errors
+                )
+            if robot_data is not None:
+                self._write_residual_vector_handles(
+                    self.robot_vector_handles, robot_data, pad_errors
+                )
+            self.vector_available["human"] = human is not None
+            self.vector_available["robot"] = robot_data is not None
+            self._apply_vector_visibility()
 
     @staticmethod
     def _camera(server, position, look_at, up, fov):
@@ -289,10 +556,21 @@ background:#101318dd;color:#bde2ff;font:13px/1.35 monospace;pointer-events:none}
 .angles{{position:absolute;z-index:3;right:0;top:0;margin:0;padding:9px 12px;
 background:#101318dd;color:#dff;font:13px/1.4 monospace;pointer-events:none}}
 .timings{{position:absolute;z-index:3;left:0;top:66px;margin:0;padding:8px 12px;
-background:#101318dd;color:#b8c5d6;font:12px/1.4 monospace;pointer-events:none}}</style></head><body>
+background:#101318dd;color:#b8c5d6;font:12px/1.4 monospace;pointer-events:none}}
+.vector-control{{position:fixed;z-index:10;left:50%;top:calc(40vh + 10px);
+transform:translateX(-50%);padding:6px 10px;border:1px solid #526071;
+border-radius:6px;background:#101318ee;color:#dff;font:12px sans-serif}}
+.vector-control select{{margin:0 7px;background:#202834;color:#eef;border:1px solid #607086}}
+#vectorInfo{{color:#9bd}}</style></head><body>
 <section class="panel input"><h2>Input <span id="status">WAITING</span></h2>
 <pre id="losses">Weighted retarget loss\nwaiting</pre><img id="preview"></section>
-<section class="panel"><h2>Normalized hand <span class="latency" id="normalizationLatency">waiting</span><span class="render-time" id="normalizedRender">render waiting</span></h2><pre class="angles" id="humanAngles">Input thumb\nwaiting</pre><iframe id="normalized"></iframe></section>
+<div class="vector-control">Residual vectors
+<select id="vectorGroup">
+<option value="off">Off</option><option value="thumb_tip">Thumb tip</option>
+<option value="fingertip_vectors" selected>Fingertip vectors</option>
+<option value="thumb_pad">Thumb pad</option><option value="finger_pads">Finger pads</option>
+</select><span id="vectorInfo"></span></div>
+<section class="panel"><h2>Input hand <span class="latency" id="normalizationLatency">waiting</span><span class="render-time" id="normalizedRender">render waiting</span></h2><pre class="angles" id="humanAngles">Input thumb\nwaiting</pre><iframe id="normalized"></iframe></section>
 <section class="panel"><h2>Retargeted MMHand <span class="latency" id="retargetLatency">waiting</span><span class="render-time" id="robotRender">render waiting</span></h2><pre class="timings" id="retargetTimings">waiting</pre><pre class="angles" id="robotAngles">MMHand thumb\nwaiting</pre><iframe id="robot"></iframe></section>
 <script>
 const host=location.hostname, statusText=document.getElementById("status"),
@@ -302,9 +580,18 @@ const normalizationLatency=document.getElementById("normalizationLatency"),
 retargetLatency=document.getElementById("retargetLatency"),
 normalizedRender=document.getElementById("normalizedRender"),
 robotRender=document.getElementById("robotRender");
-const retargetTimings=document.getElementById("retargetTimings");
+const retargetTimings=document.getElementById("retargetTimings"),
+vectorGroup=document.getElementById("vectorGroup"),vectorInfo=document.getElementById("vectorInfo");
 for(const [id,port] of [["normalized",{normalized_port}],["robot",{robot_port}]])
   document.getElementById(id).src=`http://${{host}}:${{port}}`;
+vectorGroup.addEventListener("change",async()=>{{
+  try{{
+    const response=await fetch("/vector-group",{{method:"POST",
+      headers:{{"Content-Type":"application/json"}},
+      body:JSON.stringify({{group:vectorGroup.value}})}});
+    if(!response.ok) throw new Error(await response.text());
+  }}catch(error){{console.debug("vector group update failed",error)}}
+}});
 let previewUrl=null;
 async function refresh(){{
   try{{
@@ -323,6 +610,8 @@ async function refresh(){{
     normalizedRender.textContent=state.normalized_render;
     robotRender.textContent=state.robot_render;
     retargetTimings.textContent=state.retarget_timings;
+    if(document.activeElement!==vectorGroup) vectorGroup.value=state.vector_group;
+    vectorInfo.textContent=state.vector_group_info;
   }}catch(error){{console.debug("dashboard refresh failed",error)}}
   setTimeout(refresh,{round(1000 / WEB_FPS)});
 }}
@@ -345,6 +634,8 @@ refresh();
                         "normalized_render": owner.normalized_render_text,
                         "robot_render": owner.robot_render_text,
                         "retarget_timings": owner.retarget_timings_text,
+                        "vector_group": owner.vector_group,
+                        "vector_group_info": _vector_group_info(owner.vector_group),
                     }).encode()
                     content_type = "application/json"
                 elif path == "/":
@@ -354,6 +645,35 @@ refresh();
                     return
                 self.send_response(200)
                 self.send_header("Content-Type", content_type)
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                try:
+                    self.wfile.write(body)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+
+            def do_POST(self):
+                if self.path.split("?", 1)[0] != "/vector-group":
+                    self.send_error(404)
+                    return
+                try:
+                    length = int(self.headers.get("Content-Length", "0"))
+                    if length <= 0 or length > 1024:
+                        raise ValueError("Invalid request size")
+                    payload = json.loads(self.rfile.read(length))
+                    if not isinstance(payload, dict):
+                        raise ValueError("Expected a JSON object")
+                    owner.set_vector_group(payload.get("group"))
+                except (json.JSONDecodeError, TypeError, ValueError) as error:
+                    self.send_error(400, str(error))
+                    return
+                body = json.dumps({
+                    "vector_group": owner.vector_group,
+                    "vector_group_info": _vector_group_info(owner.vector_group),
+                }).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.send_header("Cache-Control", "no-store")
                 self.end_headers()
@@ -419,23 +739,35 @@ refresh();
             for handle, segments in zip(self.human_angle_arcs, arcs):
                 handle.points, handle.visible = segments, True
             initial_angles = frame.initial_joint_angles
-            self.human_angle_text = _angle_text(
-                "Input thumb", ("proximal", "distal"),
-                None if initial_angles is None else initial_angles.thumb_bends,
-            )
+            middle_tip_x = None
             try:
                 origin, palm_frame = compute_cmc_frame(points)
             except ValueError:
                 self.human_retarget_frame.visible = False
             else:
+                middle_tip_x = hand0_middle_tip_distance(points)
                 self.human_retarget_frame.position = origin
                 self.human_retarget_frame.wxyz = _frame_wxyz(palm_frame)
                 self.human_retarget_frame.visible = True
+            self.human_angle_text = _angle_text(
+                "Input thumb", ("proximal", "distal"),
+                None if initial_angles is None else initial_angles.thumb_bends,
+                np.linalg.norm(points[5] - points[17]), middle_tip_x,
+                frame.raw_palm_length if frame.points_normalized else None,
+                frame.raw_palm_width if frame.points_normalized else None,
+                palm_width_label=(
+                    "palm width" if frame.points_normalized else "raw palm width"
+                ),
+                middle_tip_label=(
+                    "palm length" if frame.points_normalized else "raw palm length"
+                ),
+            )
         self.normalized_render_text = _render_time_text(
             (time.perf_counter() - normalized_render_started) * 1000.0
             if visible else None
         )
         if robot is not None:
+            self.last_robot = np.asarray(robot, float).copy()
             robot_render_started = time.perf_counter()
             self.retarget_latency_text = _latency_text(retarget_latency_ms)
             self.retarget_timings_text = _timing_breakdown_text(
@@ -454,18 +786,24 @@ refresh();
                 )
                 handle.visible = True
             self.robot_angle_text = _angle_text(
-                "MMHand thumb", ("J18/PIP", "J19/DIP"), robot[18:20]
+                "MMHand thumb", ("J18/PIP", "J19/DIP"), robot[18:20],
+                self.model.palm_width(robot),
+                self.model.urdf_palm_length,
+                palm_width_label="MMHand palm width",
+                middle_tip_label="MMHand URDF palm length",
             )
             self.robot_render_text = _render_time_text(
                 (time.perf_counter() - robot_render_started) * 1000.0
             )
         elif not visible or frame.handedness != "Left":
+            self.last_robot = None
             self.retarget_latency_text = "waiting"
             self.retarget_timings_text = _timing_breakdown_text()
             self.robot_render_text = _render_time_text(None)
             for arc in self.robot_angle_arcs:
                 arc.visible = False
             self.robot_angle_text = _angle_text("MMHand thumb", (), None)
+        self._update_residual_vectors(frame, self.last_robot)
         return True
 
     def close(self):

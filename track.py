@@ -6,7 +6,7 @@ import numpy as np
 from input import create_source
 from retarget import Retargeter, RetargetWorker
 from ros import RosOutput
-from viewer import Viewer
+from viewer_process import ViewerProcess
 
 
 def _parse_args(argv=None):
@@ -21,7 +21,7 @@ def main():
     args = _parse_args()
     source = create_source()
     retargeter = Retargeter()
-    viewer = Viewer(retargeter.model)
+    viewer = ViewerProcess()
     ros = RosOutput() if args.ros else None
     worker = RetargetWorker(retargeter)
     simulation = None

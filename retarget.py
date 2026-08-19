@@ -2,6 +2,7 @@
 
 import xml.etree.ElementTree as ET
 from collections import defaultdict
+from pathlib import Path
 import threading
 import time
 import warnings
@@ -15,6 +16,7 @@ from one_euro import OneEuro
 
 EPS = 1e-9
 ROBOT_TIPS = ("5-tip_Link", "1-tip_Link", "2-tip_Link", "3-tip_Link", "4-tip_Link")
+ROBOT_MIDDLE_FINGERTIP = "finger_2_fingertip_1"
 ROBOT_FINGERS = tuple(
     (
         f"finger_{finger}_proximal_phalanx_1",
@@ -84,6 +86,25 @@ def human_thumb_geometry(points):
     return segments, np.asarray(angles), np.asarray(axes)
 
 
+def human_vector_features(points, directions):
+    """Return the spatial and pad-direction targets used by retarget loss."""
+
+    points = np.asarray(points, float)
+    directions = np.asarray(directions, float)
+    if points.shape != (21, 3) or not np.isfinite(points).all():
+        raise ValueError("Retargeting requires 21 finite points")
+    if directions.shape != (5, 3) or not np.isfinite(directions).all():
+        raise ValueError("Invalid finger-pad directions")
+    origin, rotation = compute_cmc_frame(points)
+    local = (points - origin) @ rotation
+    pads = np.asarray([
+        _checked_unit(direction @ rotation) for direction in directions
+    ])
+    return origin, rotation, local[4:5], (
+        local[[8, 12, 16, 20]] - local[4]
+    ), pads
+
+
 def _rotation(axis, angle):
     """Build a 3D Rodrigues rotation matrix for one axis-angle motion."""
 
@@ -101,6 +122,34 @@ def _origin(node):
     transform[:3, :3] = _rotation((0, 0, 1), yaw) @ _rotation((0, 1, 0), pitch) @ _rotation((1, 0, 0), roll)
     transform[:3, 3] = xyz
     return transform
+
+
+def _stl_vertices(path):
+    """Load triangle vertices from a binary or ASCII STL file."""
+
+    data = Path(path).read_bytes()
+    if len(data) >= 84:
+        count = int.from_bytes(data[80:84], "little")
+        if len(data) == 84 + 50 * count:
+            records = np.frombuffer(
+                data,
+                dtype=np.dtype([
+                    ("normal", "<f4", (3,)),
+                    ("vertices", "<f4", (3, 3)),
+                    ("attribute", "<u2"),
+                ]),
+                count=count,
+                offset=84,
+            )
+            return records["vertices"].reshape(-1, 3).astype(float)
+    vertices = [
+        tuple(map(float, line.split()[1:4]))
+        for line in data.decode("ascii").splitlines()
+        if line.lstrip().startswith("vertex ")
+    ]
+    if not vertices:
+        raise ValueError(f"STL contains no vertices: {path}")
+    return np.asarray(vertices, float)
 
 
 def _directions(points, jacobians=None):
@@ -128,9 +177,11 @@ class RobotModel:
     def __init__(self, urdf_path=C.URDF_PATH):
         """Parse the URDF and precompute limits, topology, and neutral geometry."""
 
+        urdf_path = Path(urdf_path)
+        root = ET.parse(urdf_path).getroot()
         self.joints, self.children = {}, defaultdict(list)
         limits = {}
-        for node in ET.parse(urdf_path).getroot().findall("joint"):
+        for node in root.findall("joint"):
             origin, axis, limit = node.find("origin"), node.find("axis"), node.find("limit")
             joint = {
                 "parent": node.find("parent").get("link"),
@@ -197,6 +248,25 @@ class RobotModel:
         self.palm_position = cmc_origin + self.cmc_axis * np.dot(
             mcp_aa_origin - cmc_origin, self.cmc_axis
         )
+        middle_link = root.find(f"./link[@name='{ROBOT_MIDDLE_FINGERTIP}']")
+        visual = None if middle_link is None else middle_link.find("visual")
+        mesh = None if visual is None else visual.find("geometry/mesh")
+        if mesh is None:
+            raise ValueError("MMHand URDF has no Middle fingertip visual mesh")
+        mesh_path = urdf_path.parent / mesh.get("filename")
+        vertices = _stl_vertices(mesh_path)
+        scale = _values(mesh.get("scale"), "1 1 1")
+        vertices *= scale
+        visual_origin = visual.find("origin")
+        visual_transform = (
+            _origin(visual_origin) if visual_origin is not None else np.eye(4)
+        )
+        vertices = (
+            vertices @ visual_transform[:3, :3].T
+            + visual_transform[:3, 3]
+        )
+        self.middle_fingertip_surface_local = vertices[np.argmax(vertices[:, 0])]
+        self.urdf_palm_length = self.middle_fingertip_surface_distance(self.seed)
 
     def _forward(self, q, jacobian=False):
         """Run tree forward kinematics and optionally return joint frames."""
@@ -228,6 +298,31 @@ class RobotModel:
         transforms = self.fk(q)
         return np.asarray([transforms[name][:3, 3] for name in ROBOT_TIPS])
 
+    def palm_width(self, q):
+        """Return the distance between the Index and Little MCP A-A origins."""
+
+        _, origins, _ = self._forward(np.asarray(q, float), True)
+        return float(np.linalg.norm(
+            origins[self.index["Index_MCP_AA"]]
+            - origins[self.index["Little_MCP_AA"]]
+        ))
+
+    def middle_fingertip_surface_point(self, q):
+        """Return the Middle mesh's distal-most +X vertex in robot space."""
+
+        transform = self.fk(q)[ROBOT_MIDDLE_FINGERTIP]
+        return (
+            transform[:3, :3] @ self.middle_fingertip_surface_local
+            + transform[:3, 3]
+        )
+
+    def middle_fingertip_surface_distance(self, q):
+        """Return Hand0-to-distal-Middle-mesh distance in robot space."""
+
+        point = self.middle_fingertip_surface_point(q)
+        hand0 = self.fk(q)["base_link"][:3, 3]
+        return float(np.linalg.norm(point - hand0))
+
     def fingertip_pads(self, q):
         """Return fingertip positions and outward pad normals, Thumb to Little."""
         transforms = self.fk(q)
@@ -242,23 +337,44 @@ class RobotModel:
         incoming = origins[indices] - origins[indices - 1]
         return origins[indices], axes[indices], incoming
 
-    def initial_angle_targets(self, initial_angles, previous=None):
-        """Map human angles to clipped robot targets while preserving warm starts."""
+    def angle_targets(self, initial_angles):
+        """Convert input angles into clipped soft robot-angle targets."""
 
         if not isinstance(initial_angles, InitialJointAngles):
             raise ValueError("Retargeting requires InitialJointAngles")
-        q = self.seed.copy() if previous is None else np.asarray(previous, float).copy()
+        q = self.seed.copy()
         for row, indices in enumerate(self.finger_joints):
             human = initial_angles.four_fingers[row]
-            aa = self.finger_neutral[row] + human[0] / self.finger_axis[row]
-            angles = np.concatenate((
-                (aa,), self.lower[indices[1:]] + human[1:],
-            ))
+            if initial_angles.four_finger_space == "robot":
+                angles = human
+            else:
+                aa = self.finger_neutral[row] + human[0] / self.finger_axis[row]
+                angles = np.concatenate((
+                    (aa,), self.lower[indices[1:]] + human[1:],
+                ))
             q[indices] = np.clip(angles, self.lower[indices], self.upper[indices])
         q[18:20] = np.clip(
             initial_angles.thumb_bends, self.lower[18:20], self.upper[18:20]
         )
         return q
+
+    def initial_guess(self, angle_targets, previous=None):
+        """Overlay directly observed joints on the seed or previous warm start."""
+
+        targets = np.asarray(angle_targets, float)
+        if targets.shape != self.seed.shape or not np.isfinite(targets).all():
+            raise ValueError("Robot angle targets must be a finite 21-element vector")
+        q = self.seed.copy() if previous is None else np.asarray(previous, float).copy()
+        if previous is None:
+            q[17] = self.upper[17]
+        observed = np.concatenate((self.finger_joints.ravel(), (18, 19)))
+        q[observed] = targets[observed]
+        return np.clip(q, self.lower, self.upper)
+
+    def initial_angle_targets(self, initial_angles, previous=None):
+        """Build the SLSQP initial guess from input angles and a warm start."""
+
+        return self.initial_guess(self.angle_targets(initial_angles), previous)
 
     def features(self, q):
         """Evaluate all optimization features and their analytic Jacobians."""
@@ -332,22 +448,17 @@ class Retargeter:
 
         if finger_pad_directions is None:
             raise ValueError("Finger-pad directions are required for retargeting")
-        directions = np.asarray(finger_pad_directions, float)
-        if directions.shape != (5, 3) or not np.isfinite(directions).all():
-            raise ValueError("Invalid finger-pad directions")
-        origin, rotation = compute_cmc_frame(points)
-        local = (np.asarray(points, float) - origin) @ rotation
+        _, _, thumb_tip, relative, pads = human_vector_features(
+            points, finger_pad_directions
+        )
         if not isinstance(initial_joint_angles, InitialJointAngles):
             raise ValueError("Initial joint angles are required for retargeting")
-        fingers = self.model.initial_angle_targets(initial_joint_angles, previous)
-        angles = fingers[18:20, None]
-        relative = local[[8, 12, 16, 20]] - local[4]
-        pads = np.asarray([
-            _checked_unit(direction @ rotation) for direction in directions
-        ])
+        angle_targets = self.model.angle_targets(initial_joint_angles)
+        initial_q = self.model.initial_guess(angle_targets, previous)
+        angles = angle_targets[18:20, None]
         return (
-            local[4:5], angles, relative, pads,
-            fingers[self.model.finger_joints.ravel()], fingers,
+            thumb_tip, angles, relative, pads,
+            angle_targets[self.model.finger_joints.ravel()], initial_q,
         )
 
     @staticmethod
@@ -389,9 +500,17 @@ class Retargeter:
             values[3][:1], jacobians[3][:1], targets[3][:1],
             1.0, C.RETARGET_THUMB_PAD_WEIGHT / 3,
         )
-        finger_pad_term = self._term(
-            values[3][1:], jacobians[3][1:], targets[3][1:],
-            1.0, C.RETARGET_FINGER_PAD_WEIGHT / 3,
+        finger_pad_terms = tuple(
+            self._term(
+                values[3][row:row + 1], jacobians[3][row:row + 1],
+                targets[3][row:row + 1], 1.0, weight / 3,
+            )
+            for row, weight in enumerate((
+                C.RETARGET_INDEX_PAD_WEIGHT,
+                C.RETARGET_MIDDLE_PAD_WEIGHT,
+                C.RETARGET_RING_PAD_WEIGHT,
+                C.RETARGET_LITTLE_PAD_WEIGHT,
+            ), start=1)
         )
         finger_term = self._term(
             values[4], jacobians[4], targets[4][:, None], 1.0,
@@ -399,13 +518,17 @@ class Retargeter:
         )
         total = (
             tip_loss + sum(term[0] for term in thumb_terms) + relative_term[0]
-            + pad_term[0] + finger_pad_term[0] + finger_term[0]
+            + pad_term[0] + sum(term[0] for term in finger_pad_terms)
+            + finger_term[0]
         )
         gradient = (
             tip_gradient + sum(
                 (term[1] for term in thumb_terms), np.zeros(len(self.model.names))
             ) + relative_term[1]
-            + pad_term[1] + finger_pad_term[1] + finger_term[1]
+            + pad_term[1] + sum(
+                (term[1] for term in finger_pad_terms),
+                np.zeros(len(self.model.names)),
+            ) + finger_term[1]
         )
         return (
             total,
@@ -417,7 +540,7 @@ class Retargeter:
                 "finger_angles": finger_term[0],
                 "fingertip_vectors": relative_term[0],
                 "thumb_pad": pad_term[0],
-                "finger_pads": finger_pad_term[0],
+                "finger_pads": sum(term[0] for term in finger_pad_terms),
                 "total": total,
             },
         )
